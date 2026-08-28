@@ -2,7 +2,7 @@
 
 A standalone SOCD (Simultaneous Opposite Cardinal Direction) filter for Windows.
 
-It tracks inputs using a ['WH_KEYBOARD_LL'](https://learn.microsoft.com/en-us/windows/win32/winmsg/lowlevelkeyboardproc) hook, resolves opposing directions via an internal state machine, and tags generated `SendInput` events to prevent re-entrant hook loops.
+It tracks inputs using a [`WH_KEYBOARD_LL`](https://learn.microsoft.com/en-us/windows/win32/winmsg/lowlevelkeyboardproc) hook, resolves opposing directions via an internal state machine, and tags generated [`SendInput`](https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-sendinput) events to prevent re-entrant hook loops.
 
 ## Behavior
 
@@ -21,7 +21,7 @@ Key repeat does not change priority or generate additional output transitions.
 
 ## If `SendInput` fails
 
-Resolved inputs are sent using Windows [`SendInput`](https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-sendinput). If the target app runs with higher privileges (such as an Administrator), UIPI (User Interface Privilege Isolation) may block these inputs. Windows does not clearly report when this happens, so you can try running this tool with the same privileges if inputs are not registered.
+Resolved inputs are sent using Windows `SendInput`. If the target app runs with higher privileges (such as an Administrator), UIPI (User Interface Privilege Isolation) may block these inputs. Windows does not clearly report when this happens, so you can try running this tool with the same privileges if inputs are not registered.
 
 If forwarding fails, conflicting inputs are suppressed:
 
