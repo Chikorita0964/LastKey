@@ -49,13 +49,9 @@ jobs:
         run: |
           if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$') { throw 'Release tags must use vMAJOR.MINOR.PATCH format.' }
 
-          git ls-remote --exit-code --tags origin "refs/tags/$env:RELEASE_TAG" | Out-Null
-          switch ($LASTEXITCODE) {
-            0 { throw "Tag $env:RELEASE_TAG already exists." }
-            # git ls-remote uses exit code 2 when no matching remote ref exists.
-            2 { }
-            default { throw "Could not check tag $env:RELEASE_TAG." }
-          }
+          # Without --exit-code, an absent tag remains a successful query.
+          $tagRef = git ls-remote --tags origin "refs/tags/$env:RELEASE_TAG"
+          if ($tagRef) { throw "Tag $env:RELEASE_TAG already exists." }
 
           "VERSION=$($env:RELEASE_TAG.Substring(1))" >> $env:GITHUB_ENV
       - name: Configure release build
