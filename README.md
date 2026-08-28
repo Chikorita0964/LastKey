@@ -2,7 +2,7 @@
 
 A standalone SOCD (Simultaneous Opposite Cardinal Direction) filter for Windows.
 
-It tracks inputs using a [`WH_KEYBOARD_LL`](https://learn.microsoft.com/en-us/windows/win32/winmsg/lowlevelkeyboardproc) hook, resolves opposing directions via an internal state machine, and tags generated [`SendInput`](https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-sendinput) events to prevent re-entrant hook loops.
+It tracks inputs using a [`WH_KEYBOARD_LL`](https://learn.microsoft.com/windows/win32/winmsg/lowlevelkeyboardproc) hook, resolves opposing directions via an internal state machine, and tags generated [`SendInput`](https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-sendinput) events to prevent re-entrant hook loops.
 
 ## Behavior
 
