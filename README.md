@@ -2,7 +2,7 @@
 
 A standalone SOCD (Simultaneous Opposite Cardinal Direction) filter for Windows.
 
-It tracks inputs using a `WH_KEYBOARD_LL` hook, resolves opposing directions via an internal state machine, and tags generated `SendInput` events to prevent re-entrant hook loops.
+It tracks inputs using a ['WH_KEYBOARD_LL'](https://learn.microsoft.com/en-us/windows/win32/winmsg/lowlevelkeyboardproc) hook, resolves opposing directions via an internal state machine, and tags generated `SendInput` events to prevent re-entrant hook loops.
 
 ## Behavior
 
@@ -95,4 +95,4 @@ LastKey is derived from [Hitboxer by Valentin Ignatev](https://github.com/valign
 and is released under the MIT License. The original copyright and license notice
 are preserved in [LICENSE](LICENSE).
 
-The LastKey icon was generated with Codex AI.
+The LastKey code and icon were created with Codex AI.
