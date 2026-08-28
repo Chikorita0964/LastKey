@@ -44,6 +44,10 @@ Original physical events pass through only when safe, preventing simultaneous op
 
 Antivirus or anti-cheat software may block keyboard hooks or simulated input. Also, some games and communities prohibit third-party tools or specific SOCD rules, so please check their policies before using it.
 
+## Privacy
+
+LastKey operates entirely offline and never sends your data to the developer or third parties. Configured directional inputs are processed solely in memory and are never logged or stored. For more details, see the [Privacy Policy](PRIVACY.md).
+
 ## Build
 
 Open a **VS developer command prompt** in the project directory.

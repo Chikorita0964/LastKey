@@ -71,6 +71,20 @@ jobs:
           Copy-Item -LiteralPath LICENSE -Destination release/package/LICENSE.txt
           Copy-Item -LiteralPath out/cmake-release/LastKey.exe -Destination release/package/LastKey.exe
           Compress-Archive -LiteralPath release/package/LastKey.exe, release/package/LICENSE.txt -DestinationPath "release/LastKey-$env:VERSION.zip"
+      - name: Package MSIX
+        run: |
+          # The Store signs this package after it passes certification.
+          .\msix\package-msix.ps1 `
+            -Version $env:VERSION `
+            -Executable out/cmake-release/LastKey.exe `
+            -OutputDirectory release
+      - name: Upload Store submission package
+        uses: actions/upload-artifact@v4
+        with:
+          name: LastKey-${{ inputs.tag }}-msix
+          path: release/LastKey-*.msix
+          if-no-files-found: error
+          retention-days: 30
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
