@@ -1,0 +1,24 @@
+name: Build and test
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure release build
+        run: cmake -G Ninja -S . -B out/cmake-release -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+      - name: Build release executable
+        run: cmake --build out/cmake-release
+      - name: Configure tests
+        run: cmake -G Ninja -S . -B out/cmake-tests -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON
+      - name: Build tests
+        run: cmake --build out/cmake-tests
+      - name: Run state-transition tests
+        run: ctest --test-dir out/cmake-tests --output-on-failure

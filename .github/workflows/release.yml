@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to create (for example, v1.0.0)
+        required: true
+        default: v1.0.0
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-test:
+    uses: ./.github/workflows/build-and-test.yml
+
+  release:
+    needs: build-and-test
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate release
+        run: |
+          if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$') { throw 'Release tags must use vMAJOR.MINOR.PATCH format.' }
+
+          git ls-remote --exit-code --tags origin "refs/tags/$env:RELEASE_TAG" | Out-Null
+          switch ($LASTEXITCODE) {
+            0 { throw "Tag $env:RELEASE_TAG already exists." }
+            # git ls-remote uses exit code 2 when no matching remote ref exists.
+            2 { }
+            default { throw "Could not check tag $env:RELEASE_TAG." }
+          }
+
+          "VERSION=$($env:RELEASE_TAG.Substring(1))" >> $env:GITHUB_ENV
+      - name: Configure release build
+        run: >
+          cmake -G Ninja -S . -B out/cmake-release
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_TESTING=OFF
+          -DLASTKEY_INCLUDE_VERSION=ON
+          -DLASTKEY_VERSION=$env:VERSION
+      - name: Build release
+        run: cmake --build out/cmake-release
+      - name: Package release
+        run: |
+          New-Item -ItemType Directory -Path release/package | Out-Null
+          Copy-Item -LiteralPath out/cmake-release/LastKey.exe -Destination release/LastKey.exe
+          Copy-Item -LiteralPath LICENSE -Destination release/package/LICENSE.txt
+          Copy-Item -LiteralPath release/LastKey.exe -Destination release/package/LastKey.exe
+          Compress-Archive -LiteralPath release/package/LastKey.exe, release/package/LICENSE.txt -DestinationPath "release/LastKey-$env:VERSION.zip"
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath release/LastKey.exe).Hash.ToLowerInvariant()
+          "$hash *LastKey.exe" | Set-Content -NoNewline -Encoding ascii release/LastKey.exe.sha256
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $assets = @(
+            'release/LastKey.exe'
+            'release/LastKey.exe.sha256'
+            "release/LastKey-$env:VERSION.zip"
+          )
+          gh release create $env:RELEASE_TAG @assets --target $env:GITHUB_SHA --generate-notes
