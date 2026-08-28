@@ -31,7 +31,19 @@ jobs:
     env:
       RELEASE_TAG: ${{ inputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
+
+      # windows-latest can also provide MinGW on PATH.  Select MSVC explicitly,
+      # because this project uses MSVC compiler options and Windows resources.
+      - name: Locate Visual Studio developer environment
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $installationPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $installationPath) { throw 'Visual Studio C++ build tools were not found.' }
+
+          $devCmd = Join-Path $installationPath 'Common7\Tools\VsDevCmd.bat'
+          if (-not (Test-Path -LiteralPath $devCmd)) { throw 'Visual Studio developer environment script was not found.' }
+          "VSDEVCMD=$devCmd" >> $env:GITHUB_ENV
 
       - name: Validate release
         run: |
@@ -47,14 +59,16 @@ jobs:
 
           "VERSION=$($env:RELEASE_TAG.Substring(1))" >> $env:GITHUB_ENV
       - name: Configure release build
+        shell: cmd
         run: >
-          cmake -G Ninja -S . -B out/cmake-release
+          call "%VSDEVCMD%" -arch=x64 -host_arch=x64 && cmake -G Ninja -S . -B out/cmake-release
           -DCMAKE_BUILD_TYPE=Release
           -DBUILD_TESTING=OFF
           -DLASTKEY_INCLUDE_VERSION=ON
-          -DLASTKEY_VERSION=$env:VERSION
+          -DLASTKEY_VERSION=%VERSION%
       - name: Build release
-        run: cmake --build out/cmake-release
+        shell: cmd
+        run: call "%VSDEVCMD%" -arch=x64 -host_arch=x64 && cmake --build out/cmake-release
       - name: Package release
         run: |
           New-Item -ItemType Directory -Path release/package | Out-Null
