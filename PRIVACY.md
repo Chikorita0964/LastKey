@@ -6,7 +6,7 @@ LastKey is a local, open-source Windows system tray application developed and ma
 
 ## Keyboard Input
 
-The application uses a Windows `WH_KEYBOARD_LL` low-level keyboard hook to process only configured directional keys. While Windows delivers system-wide keyboard events to this hook, it strictly inspects and processes the state of configured directional keys (W, A, S, and D by default) solely to resolve simultaneous opposing directional inputs.
+The application uses a Windows `WH_KEYBOARD_LL` low-level keyboard hook to process only configured directional keys. While Windows delivers system-wide keyboard events to this hook, it strictly inspects and processes the state of configured directional keys (W/S, A/D by default) solely to resolve simultaneous opposing directional inputs.
 
 All key processing occurs entirely in-memory during execution. Keystrokes are never logged, written to disk, or transmitted over a network. The Windows `SendInput` API is used exclusively to output the resolved directional key events.
 
