@@ -91,8 +91,6 @@ ctest --test-dir out\cmake-tests --output-on-failure
 
 ## Credits and license
 
-LastKey is derived from [Hitboxer by Valentin Ignatev](https://github.com/valignatev/hitboxer)
-and is released under the MIT License. The original copyright and license notice
-are preserved in [LICENSE](LICENSE).
+LastKey is derived from [Hitboxer by Valentin Ignatev](https://github.com/valignatev/hitboxer) and is distributed under the MIT License. The original copyright and license notice are preserved in [LICENSE](https://github.com/Chikorita0964/LastKey/blob/main/LICENSE).
 
 The LastKey code and icon were created with Codex AI.
