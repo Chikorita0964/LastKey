@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20" shape-rendering="crispEdges">
+  <circle cx="10" cy="10" r="10" fill="#000000"/>
+  <path fill="#FFFFFF" fill-rule="evenodd" d="
+    M3,2 h6 v2 h-4 v1 h4 v4 h-6 v-2 h4 v-1 h-4 z
+    M11,2 h6 v7 h-6 z 
+    M13,4 h2 v3 h-2 z
+    M3,11 h6 v2 h-4 v3 h4 v2 h-6 z
+    M11,11 h4 l2,2 v3 l-2,2 h-4 z 
+    M13,13 h2 v3 h-2 z
+  "/>
+</svg>
