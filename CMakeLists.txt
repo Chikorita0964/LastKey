@@ -30,7 +30,9 @@ if(LASTKEY_INCLUDE_VERSION)
 endif()
 # Visual Studio's Debug configuration uses /RTC1, which is incompatible with /O2.
 target_compile_options(LastKey PRIVATE /W4 /permissive- "$<$<CONFIG:Release>:/O2>")
-target_link_options(LastKey PRIVATE /INCREMENTAL:NO)
+# resources.rc already embeds app.manifest as resource ID 1.
+# Disable the linker's automatically generated manifest to avoid a duplicate.
+target_link_options(LastKey PRIVATE /INCREMENTAL:NO /MANIFEST:NO)
 target_link_libraries(LastKey PRIVATE user32 shell32)
 
 option(BUILD_TESTING "Build the SOCD state-transition test executable" OFF)

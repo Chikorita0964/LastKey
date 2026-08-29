@@ -50,7 +50,7 @@ LastKey operates entirely offline and never sends your data to the developer or 
 
 ## Build
 
-Open a **VS developer command prompt** in the project directory.
+Open a **Visual Studio developer command prompt** in the project directory.
 
 ### Using the batch script
 

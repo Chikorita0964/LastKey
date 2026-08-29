@@ -1,4 +1,7 @@
+#include <windows.h>
 #include "resource.h"
+
+CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "app.manifest"
 #ifdef LASTKEY_HAS_VERSION
 #include "Version.h"
 #include <winver.h>

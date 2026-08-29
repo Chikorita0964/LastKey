@@ -57,6 +57,7 @@ New-Item -ItemType Directory -Path $stagePath | Out-Null
 
 Set-Content -LiteralPath (Join-Path $stagePath 'AppxManifest.xml') -Value $manifest -Encoding utf8NoBOM
 Copy-Item -LiteralPath $executablePath -Destination (Join-Path $stagePath 'LastKey.exe')
+Copy-Item -LiteralPath (Join-Path $projectRoot 'LICENSE') -Destination (Join-Path $stagePath 'LICENSE.txt')
 Copy-Item -LiteralPath $assets -Destination $stagePath -Recurse
 
 $makePri = Find-WindowsSdkTool 'makepri.exe'

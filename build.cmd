@@ -18,10 +18,12 @@ if not exist "%OUT_DIR%" mkdir "%OUT_DIR%"
 rc.exe /nologo /fo "%OUT_DIR%\resources.res" resources.rc
 if errorlevel 1 exit /b 1
 
+rem resources.rc already embeds app.manifest as resource ID 1.
+rem Disable the linker's automatically generated manifest to avoid a duplicate.
 cl.exe /nologo /std:c++17 /W4 /permissive- /O2 /MT /EHsc ^
   /DUNICODE /D_UNICODE ^
   /Fo"%OUT_DIR%\LastKey.obj" LastKey.cpp "%OUT_DIR%\resources.res" ^
-  /link /SUBSYSTEM:WINDOWS /INCREMENTAL:NO ^
+  /link /SUBSYSTEM:WINDOWS /INCREMENTAL:NO /MANIFEST:NO ^
   /OUT:"%OUT_DIR%\LastKey.exe" user32.lib shell32.lib
 if errorlevel 1 exit /b 1
 
