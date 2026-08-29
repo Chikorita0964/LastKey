@@ -81,7 +81,7 @@ constexpr KeySpec kKeys[kKeyCount] = {
 };
 ```
 
-Each entry uses a hardware scan code and an extended flag (not a virtual-key code). For arrow keys, set the extended flag to true as they are extended keys.
+Each entry uses a hardware scan code and an extended flag (not a virtual-key code). For arrow keys, set the extended flag to `true` as they are extended keys.
 
 ## Tests
 
