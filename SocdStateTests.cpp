@@ -29,7 +29,7 @@ struct OutputAttempt {
     }
 };
 
-struct FakeEmitter {
+struct TestEmitter {
     bool operator()(Key key, KeyAction action) {
         attempts.push_back({key, action});
         if (nextResult >= attemptResults.size())
@@ -121,7 +121,7 @@ void RequireNoOpposingOutputs(const SocdState& filter, const std::string& prefix
 
 void RunSteps(std::string_view name, const std::vector<Step>& steps) {
     SocdState filter;
-    FakeEmitter emitter;
+    TestEmitter emitter;
 
     for (std::size_t stepIndex = 0; stepIndex < steps.size(); ++stepIndex) {
         const Step& step = steps[stepIndex];
@@ -151,7 +151,7 @@ void RunSteps(std::string_view name, const std::vector<Step>& steps) {
 
 void RunReleaseAllTest() {
     SocdState filter;
-    FakeEmitter emitter;
+    TestEmitter emitter;
 
     emitter.Prepare({kSuccess});
     Require(filter.Process(Key::VerticalFirst, KeyAction::Down, emitter) == EventDisposition::Consume,

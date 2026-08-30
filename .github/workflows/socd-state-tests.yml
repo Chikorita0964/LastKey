@@ -1,4 +1,4 @@
-name: Build and test
+name: SOCD state tests
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 jobs:
-  build-and-test:
+  socd-state-tests:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7.0.1
@@ -25,12 +25,6 @@ jobs:
           $devCmd = Join-Path $installationPath 'Common7\Tools\VsDevCmd.bat'
           if (-not (Test-Path -LiteralPath $devCmd)) { throw 'Visual Studio developer environment script was not found.' }
           "VSDEVCMD=$devCmd" >> $env:GITHUB_ENV
-      - name: Configure release build
-        shell: cmd
-        run: call "%VSDEVCMD%" -arch=x64 -host_arch=x64 && cmake -G Ninja -S . -B out/cmake-release -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
-      - name: Build release executable
-        shell: cmd
-        run: call "%VSDEVCMD%" -arch=x64 -host_arch=x64 && cmake --build out/cmake-release
       - name: Configure tests
         shell: cmd
         run: call "%VSDEVCMD%" -arch=x64 -host_arch=x64 && cmake -G Ninja -S . -B out/cmake-tests -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON

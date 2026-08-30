@@ -17,11 +17,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build-and-test:
-    uses: ./.github/workflows/build-and-test.yml
+  socd-state-tests:
+    uses: ./.github/workflows/socd-state-tests.yml
 
   release:
-    needs: build-and-test
+    needs: socd-state-tests
     runs-on: windows-latest
     permissions:
       contents: write

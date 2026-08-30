@@ -89,7 +89,9 @@ Each entry uses a hardware scan code and an extended flag (not a virtual-key cod
 
 ## Tests
 
-The table-based state-transition tests simulate key events along with both successful and failed output attempts without requiring a physical keyboard:
+The table-driven state-transition tests in [`SocdStateTests.cpp`](SocdStateTests.cpp) simulate
+key events and output attempts, including configured success and failure results, without
+requiring a physical keyboard:
 
 ```bat
 cmake -G Ninja -S . -B out\cmake-tests -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON
