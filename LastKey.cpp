@@ -6,6 +6,7 @@
 #endif
 #include <windows.h>
 #include <shellapi.h>
+#include <shlobj.h>
 
 #include <optional>
 #include <string>
@@ -45,7 +46,7 @@ constexpr KeySpec kKeys[kKeyCount] = {
 
 constexpr ULONG_PTR kInjectionTag = static_cast<ULONG_PTR>(0x4C4153544B455931ULL); // "LASTKEY1"
 constexpr UINT kTrayCallbackMessage = WM_APP + 1;
-constexpr UINT kOpenFileLocationCommand = 1;
+constexpr UINT kCreateDesktopShortcutCommand = 1;
 constexpr UINT kExitCommand = 2;
 constexpr wchar_t kWindowClassName[] = L"LastKeyTrayWindow";
 constexpr wchar_t kTaskbarCreatedName[] = L"TaskbarCreated";
@@ -80,14 +81,53 @@ std::optional<std::wstring> GetCurrentExecutablePath() {
     }
 }
 
-std::optional<std::wstring> GetWindowsExplorerPath() {
-    std::wstring windowsDirectory(MAX_PATH, L'\0');
-    const UINT pathLength = GetWindowsDirectoryW(windowsDirectory.data(),
-                                                  static_cast<UINT>(windowsDirectory.size()));
-    if (pathLength == 0 || pathLength >= windowsDirectory.size()) return std::nullopt;
+std::optional<std::wstring> GetDesktopShortcutPath() {
+    PWSTR desktopPath = nullptr;
+    const HRESULT result =
+        SHGetKnownFolderPath(FOLDERID_Desktop, KF_FLAG_DEFAULT, nullptr, &desktopPath);
+    if (FAILED(result) || !desktopPath) {
+        CoTaskMemFree(desktopPath);
+        return std::nullopt;
+    }
 
-    windowsDirectory.resize(pathLength);
-    return windowsDirectory + L"\\explorer.exe";
+    const std::wstring shortcutPath = std::wstring(desktopPath) + L"\\LastKey.lnk";
+    CoTaskMemFree(desktopPath);
+    return shortcutPath;
+}
+
+bool CreateDesktopShortcut() {
+    const std::optional<std::wstring> executablePath = GetCurrentExecutablePath();
+    if (!executablePath) return false;
+
+    const HRESULT initializeResult = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    if (FAILED(initializeResult)) return false;
+
+    const std::optional<std::wstring> shortcutPath = GetDesktopShortcutPath();
+    if (!shortcutPath) {
+        CoUninitialize();
+        return false;
+    }
+
+    IShellLinkW* shortcut = nullptr;
+    const HRESULT createResult = CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER,
+                                                  IID_PPV_ARGS(&shortcut));
+    if (FAILED(createResult)) {
+        CoUninitialize();
+        return false;
+    }
+
+    HRESULT result = shortcut->SetPath(executablePath->c_str());
+
+    IPersistFile* persistFile = nullptr;
+    if (SUCCEEDED(result)) result = shortcut->QueryInterface(IID_PPV_ARGS(&persistFile));
+    if (SUCCEEDED(result)) {
+        result = persistFile->Save(shortcutPath->c_str(), TRUE);
+        persistFile->Release();
+    }
+
+    shortcut->Release();
+    CoUninitialize();
+    return SUCCEEDED(result);
 }
 
 const KeySpec& Spec(Key key) {
@@ -177,21 +217,6 @@ bool RestoreTrayIcon(HWND window) {
     return AddTrayIcon(window) || ModifyTrayIcon(window);
 }
 
-void OpenCurrentExecutableLocation() {
-    const std::optional<std::wstring> executablePath = GetCurrentExecutablePath();
-    const std::optional<std::wstring> explorerPath = GetWindowsExplorerPath();
-    if (!executablePath || !explorerPath) {
-        ShowError(L"Unable to find the LastKey file location.");
-        return;
-    }
-
-    const std::wstring arguments = L"/select,\"" + *executablePath + L"\"";
-    const HINSTANCE result = ShellExecuteW(nullptr, L"open", explorerPath->c_str(),
-                                           arguments.c_str(), nullptr, SW_SHOWNORMAL);
-    if (reinterpret_cast<INT_PTR>(result) <= 32)
-        ShowError(L"Unable to open the LastKey file location.");
-}
-
 void ShowTrayMenu(HWND window) {
     POINT point{};
     GetCursorPos(&point);
@@ -199,7 +224,7 @@ void ShowTrayMenu(HWND window) {
     HMENU menu = CreatePopupMenu();
     if (!menu) return;
 
-    AppendMenuW(menu, MF_STRING, kOpenFileLocationCommand, L"Open file location");
+    AppendMenuW(menu, MF_STRING, kCreateDesktopShortcutCommand, L"Create desktop shortcut");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kExitCommand, L"Exit");
     SetForegroundWindow(window);
@@ -223,8 +248,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         return 0;
     case WM_COMMAND:
         switch (LOWORD(wParam)) {
-        case kOpenFileLocationCommand:
-            OpenCurrentExecutableLocation();
+        case kCreateDesktopShortcutCommand:
+            if (!CreateDesktopShortcut()) ShowError(L"Unable to create the desktop shortcut.");
             return 0;
         case kExitCommand:
             DestroyWindow(window);

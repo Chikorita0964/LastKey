@@ -33,7 +33,7 @@ target_compile_options(LastKey PRIVATE /W4 /permissive- "$<$<CONFIG:Release>:/O2
 # resources.rc already embeds app.manifest as resource ID 1.
 # Disable the linker's automatically generated manifest to avoid a duplicate.
 target_link_options(LastKey PRIVATE /INCREMENTAL:NO /MANIFEST:NO)
-target_link_libraries(LastKey PRIVATE user32 shell32)
+target_link_libraries(LastKey PRIVATE user32 shell32 ole32)
 
 option(BUILD_TESTING "Build the SOCD state-transition test executable" OFF)
 if(BUILD_TESTING)

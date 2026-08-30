@@ -1,6 +1,6 @@
 # LastKey
 
-A standalone SOCD (Simultaneous Opposite Cardinal Direction) filter for Windows.
+A minimal and standalone SOCD (Simultaneous Opposite Cardinal Direction) filter for Windows.
 
 It tracks inputs using a [`WH_KEYBOARD_LL`](https://learn.microsoft.com/windows/win32/winmsg/lowlevelkeyboardproc) hook, resolves opposing directions via an internal state machine, and tags generated [`SendInput`](https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-sendinput) events to prevent re-entrant hook loops.
 
@@ -21,7 +21,7 @@ Key repeat does not change priority or generate additional output transitions.
 
 ## If `SendInput` fails
 
-Resolved inputs are sent using Windows `SendInput`. If the target app runs with higher privileges (such as an Administrator), UIPI (User Interface Privilege Isolation) may block these inputs. Windows does not clearly report when this happens, so you can try running this tool with the same privileges if inputs are not registered.
+Resolved inputs are sent using Windows `SendInput`. If the target app runs with higher privileges (such as an Administrator), **UIPI** (User Interface Privilege Isolation) may block these inputs. Windows does not clearly report when this happens, so you can try running this tool with the same privileges if inputs are not registered.
 
 If forwarding fails, conflicting inputs are suppressed:
 
@@ -38,9 +38,11 @@ Original physical events pass through only when safe, preventing simultaneous op
 
 1. Download from GitHub Releases (or build it from source).
 2. Run the executable. A system tray icon will appear.
-3. Right-click the tray icon to open its menu:
-   - **Open file location** opens File Explorer with `LastKey.exe` selected.
-   - **Exit** stops the filter.
+3. Right-click the tray icon to open the menu:
+   - **Create desktop shortcut**: Creates a desktop shortcut.
+   - **Exit**: Stops LastKey.
+
+If **UIPI** blocks `SendInput` to apps with higher privileges, **Exit** the current instance first, then use **Run as administrator** on the desktop shortcut.
 
 ## Compatibility and policies
 
