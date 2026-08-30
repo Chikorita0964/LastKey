@@ -38,7 +38,9 @@ Original physical events pass through only when safe, preventing simultaneous op
 
 1. Download from GitHub Releases (or build it from source).
 2. Run the executable. A system tray icon will appear.
-3. To stop the filter, right-click the tray icon and select **Exit**.
+3. Right-click the tray icon to open its menu:
+   - **Open file location** opens File Explorer with `LastKey.exe` selected.
+   - **Exit** stops the filter.
 
 ## Compatibility and policies
 

@@ -8,6 +8,7 @@
 #include <shellapi.h>
 
 #include <optional>
+#include <string>
 
 #include "resource.h"
 #include "SocdState.h"
@@ -44,7 +45,8 @@ constexpr KeySpec kKeys[kKeyCount] = {
 
 constexpr ULONG_PTR kInjectionTag = static_cast<ULONG_PTR>(0x4C4153544B455931ULL); // "LASTKEY1"
 constexpr UINT kTrayCallbackMessage = WM_APP + 1;
-constexpr UINT kExitCommand = 1;
+constexpr UINT kOpenFileLocationCommand = 1;
+constexpr UINT kExitCommand = 2;
 constexpr wchar_t kWindowClassName[] = L"LastKeyTrayWindow";
 constexpr wchar_t kTaskbarCreatedName[] = L"TaskbarCreated";
 constexpr wchar_t kInstanceMutexName[] = L"Local\\LastKey-Instance";
@@ -60,6 +62,32 @@ void ShowError(const wchar_t* message) {
 
 void ShowInformation(const wchar_t* message) {
     MessageBoxW(nullptr, message, L"LastKey", MB_OK | MB_ICONINFORMATION);
+}
+
+std::optional<std::wstring> GetCurrentExecutablePath() {
+    std::wstring path(MAX_PATH, L'\0');
+
+    while (true) {
+        const DWORD pathLength = GetModuleFileNameW(nullptr, path.data(),
+                                                     static_cast<DWORD>(path.size()));
+        if (pathLength == 0) return std::nullopt;
+        if (pathLength < path.size()) {
+            path.resize(pathLength);
+            return path;
+        }
+
+        path.resize(path.size() * 2);
+    }
+}
+
+std::optional<std::wstring> GetWindowsExplorerPath() {
+    std::wstring windowsDirectory(MAX_PATH, L'\0');
+    const UINT pathLength = GetWindowsDirectoryW(windowsDirectory.data(),
+                                                  static_cast<UINT>(windowsDirectory.size()));
+    if (pathLength == 0 || pathLength >= windowsDirectory.size()) return std::nullopt;
+
+    windowsDirectory.resize(pathLength);
+    return windowsDirectory + L"\\explorer.exe";
 }
 
 const KeySpec& Spec(Key key) {
@@ -149,12 +177,30 @@ bool RestoreTrayIcon(HWND window) {
     return AddTrayIcon(window) || ModifyTrayIcon(window);
 }
 
+void OpenCurrentExecutableLocation() {
+    const std::optional<std::wstring> executablePath = GetCurrentExecutablePath();
+    const std::optional<std::wstring> explorerPath = GetWindowsExplorerPath();
+    if (!executablePath || !explorerPath) {
+        ShowError(L"Unable to find the LastKey file location.");
+        return;
+    }
+
+    const std::wstring arguments = L"/select,\"" + *executablePath + L"\"";
+    const HINSTANCE result = ShellExecuteW(nullptr, L"open", explorerPath->c_str(),
+                                           arguments.c_str(), nullptr, SW_SHOWNORMAL);
+    if (reinterpret_cast<INT_PTR>(result) <= 32)
+        ShowError(L"Unable to open the LastKey file location.");
+}
+
 void ShowTrayMenu(HWND window) {
     POINT point{};
     GetCursorPos(&point);
 
     HMENU menu = CreatePopupMenu();
     if (!menu) return;
+
+    AppendMenuW(menu, MF_STRING, kOpenFileLocationCommand, L"Open file location");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kExitCommand, L"Exit");
     SetForegroundWindow(window);
     TrackPopupMenu(menu, TPM_RIGHTBUTTON, point.x, point.y, 0, window, nullptr);
@@ -176,7 +222,14 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (lParam == WM_RBUTTONUP || lParam == WM_CONTEXTMENU) ShowTrayMenu(window);
         return 0;
     case WM_COMMAND:
-        if (LOWORD(wParam) == kExitCommand) DestroyWindow(window);
+        switch (LOWORD(wParam)) {
+        case kOpenFileLocationCommand:
+            OpenCurrentExecutableLocation();
+            return 0;
+        case kExitCommand:
+            DestroyWindow(window);
+            return 0;
+        }
         return 0;
     case WM_DESTROY: {
         RemoveTrayIcon(window);
