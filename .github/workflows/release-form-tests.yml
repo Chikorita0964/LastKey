@@ -1,0 +1,33 @@
+name: Release form tests
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  release-form-tests:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Run release form tests
+        shell: pwsh
+        run: |
+          try {
+            .\.github\scripts\Test-ReleaseFormDefault.ps1
+          }
+          catch {
+            $message = $_.Exception.Message
+            Write-Host "::error title=Release form regression test failed::$message"
+            @"
+          ## Release form tests failed
+
+          $message
+
+          Check the failing test output, then update
+          .github/scripts/Update-ReleaseFormDefault.ps1 or its matching test case.
+          "@ | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+            throw
+          }

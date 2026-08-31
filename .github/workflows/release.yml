@@ -17,11 +17,47 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validate-release-input:
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.release-version.outputs.version }}
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      RELEASE_REF_TYPE: ${{ github.ref_type }}
+    steps:
+      - name: Validate release input
+        id: release-version
+        run: |
+          if ($env:RELEASE_REF_TYPE -ne 'branch') {
+            throw 'The release workflow must be run from a branch so its default tag can be updated.'
+          }
+
+          if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$') {
+            throw 'Release tags must use vMAJOR.MINOR.PATCH format.'
+          }
+
+          "version=$($env:RELEASE_TAG.Substring(1))" >> $env:GITHUB_OUTPUT
+      - uses: actions/checkout@v7.0.1
+      - name: Verify release tag is available
+        run: |
+          # Without --exit-code, an absent tag remains a successful query.
+          $tagRef = git ls-remote --tags origin "refs/tags/$env:RELEASE_TAG"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($tagRef) { throw "Tag $env:RELEASE_TAG already exists." }
+
   socd-state-tests:
+    needs: validate-release-input
     uses: ./.github/workflows/socd-state-tests.yml
 
+  release-form-tests:
+    needs: validate-release-input
+    uses: ./.github/workflows/release-form-tests.yml
+
   release:
-    needs: socd-state-tests
+    needs: [validate-release-input, socd-state-tests, release-form-tests]
     runs-on: windows-latest
     permissions:
       contents: write
@@ -31,7 +67,7 @@ jobs:
     env:
       RELEASE_TAG: ${{ inputs.tag }}
       RELEASE_BRANCH: ${{ github.ref_name }}
-      RELEASE_REF_TYPE: ${{ github.ref_type }}
+      VERSION: ${{ needs.validate-release-input.outputs.version }}
     steps:
       - name: Require workflow update token
         env:
@@ -58,20 +94,6 @@ jobs:
           if (-not (Test-Path -LiteralPath $devCmd)) { throw 'Visual Studio developer environment script was not found.' }
           "VSDEVCMD=$devCmd" >> $env:GITHUB_ENV
 
-      - name: Validate release
-        run: |
-          if ($env:RELEASE_REF_TYPE -ne 'branch') {
-            throw 'The release workflow must be run from a branch so its default tag can be updated.'
-          }
-
-          if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$') { throw 'Release tags must use vMAJOR.MINOR.PATCH format.' }
-
-          # Without --exit-code, an absent tag remains a successful query.
-          $tagRef = git ls-remote --tags origin "refs/tags/$env:RELEASE_TAG"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if ($tagRef) { throw "Tag $env:RELEASE_TAG already exists." }
-
-          "VERSION=$($env:RELEASE_TAG.Substring(1))" >> $env:GITHUB_ENV
       - name: Configure release build
         shell: cmd
         run: >
