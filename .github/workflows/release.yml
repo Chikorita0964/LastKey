@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Current version: v1.0.1. Next release tag to create.
+        description: "Current version: v1.0.1. Next release tag to create."
         required: true
         default: v1.0.2
         type: string
