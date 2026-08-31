@@ -4,16 +4,16 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag to create (for example, v1.0.0)
+        description: Current version: v1.0.1. Next release tag to create.
         required: true
-        default: v1.0.0
+        default: v1.0.2
         type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ inputs.tag }}
+  group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -30,8 +30,21 @@ jobs:
         shell: pwsh
     env:
       RELEASE_TAG: ${{ inputs.tag }}
+      RELEASE_BRANCH: ${{ github.ref_name }}
+      RELEASE_REF_TYPE: ${{ github.ref_type }}
     steps:
+      - name: Require workflow update token
+        env:
+          RELEASE_WORKFLOW_TOKEN: ${{ secrets.RELEASE_WORKFLOW_TOKEN }}
+        run: |
+          if (-not $env:RELEASE_WORKFLOW_TOKEN) {
+            throw 'The RELEASE_WORKFLOW_TOKEN secret is required to update release.yml after a release.'
+          }
       - uses: actions/checkout@v7.0.1
+        with:
+          # Updating a file under .github/workflows requires the Workflows
+          # permission, which is not available to the built-in GITHUB_TOKEN.
+          token: ${{ secrets.RELEASE_WORKFLOW_TOKEN }}
 
       # windows-latest can also provide MinGW on PATH.  Select MSVC explicitly,
       # because this project uses MSVC compiler options and Windows resources.
@@ -47,10 +60,15 @@ jobs:
 
       - name: Validate release
         run: |
+          if ($env:RELEASE_REF_TYPE -ne 'branch') {
+            throw 'The release workflow must be run from a branch so its default tag can be updated.'
+          }
+
           if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$') { throw 'Release tags must use vMAJOR.MINOR.PATCH format.' }
 
           # Without --exit-code, an absent tag remains a successful query.
           $tagRef = git ls-remote --tags origin "refs/tags/$env:RELEASE_TAG"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if ($tagRef) { throw "Tag $env:RELEASE_TAG already exists." }
 
           "VERSION=$($env:RELEASE_TAG.Substring(1))" >> $env:GITHUB_ENV
@@ -93,3 +111,31 @@ jobs:
             "release/LastKey-$env:VERSION.zip"
           )
           gh release create $env:RELEASE_TAG @assets --target $env:GITHUB_SHA --generate-notes
+      - name: Update the next release form default
+        run: |
+          function Invoke-Git {
+            param(
+              [Parameter(Mandatory, ValueFromRemainingArguments)]
+              [string[]]$Arguments
+            )
+
+            & git @Arguments
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+          Invoke-Git fetch origin $env:RELEASE_BRANCH
+          Invoke-Git checkout -B release-version-update "origin/$env:RELEASE_BRANCH"
+
+          $nextReleaseTag = .\.github\scripts\Update-ReleaseFormDefault.ps1 -ReleaseTag $env:RELEASE_TAG
+
+          Invoke-Git config user.name 'github-actions[bot]'
+          Invoke-Git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          Invoke-Git add -- .github/workflows/release.yml
+
+          git diff --cached --quiet -- .github/workflows/release.yml
+          $diffExitCode = $LASTEXITCODE
+          if ($diffExitCode -eq 0) { exit 0 }
+          if ($diffExitCode -ne 1) { exit $diffExitCode }
+
+          Invoke-Git commit -m "chore(release): prepare $nextReleaseTag"
+          Invoke-Git push origin "HEAD:$env:RELEASE_BRANCH"
