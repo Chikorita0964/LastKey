@@ -11,7 +11,7 @@ $content = [IO.File]::ReadAllText($WorkflowPath)
 $versionParts = $ReleaseTag.Substring(1).Split('.')
 $nextReleaseTag = "v$($versionParts[0]).$($versionParts[1]).$([int]$versionParts[2] + 1)"
 
-$currentVersionPattern = '(?m)^(        description:\s*)Current version: v\d+\.\d+\.\d+(\. Next release tag to create\.\r?)$'
+$currentVersionPattern = '(?m)^(        description:\s*(?<quote>["'']?))Current version: v\d+\.\d+\.\d+(\. Next release tag to create\.\k<quote>\r?)$'
 $nextReleasePattern = '(?m)^(        default:\s*)v\d+\.\d+\.\d+(\r?)$'
 $currentVersionMatches = [regex]::Matches($content, $currentVersionPattern)
 $nextReleaseMatches = [regex]::Matches($content, $nextReleasePattern)
