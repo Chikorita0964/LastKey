@@ -1,6 +1,26 @@
 name: Dev build
 
 on:
+  push:
+    branches:
+      - dev
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'ui/**'
+      - 'assets/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'build.rs'
+      - 'resources.rc'
+      - 'resource.h'
+      - 'app.manifest'
+      - 'lastkey-logo.ico'
+      - 'LICENSE'
+      - 'LICENSES/**'
+      - 'NOTICE'
+      - '.github/workflows/dev-build.yml'
+      - '.github/workflows/rust-tests.yml'
   workflow_dispatch:
 
 permissions:
