@@ -426,6 +426,28 @@ fn main() {
 
 #[cfg(not(windows))]
 fn main() {
-    eprintln!("LastKey Windows input support is not available on this platform.");
+    #[cfg(target_os = "linux")]
+    {
+        use lastkey::{
+            platform::linux::InputService,
+            settings::{self, Settings},
+        };
+        let settings = settings::load().unwrap_or_else(|error| {
+            eprintln!("LastKey settings could not be loaded: {error}");
+            Settings::default()
+        });
+        match InputService::start(settings) {
+            Ok(_service) => {
+                eprintln!("LastKey Linux backend is active. Press Ctrl+C to stop.");
+                loop {
+                    std::thread::park();
+                }
+            }
+            Err(error) => eprintln!("LastKey Linux input support is unavailable: {error}"),
+        }
+        return;
+    }
+    #[cfg(not(target_os = "linux"))]
+    eprintln!("LastKey input support is not available on this platform.");
     std::process::exit(1);
 }

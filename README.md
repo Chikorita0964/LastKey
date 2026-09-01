@@ -56,6 +56,16 @@ If **UIPI** blocks `SendInput` to apps with higher privileges, **Exit** the curr
 
 Antivirus or anti-cheat software may block keyboard hooks or simulated input. Also, some games and communities prohibit third-party tools or specific SOCD rules, so please check their policies before using it.
 
+## Linux backend
+
+Linux uses `evdev` to exclusively grab candidate keyboards and `uinput` to provide a
+virtual keyboard. This lets LastKey filter configured pair keys while forwarding ordinary
+key events. The process needs read/write access to `/dev/input/event*` and `/dev/uinput`;
+configure udev permissions or use an appropriate privileged service instead of running a
+desktop session as root. Connected keyboards are discovered when the service starts; unplugged
+devices release their grab automatically, and connecting a new keyboard currently requires a
+service restart.
+
 ## Privacy
 
 LastKey operates entirely offline and never sends your data to the developer or third parties. Configured directional inputs are processed solely in memory and are never logged or stored. For more details, see the [Privacy Policy](PRIVACY.md).
