@@ -1,3 +1,3 @@
 mod input;
 
-pub use input::run;
+pub use input::{CapturedKey, InputService, InputServiceError};

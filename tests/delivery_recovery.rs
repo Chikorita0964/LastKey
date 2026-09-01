@@ -283,3 +283,34 @@ fn shutdown_releases_all_held_output() {
         ]
     );
 }
+
+#[test]
+fn reset_releases_output_and_clears_physical_state_before_mapping_replacement() {
+    let mut router = InputRouter::new();
+    let mut emitter = TestEmitter::new([true, true]);
+
+    process(
+        &mut router,
+        &mut emitter,
+        LogicalKey::HorizontalFirst,
+        KeyAction::Down,
+    );
+    router.reset(&mut emitter);
+
+    assert_eq!(
+        emitter.attempts,
+        [
+            OutputAttempt(LogicalKey::HorizontalFirst, KeyAction::Down),
+            OutputAttempt(LogicalKey::HorizontalFirst, KeyAction::Up),
+        ]
+    );
+    assert_eq!(
+        process(
+            &mut router,
+            &mut emitter,
+            LogicalKey::HorizontalFirst,
+            KeyAction::Up,
+        ),
+        EventDisposition::PassThrough
+    );
+}

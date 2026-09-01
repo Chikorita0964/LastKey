@@ -72,6 +72,11 @@ impl InputRouter {
         }
     }
 
+    pub fn reset<E: OutputEmitter>(&mut self, emitter: &mut E) {
+        self.release_all(emitter);
+        *self = Self::new();
+    }
+
     fn reconcile<E: OutputEmitter>(
         &mut self,
         decision: AxisDecision,

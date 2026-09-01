@@ -1,7 +1,320 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
+#[cfg(windows)]
+mod windows_app {
+    use std::{cell::RefCell, rc::Rc, sync::mpsc::Receiver, time::Duration};
+
+    use lastkey::{
+        core::{LogicalKey, PhysicalKey},
+        platform::windows::{CapturedKey, InputService},
+        settings::{self, Settings},
+    };
+    use slint::{ComponentHandle, Timer, TimerMode};
+    use tray_icon::{
+        Icon, TrayIcon, TrayIconBuilder,
+        menu::{Menu, MenuEvent, MenuItem},
+    };
+
+    slint::include_modules!();
+
+    struct PendingCapture {
+        key: LogicalKey,
+        receiver: Receiver<CapturedKey>,
+    }
+
+    struct UiState {
+        saved: Settings,
+        working: Settings,
+        capture: Option<PendingCapture>,
+    }
+
+    pub fn run() -> Result<(), String> {
+        let settings = settings::load().unwrap_or_else(|error| {
+            eprintln!("LastKey settings could not be loaded: {error}");
+            Settings::default()
+        });
+        let input =
+            Rc::new(InputService::start(settings.clone()).map_err(|error| error.to_string())?);
+        let window = MainWindow::new().map_err(|error| error.to_string())?;
+        update_window(&window, &settings);
+        let state = Rc::new(RefCell::new(UiState {
+            saved: settings.clone(),
+            working: settings,
+            capture: None,
+        }));
+
+        configure_callbacks(&window, Rc::clone(&input), Rc::clone(&state));
+        let capture_timer = configure_capture_poller(&window, Rc::clone(&state));
+        let tray_timer = configure_tray(&window, Rc::clone(&input), Rc::clone(&state));
+        configure_close_behavior(&window);
+        window.show().map_err(|error| error.to_string())?;
+        slint::run_event_loop_until_quit().map_err(|error| error.to_string())?;
+        window.hide().map_err(|error| error.to_string())?;
+        drop(tray_timer);
+        drop(capture_timer);
+        drop(window);
+        drop(state);
+        drop(input);
+        Ok(())
+    }
+
+    fn configure_callbacks(
+        window: &MainWindow,
+        input: Rc<InputService>,
+        state: Rc<RefCell<UiState>>,
+    ) {
+        let weak = window.as_weak();
+        let input_for_capture = Rc::clone(&input);
+        let state_for_capture = Rc::clone(&state);
+        window.on_capture_key(move |index| {
+            let Some(key) = logical_key(index) else {
+                set_status(&weak, "Unknown key field.");
+                return;
+            };
+            match input_for_capture.capture_next() {
+                Ok(receiver) => {
+                    state_for_capture.borrow_mut().capture = Some(PendingCapture { key, receiver });
+                    set_status(&weak, "Press a key...");
+                }
+                Err(error) => set_status(&weak, &error.to_string()),
+            }
+        });
+
+        let weak = window.as_weak();
+        let input_for_apply = Rc::clone(&input);
+        let state_for_apply = Rc::clone(&state);
+        window.on_apply_settings(move || {
+            let settings = state_for_apply.borrow().working.clone();
+            if let Err(error) = settings.validate() {
+                set_status(&weak, &error.to_string());
+                return;
+            }
+            if let Err(error) = settings::save(&settings) {
+                set_status(&weak, &error.to_string());
+                return;
+            }
+            if let Err(error) = input_for_apply.apply(settings.clone()) {
+                set_status(&weak, &error.to_string());
+                return;
+            }
+            state_for_apply.borrow_mut().saved = settings;
+            set_status(&weak, "Settings applied.");
+        });
+
+        let weak = window.as_weak();
+        let state_for_cancel = Rc::clone(&state);
+        window.on_cancel_settings(move || {
+            let mut state = state_for_cancel.borrow_mut();
+            state.working = state.saved.clone();
+            if let Some(window) = weak.upgrade() {
+                update_window(&window, &state.working);
+            }
+        });
+
+        let weak = window.as_weak();
+        let state_for_defaults = Rc::clone(&state);
+        window.on_restore_defaults(move || {
+            let mut state = state_for_defaults.borrow_mut();
+            state.working = Settings::default();
+            if let Some(window) = weak.upgrade() {
+                update_window(&window, &state.working);
+                window
+                    .set_status("Default mappings restored. Select Apply to activate them.".into());
+            }
+        });
+    }
+
+    fn configure_capture_poller(window: &MainWindow, state: Rc<RefCell<UiState>>) -> Timer {
+        let weak = window.as_weak();
+        let timer = Timer::default();
+        timer.start(TimerMode::Repeated, Duration::from_millis(16), move || {
+            let captured = {
+                let mut state = state.borrow_mut();
+                let Some(capture) = state.capture.as_ref() else {
+                    return;
+                };
+                match capture.receiver.try_recv() {
+                    Ok(captured) => Some((capture.key, captured)),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        state.capture = None;
+                        set_status(&weak, "Key capture was cancelled.");
+                        None
+                    }
+                }
+            };
+            if let Some((key, captured)) = captured {
+                let mut state = state.borrow_mut();
+                state.working.set_binding(key, captured.physical);
+                state.capture = None;
+                if let Some(window) = weak.upgrade() {
+                    set_key_name(&window, key, &captured.name);
+                    window.set_status("Select Apply to activate the new mapping.".into());
+                }
+            }
+        });
+        timer
+    }
+
+    fn configure_close_behavior(window: &MainWindow) {
+        let weak = window.as_weak();
+        window.window().on_close_requested(move || {
+            if let Some(window) = weak.upgrade() {
+                let _ = window.hide();
+            }
+            slint::CloseRequestResponse::KeepWindowShown
+        });
+    }
+
+    fn configure_tray(
+        window: &MainWindow,
+        input: Rc<InputService>,
+        state: Rc<RefCell<UiState>>,
+    ) -> Timer {
+        let weak = window.as_weak();
+        let tray = Rc::new(RefCell::new(None));
+        let tray_for_timer = Rc::clone(&tray);
+        let timer = Timer::default();
+        timer.start(TimerMode::Repeated, Duration::from_millis(100), move || {
+            if tray_for_timer.borrow().is_none() {
+                match create_tray() {
+                    Ok(icon) => *tray_for_timer.borrow_mut() = Some(icon),
+                    Err(error) => {
+                        set_status(&weak, &format!("Tray initialization failed: {error}"));
+                        return;
+                    }
+                }
+            }
+
+            while let Ok(event) = MenuEvent::receiver().try_recv() {
+                match event.id.as_ref() {
+                    "lastkey-open" => {
+                        if let Some(window) = weak.upgrade() {
+                            let _ = window.show();
+                        }
+                    }
+                    "lastkey-defaults" => {
+                        let settings = Settings::default();
+                        match settings::save(&settings).and_then(|_| {
+                            input.apply(settings.clone()).map_err(|error| {
+                                settings::SettingsError::Io(std::io::Error::other(error))
+                            })
+                        }) {
+                            Ok(()) => {
+                                let mut state = state.borrow_mut();
+                                state.saved = settings.clone();
+                                state.working = settings.clone();
+                                if let Some(window) = weak.upgrade() {
+                                    update_window(&window, &settings);
+                                    window.set_status("Default mappings applied.".into());
+                                }
+                            }
+                            Err(error) => set_status(&weak, &error.to_string()),
+                        }
+                    }
+                    "lastkey-exit" => {
+                        let _ = slint::quit_event_loop();
+                    }
+                    _ => {}
+                }
+            }
+        });
+        timer
+    }
+
+    fn create_tray() -> Result<TrayIcon, String> {
+        let menu = Menu::new();
+        let open = MenuItem::with_id("lastkey-open", "Open Settings", true, None);
+        let defaults = MenuItem::with_id("lastkey-defaults", "Restore Defaults", true, None);
+        let exit = MenuItem::with_id("lastkey-exit", "Exit", true, None);
+        menu.append(&open).map_err(|error| error.to_string())?;
+        menu.append(&defaults).map_err(|error| error.to_string())?;
+        menu.append(&exit).map_err(|error| error.to_string())?;
+        TrayIconBuilder::new()
+            .with_menu(Box::new(menu))
+            .with_icon(tray_icon_image()?)
+            .with_tooltip("LastKey")
+            .build()
+            .map_err(|error| error.to_string())
+    }
+
+    fn tray_icon_image() -> Result<Icon, String> {
+        let mut pixels = vec![0_u8; 32 * 32 * 4];
+        for y in 0..32 {
+            for x in 0..32 {
+                let offset = (y * 32 + x) * 4;
+                let border = !(3..29).contains(&x) || !(3..29).contains(&y);
+                let (red, green, blue) = if border {
+                    (25, 88, 156)
+                } else {
+                    (53, 132, 228)
+                };
+                pixels[offset] = red;
+                pixels[offset + 1] = green;
+                pixels[offset + 2] = blue;
+                pixels[offset + 3] = 255;
+            }
+        }
+        Icon::from_rgba(pixels, 32, 32).map_err(|error| error.to_string())
+    }
+
+    fn update_window(window: &MainWindow, settings: &Settings) {
+        for key in LogicalKey::ALL {
+            set_key_name(window, key, &display_name(settings.binding(key)));
+        }
+        window.set_status("".into());
+    }
+
+    fn set_key_name(window: &MainWindow, key: LogicalKey, name: &str) {
+        match key {
+            LogicalKey::VerticalFirst => window.set_vertical_first(name.into()),
+            LogicalKey::VerticalSecond => window.set_vertical_second(name.into()),
+            LogicalKey::HorizontalFirst => window.set_horizontal_first(name.into()),
+            LogicalKey::HorizontalSecond => window.set_horizontal_second(name.into()),
+        }
+    }
+
+    fn set_status(window: &slint::Weak<MainWindow>, message: &str) {
+        if let Some(window) = window.upgrade() {
+            window.set_status(message.into());
+        }
+    }
+
+    fn logical_key(index: i32) -> Option<LogicalKey> {
+        match index {
+            0 => Some(LogicalKey::VerticalFirst),
+            1 => Some(LogicalKey::VerticalSecond),
+            2 => Some(LogicalKey::HorizontalFirst),
+            3 => Some(LogicalKey::HorizontalSecond),
+            _ => None,
+        }
+    }
+
+    fn display_name(key: PhysicalKey) -> String {
+        match (key.scan_code, key.extended) {
+            (0x11, false) => "W".into(),
+            (0x1F, false) => "S".into(),
+            (0x1E, false) => "A".into(),
+            (0x20, false) => "D".into(),
+            (0x48, true) => "Up Arrow".into(),
+            (0x50, true) => "Down Arrow".into(),
+            (0x4B, true) => "Left Arrow".into(),
+            (0x4D, true) => "Right Arrow".into(),
+            _ => format!("Scan code 0x{:02X}", key.scan_code),
+        }
+    }
+}
+
 #[cfg(windows)]
 fn main() {
-    if let Err(error) = lastkey::platform::windows::run() {
-        eprintln!("LastKey failed to start: {error}");
+    if let Err(error) = windows_app::run() {
+        use windows::{
+            Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW},
+            core::{HSTRING, w},
+        };
+
+        let message = HSTRING::from(format!("LastKey failed to start: {error}"));
+        let _ = unsafe { MessageBoxW(None, &message, w!("LastKey"), MB_ICONERROR | MB_OK) };
         std::process::exit(1);
     }
 }

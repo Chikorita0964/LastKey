@@ -46,8 +46,17 @@ pub enum KeyAction {
     Up,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct PhysicalKey {
     pub scan_code: u16,
     pub extended: bool,
+}
+
+impl PhysicalKey {
+    pub const fn new(scan_code: u16, extended: bool) -> Self {
+        Self {
+            scan_code,
+            extended,
+        }
+    }
 }
