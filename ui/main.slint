@@ -1,8 +1,8 @@
-import { Button, HorizontalBox, VerticalBox } from "std-widgets.slint";
+import { Button, CheckBox, HorizontalBox, SpinBox, VerticalBox } from "std-widgets.slint";
 
 export component MainWindow inherits Window {
     width: 430px;
-    height: 360px;
+    height: 560px;
     title: "LastKey Settings";
 
     in-out property <string> vertical-first: "W";
@@ -10,6 +10,12 @@ export component MainWindow inherits Window {
     in-out property <string> horizontal-first: "A";
     in-out property <string> horizontal-second: "D";
     in-out property <string> status: "";
+    in-out property <int> transition-min-ms: 0;
+    in-out property <int> transition-max-ms: 0;
+    in-out property <int> overlap-min-ms: 0;
+    in-out property <int> overlap-max-ms: 0;
+    in-out property <int> overlap-probability: 0;
+    in-out property <bool> full-overlap: false;
 
     callback capture-key(int);
     callback apply-settings();
@@ -33,6 +39,29 @@ export component MainWindow inherits Window {
             Button { text: root.vertical-first; clicked => { root.capture-key(0); } }
             Text { text: "↕"; vertical-alignment: center; horizontal-alignment: center; }
             Button { text: root.vertical-second; clicked => { root.capture-key(1); } }
+        }
+
+        Text { text: "Timing"; font-size: 22px; font-weight: 700; }
+        Text { text: "0 ms and 0% preserve immediate Last Input Priority."; color: #666; }
+        HorizontalBox {
+            spacing: 8px;
+            Text { text: "Transition (ms)"; vertical-alignment: center; }
+            SpinBox { value <=> root.transition-min-ms; minimum: 0; maximum: 1000; }
+            Text { text: "to"; vertical-alignment: center; }
+            SpinBox { value <=> root.transition-max-ms; minimum: 0; maximum: 1000; }
+        }
+        HorizontalBox {
+            spacing: 8px;
+            Text { text: "Overlap (ms)"; vertical-alignment: center; }
+            SpinBox { value <=> root.overlap-min-ms; minimum: 0; maximum: 1000; }
+            Text { text: "to"; vertical-alignment: center; }
+            SpinBox { value <=> root.overlap-max-ms; minimum: 0; maximum: 1000; }
+        }
+        HorizontalBox {
+            spacing: 8px;
+            Text { text: "Overlap probability (%)"; vertical-alignment: center; }
+            SpinBox { value <=> root.overlap-probability; minimum: 0; maximum: 100; }
+            CheckBox { text: "Full overlap"; checked <=> root.full-overlap; }
         }
 
         Text { text: "Horizontal"; font-weight: 600; }

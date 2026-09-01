@@ -7,12 +7,26 @@ use crate::core::{LogicalKey, PhysicalKey};
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Settings {
     pub bindings: [PhysicalKey; 4],
+    #[serde(default)]
+    pub timing: TimingSettings,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct TimingSettings {
+    pub transition_min_ms: u32,
+    pub transition_max_ms: u32,
+    pub overlap_min_ms: u32,
+    pub overlap_max_ms: u32,
+    pub overlap_probability: u8,
+    pub full_overlap: bool,
 }
 
 #[derive(Debug)]
 pub enum SettingsError {
     DuplicateBinding,
     EmptyBinding,
+    InvalidTimingRange,
+    InvalidOverlapProbability,
     Io(io::Error),
     MissingAppData,
     Parse(toml::de::Error),
@@ -24,6 +38,12 @@ impl fmt::Display for SettingsError {
         match self {
             Self::DuplicateBinding => write!(formatter, "each pair key must be unique"),
             Self::EmptyBinding => write!(formatter, "a key binding cannot be empty"),
+            Self::InvalidTimingRange => {
+                write!(formatter, "a timing minimum cannot exceed its maximum")
+            }
+            Self::InvalidOverlapProbability => {
+                write!(formatter, "overlap probability must be between 0 and 100")
+            }
             Self::Io(error) => write!(formatter, "settings I/O failed: {error}"),
             Self::MissingAppData => write!(formatter, "APPDATA is unavailable"),
             Self::Parse(error) => write!(formatter, "settings are invalid: {error}"),
@@ -49,6 +69,7 @@ impl Default for Settings {
                 PhysicalKey::new(0x1E, false), // A
                 PhysicalKey::new(0x20, false), // D
             ],
+            timing: TimingSettings::default(),
         }
     }
 }
@@ -76,6 +97,14 @@ impl Settings {
         let unique: HashSet<PhysicalKey> = self.bindings.iter().copied().collect();
         if unique.len() != self.bindings.len() {
             return Err(SettingsError::DuplicateBinding);
+        }
+        if self.timing.transition_min_ms > self.timing.transition_max_ms
+            || self.timing.overlap_min_ms > self.timing.overlap_max_ms
+        {
+            return Err(SettingsError::InvalidTimingRange);
+        }
+        if self.timing.overlap_probability > 100 {
+            return Err(SettingsError::InvalidOverlapProbability);
         }
         Ok(())
     }

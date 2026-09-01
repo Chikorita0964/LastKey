@@ -1,4 +1,4 @@
-use std::{cell::RefCell, mem::size_of};
+use std::{cell::RefCell, mem::size_of, time::Instant};
 use std::{
     fmt,
     sync::mpsc::{self, Receiver, Sender},
@@ -14,22 +14,23 @@ use windows::Win32::{
             KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, SendInput,
         },
         WindowsAndMessaging::{
-            CallNextHookEx, DispatchMessageW, GetMessageW, KBDLLHOOKSTRUCT, LLKHF_INJECTED, MSG,
-            PM_NOREMOVE, PeekMessageW, PostThreadMessageW, SetWindowsHookExW, TranslateMessage,
-            UnhookWindowsHookEx, WH_KEYBOARD_LL, WM_APP, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN,
-            WM_SYSKEYUP,
+            CallNextHookEx, DispatchMessageW, GetMessageW, KBDLLHOOKSTRUCT, KillTimer,
+            LLKHF_INJECTED, MSG, PM_NOREMOVE, PeekMessageW, PostThreadMessageW, SetTimer,
+            SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, WH_KEYBOARD_LL, WM_APP,
+            WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER,
         },
     },
 };
 
 use crate::{
-    core::{EventDisposition, InputRouter, KeyAction, LogicalKey, OutputEmitter, PhysicalKey},
+    core::{EventDisposition, KeyAction, LogicalKey, OutputEmitter, PhysicalKey, TimingController},
     settings::Settings,
 };
 
 const INJECTION_TAG: usize = 0x4C41_5354_4B45_5931; // "LASTKEY1"
 
 const COMMAND_MESSAGE: u32 = WM_APP + 1;
+const SCHEDULER_TIMER_ID: usize = 1;
 
 thread_local! {
     static ENGINE: RefCell<Option<InputEngine>> = const { RefCell::new(None) };
@@ -135,7 +136,7 @@ impl Drop for InputService {
 }
 
 struct InputEngine {
-    router: InputRouter,
+    timing: TimingController,
     settings: Settings,
     capture_sender: Option<Sender<CapturedKey>>,
     suppress_capture_key: Option<PhysicalKey>,
@@ -144,7 +145,7 @@ struct InputEngine {
 impl InputEngine {
     fn new(settings: Settings) -> Self {
         Self {
-            router: InputRouter::new(),
+            timing: TimingController::new(settings.timing.clone()),
             settings,
             capture_sender: None,
             suppress_capture_key: None,
@@ -178,15 +179,23 @@ impl InputEngine {
         let mut emitter = WindowsEmitter {
             settings: &self.settings,
         };
-        self.router.process(key, action, &mut emitter)
+        let disposition = self
+            .timing
+            .process(key, action, Instant::now(), &mut emitter);
+        if self.timing.is_enabled() {
+            self.update_timer();
+        }
+        disposition
     }
 
     fn apply(&mut self, settings: Settings) {
+        self.cancel_timer();
         let mut emitter = WindowsEmitter {
             settings: &self.settings,
         };
-        self.router.reset(&mut emitter);
+        self.timing.release_all(&mut emitter);
         self.settings = settings;
+        self.timing = TimingController::new(self.settings.timing.clone());
         self.capture_sender = None;
         self.suppress_capture_key = None;
     }
@@ -195,7 +204,38 @@ impl InputEngine {
         let mut emitter = WindowsEmitter {
             settings: &self.settings,
         };
-        self.router.release_all(&mut emitter);
+        self.timing.release_all(&mut emitter);
+        self.cancel_timer();
+    }
+
+    fn poll(&mut self) {
+        let mut emitter = WindowsEmitter {
+            settings: &self.settings,
+        };
+        self.timing.poll(Instant::now(), &mut emitter);
+        self.update_timer();
+    }
+
+    fn update_timer(&self) {
+        let milliseconds = self.timing.next_deadline().map(|deadline| {
+            deadline
+                .saturating_duration_since(Instant::now())
+                .as_millis()
+                .max(1)
+                .min(u32::MAX as u128) as u32
+        });
+        self.cancel_timer();
+        unsafe {
+            if let Some(milliseconds) = milliseconds {
+                let _ = SetTimer(None, SCHEDULER_TIMER_ID, milliseconds, None);
+            }
+        }
+    }
+
+    fn cancel_timer(&self) {
+        unsafe {
+            let _ = KillTimer(None, SCHEDULER_TIMER_ID);
+        }
     }
 }
 
@@ -298,6 +338,16 @@ fn input_thread(
             if !keep_running {
                 break;
             }
+            continue;
+        }
+        if message.message == WM_TIMER && message.wParam.0 == SCHEDULER_TIMER_ID {
+            ENGINE.with(|engine| {
+                engine
+                    .borrow_mut()
+                    .as_mut()
+                    .expect("input engine is initialized")
+                    .poll()
+            });
             continue;
         }
         unsafe {

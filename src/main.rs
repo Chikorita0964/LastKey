@@ -84,7 +84,16 @@ mod windows_app {
         let input_for_apply = Rc::clone(&input);
         let state_for_apply = Rc::clone(&state);
         window.on_apply_settings(move || {
-            let settings = state_for_apply.borrow().working.clone();
+            let mut settings = state_for_apply.borrow().working.clone();
+            let Some(window) = weak.upgrade() else {
+                return;
+            };
+            settings.timing.transition_min_ms = window.get_transition_min_ms() as u32;
+            settings.timing.transition_max_ms = window.get_transition_max_ms() as u32;
+            settings.timing.overlap_min_ms = window.get_overlap_min_ms() as u32;
+            settings.timing.overlap_max_ms = window.get_overlap_max_ms() as u32;
+            settings.timing.overlap_probability = window.get_overlap_probability() as u8;
+            settings.timing.full_overlap = window.get_full_overlap();
             if let Err(error) = settings.validate() {
                 set_status(&weak, &error.to_string());
                 return;
@@ -262,6 +271,12 @@ mod windows_app {
         for key in LogicalKey::ALL {
             set_key_name(window, key, &display_name(settings.binding(key)));
         }
+        window.set_transition_min_ms(settings.timing.transition_min_ms as i32);
+        window.set_transition_max_ms(settings.timing.transition_max_ms as i32);
+        window.set_overlap_min_ms(settings.timing.overlap_min_ms as i32);
+        window.set_overlap_max_ms(settings.timing.overlap_max_ms as i32);
+        window.set_overlap_probability(settings.timing.overlap_probability as i32);
+        window.set_full_overlap(settings.timing.full_overlap);
         window.set_status("".into());
     }
 

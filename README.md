@@ -19,6 +19,14 @@ Using the A/D pair as an example:
 The same rule applies in reverse, and independently to W/S.
 Key repeat does not change priority or generate additional output transitions.
 
+## Timing settings
+
+The Rust settings window can add an intentional transition gap or temporary overlap
+for each opposing-key switch. Transition and overlap durations are selected independently
+from their configured minimum and maximum; overlap can instead be selected per switch by
+probability, or forced with **Full overlap**. The defaults (all delays at 0 ms, probability
+0%, Full overlap off) retain the immediate behavior above and do not start scheduler work.
+
 ## If `SendInput` fails
 
 Resolved inputs are sent using Windows `SendInput`. If the target app runs with higher privileges (such as an Administrator), **UIPI** (User Interface Privilege Isolation) may block these inputs. Windows does not clearly report when this happens, so you can try running this tool with the same privileges if inputs are not registered.

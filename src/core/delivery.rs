@@ -18,7 +18,7 @@ pub enum DeliveryState {
 }
 
 impl DeliveryState {
-    const fn is_held(self) -> bool {
+    pub(crate) const fn is_held(self) -> bool {
         !matches!(self, Self::NotHeld)
     }
 }
