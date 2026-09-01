@@ -6,7 +6,7 @@ mod windows_app {
 
     use lastkey::{
         core::{LogicalKey, PhysicalKey},
-        platform::windows::{CapturedKey, InputService},
+        platform::windows::{CapturedKey, InputService, MeasurementUpdate},
         settings::{self, Settings},
     };
     use slint::{ComponentHandle, Timer, TimerMode};
@@ -26,6 +26,7 @@ mod windows_app {
         saved: Settings,
         working: Settings,
         capture: Option<PendingCapture>,
+        measurement: Option<Receiver<MeasurementUpdate>>,
     }
 
     pub fn run() -> Result<(), String> {
@@ -41,6 +42,7 @@ mod windows_app {
             saved: settings.clone(),
             working: settings,
             capture: None,
+            measurement: None,
         }));
 
         configure_callbacks(&window, Rc::clone(&input), Rc::clone(&state));
@@ -106,7 +108,16 @@ mod windows_app {
                 set_status(&weak, &error.to_string());
                 return;
             }
-            state_for_apply.borrow_mut().saved = settings;
+            let mut state = state_for_apply.borrow_mut();
+            state.saved = settings;
+            state.measurement = None;
+            if let Some(window) = weak.upgrade() {
+                window.set_measurement_active(false);
+                window.set_measurement_summary(
+                    "Measurement stopped because settings changed.".into(),
+                );
+                window.set_measurement_recommendation("".into());
+            }
             set_status(&weak, "Settings applied.");
         });
 
@@ -129,6 +140,42 @@ mod windows_app {
                 update_window(&window, &state.working);
                 window
                     .set_status("Default mappings restored. Select Apply to activate them.".into());
+            }
+        });
+
+        let weak = window.as_weak();
+        let input_for_measurement = Rc::clone(&input);
+        let state_for_measurement = Rc::clone(&state);
+        window.on_toggle_measurement(move || {
+            let mut state = state_for_measurement.borrow_mut();
+            if state.measurement.is_some() {
+                match input_for_measurement.stop_measurement() {
+                    Ok(()) => {
+                        state.measurement = None;
+                        if let Some(window) = weak.upgrade() {
+                            window.set_measurement_active(false);
+                            window.set_measurement_summary(
+                                "Measurement stopped. Results were kept only for this session."
+                                    .into(),
+                            );
+                        }
+                    }
+                    Err(error) => set_status(&weak, &error.to_string()),
+                }
+            } else {
+                match input_for_measurement.start_measurement() {
+                    Ok(receiver) => {
+                        state.measurement = Some(receiver);
+                        if let Some(window) = weak.upgrade() {
+                            window.set_measurement_active(true);
+                            window.set_measurement_summary(
+                                "Measuring configured physical key transitions...".into(),
+                            );
+                            window.set_measurement_recommendation("".into());
+                        }
+                    }
+                    Err(error) => set_status(&weak, &error.to_string()),
+                }
             }
         });
     }
@@ -160,6 +207,42 @@ mod windows_app {
                     set_key_name(&window, key, &captured.name);
                     window.set_status("Select Apply to activate the new mapping.".into());
                 }
+            }
+
+            let update = {
+                let state = state.borrow();
+                state
+                    .measurement
+                    .as_ref()
+                    .and_then(|receiver| receiver.try_iter().last())
+            };
+            if let Some(update) = update
+                && let Some(window) = weak.upgrade()
+            {
+                let statistics = update.statistics;
+                window.set_measurement_summary(
+                    format!(
+                        "{} samples: {} transitions, {} overlaps.",
+                        statistics.sample_count(),
+                        statistics.transition_count(),
+                        statistics.overlap_count()
+                    )
+                    .into(),
+                );
+                let transition = update
+                    .recommendation
+                    .transition_micros
+                    .map(format_millis)
+                    .unwrap_or_else(|| "—".into());
+                let overlap = update
+                    .recommendation
+                    .overlap_micros
+                    .map(format_millis)
+                    .unwrap_or_else(|| "—".into());
+                window.set_measurement_recommendation(
+                    format!("Suggested averages — transition: {transition}; overlap: {overlap}.")
+                        .into(),
+                );
             }
         });
         timer
@@ -277,6 +360,9 @@ mod windows_app {
         window.set_overlap_max_ms(settings.timing.overlap_max_ms as i32);
         window.set_overlap_probability(settings.timing.overlap_probability as i32);
         window.set_full_overlap(settings.timing.full_overlap);
+        window.set_measurement_active(false);
+        window.set_measurement_summary("Measurement is off. No samples are stored.".into());
+        window.set_measurement_recommendation("".into());
         window.set_status("".into());
     }
 
@@ -317,6 +403,10 @@ mod windows_app {
             (0x4D, true) => "Right Arrow".into(),
             _ => format!("Scan code 0x{:02X}", key.scan_code),
         }
+    }
+
+    fn format_millis(micros: u64) -> String {
+        format!("{:.1} ms", micros as f64 / 1_000.0)
     }
 }
 

@@ -60,6 +60,8 @@ Antivirus or anti-cheat software may block keyboard hooks or simulated input. Al
 
 LastKey operates entirely offline and never sends your data to the developer or third parties. Configured directional inputs are processed solely in memory and are never logged or stored. For more details, see the [Privacy Policy](PRIVACY.md).
 
+The optional input-timing measurement mode observes only physical edges for the four configured pair keys while it is active. It keeps aggregate transition and overlap results in memory for the active session; it does not write raw samples, key history, or typed text to disk.
+
 ## Build
 
 Open a **Visual Studio developer command prompt** in the project directory.

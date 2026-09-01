@@ -1,9 +1,13 @@
 mod delivery;
 mod key;
+mod measurement;
+mod recommendation;
 mod socd;
 mod timing;
 
 pub use delivery::{DeliveryState, EventDisposition, InputRouter, OutputEmitter};
 pub use key::{Axis, KeyAction, LogicalKey, PhysicalKey};
+pub use measurement::{MeasurementSession, MeasurementStatistics};
+pub use recommendation::{TimingRecommendation, recommend};
 pub use socd::{AxisDecision, SocdState};
 pub use timing::TimingController;

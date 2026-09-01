@@ -23,7 +23,10 @@ use windows::Win32::{
 };
 
 use crate::{
-    core::{EventDisposition, KeyAction, LogicalKey, OutputEmitter, PhysicalKey, TimingController},
+    core::{
+        EventDisposition, KeyAction, LogicalKey, MeasurementSession, MeasurementStatistics,
+        OutputEmitter, PhysicalKey, TimingController, TimingRecommendation, recommend,
+    },
     settings::Settings,
 };
 
@@ -40,6 +43,12 @@ thread_local! {
 pub struct CapturedKey {
     pub physical: PhysicalKey,
     pub name: String,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct MeasurementUpdate {
+    pub statistics: MeasurementStatistics,
+    pub recommendation: TimingRecommendation,
 }
 
 #[derive(Debug)]
@@ -68,6 +77,8 @@ pub struct InputService {
 enum InputCommand {
     Apply(Settings),
     Capture(Sender<CapturedKey>),
+    StartMeasurement(Sender<MeasurementUpdate>),
+    StopMeasurement,
     Stop,
 }
 
@@ -101,6 +112,18 @@ impl InputService {
         let (sender, receiver) = mpsc::channel();
         self.send(InputCommand::Capture(sender))?;
         Ok(receiver)
+    }
+
+    pub fn start_measurement(
+        &self,
+    ) -> std::result::Result<Receiver<MeasurementUpdate>, InputServiceError> {
+        let (sender, receiver) = mpsc::channel();
+        self.send(InputCommand::StartMeasurement(sender))?;
+        Ok(receiver)
+    }
+
+    pub fn stop_measurement(&self) -> std::result::Result<(), InputServiceError> {
+        self.send(InputCommand::StopMeasurement)
     }
 
     pub fn stop(mut self) {
@@ -139,6 +162,8 @@ struct InputEngine {
     timing: TimingController,
     settings: Settings,
     capture_sender: Option<Sender<CapturedKey>>,
+    measurement: Option<MeasurementSession>,
+    measurement_sender: Option<Sender<MeasurementUpdate>>,
     suppress_capture_key: Option<PhysicalKey>,
 }
 
@@ -148,11 +173,18 @@ impl InputEngine {
             timing: TimingController::new(settings.timing.clone()),
             settings,
             capture_sender: None,
+            measurement: None,
+            measurement_sender: None,
             suppress_capture_key: None,
         }
     }
 
-    fn process(&mut self, physical: PhysicalKey, action: KeyAction) -> EventDisposition {
+    fn process(
+        &mut self,
+        physical: PhysicalKey,
+        action: KeyAction,
+        now: Instant,
+    ) -> EventDisposition {
         if self.suppress_capture_key == Some(physical) {
             if action == KeyAction::Up {
                 self.suppress_capture_key = None;
@@ -176,12 +208,19 @@ impl InputEngine {
         let Some(key) = self.settings.logical_key_for(physical) else {
             return EventDisposition::PassThrough;
         };
+        if let Some(session) = self.measurement.as_mut()
+            && let Some(statistics) = session.observe(key, action, now)
+            && let Some(sender) = &self.measurement_sender
+        {
+            let _ = sender.send(MeasurementUpdate {
+                statistics,
+                recommendation: recommend(statistics),
+            });
+        }
         let mut emitter = WindowsEmitter {
             settings: &self.settings,
         };
-        let disposition = self
-            .timing
-            .process(key, action, Instant::now(), &mut emitter);
+        let disposition = self.timing.process(key, action, now, &mut emitter);
         if self.timing.is_enabled() {
             self.update_timer();
         }
@@ -197,6 +236,8 @@ impl InputEngine {
         self.settings = settings;
         self.timing = TimingController::new(self.settings.timing.clone());
         self.capture_sender = None;
+        self.measurement = None;
+        self.measurement_sender = None;
         self.suppress_capture_key = None;
     }
 
@@ -214,6 +255,16 @@ impl InputEngine {
         };
         self.timing.poll(Instant::now(), &mut emitter);
         self.update_timer();
+    }
+
+    fn start_measurement(&mut self, sender: Sender<MeasurementUpdate>) {
+        self.measurement = Some(MeasurementSession::new());
+        self.measurement_sender = Some(sender);
+    }
+
+    fn stop_measurement(&mut self) {
+        self.measurement = None;
+        self.measurement_sender = None;
     }
 
     fn update_timer(&self) {
@@ -329,6 +380,20 @@ fn input_thread(
                             .expect("input engine is initialized")
                             .capture_sender = Some(sender);
                     }),
+                    InputCommand::StartMeasurement(sender) => ENGINE.with(|engine| {
+                        engine
+                            .borrow_mut()
+                            .as_mut()
+                            .expect("input engine is initialized")
+                            .start_measurement(sender);
+                    }),
+                    InputCommand::StopMeasurement => ENGINE.with(|engine| {
+                        engine
+                            .borrow_mut()
+                            .as_mut()
+                            .expect("input engine is initialized")
+                            .stop_measurement();
+                    }),
                     InputCommand::Stop => {
                         keep_running = false;
                         break;
@@ -389,7 +454,7 @@ unsafe extern "system" fn keyboard_proc(code: i32, message: WPARAM, l_param: LPA
             .borrow_mut()
             .as_mut()
             .expect("input engine is initialized")
-            .process(physical, action)
+            .process(physical, action, Instant::now())
     });
     if disposition == EventDisposition::PassThrough {
         unsafe { CallNextHookEx(None, code, message, l_param) }

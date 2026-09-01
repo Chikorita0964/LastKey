@@ -2,7 +2,7 @@ import { Button, CheckBox, HorizontalBox, SpinBox, VerticalBox } from "std-widge
 
 export component MainWindow inherits Window {
     width: 430px;
-    height: 560px;
+    height: 700px;
     title: "LastKey Settings";
 
     in-out property <string> vertical-first: "W";
@@ -16,11 +16,15 @@ export component MainWindow inherits Window {
     in-out property <int> overlap-max-ms: 0;
     in-out property <int> overlap-probability: 0;
     in-out property <bool> full-overlap: false;
+    in-out property <bool> measurement-active: false;
+    in-out property <string> measurement-summary: "Measurement is off. No samples are stored.";
+    in-out property <string> measurement-recommendation: "";
 
     callback capture-key(int);
     callback apply-settings();
     callback cancel-settings();
     callback restore-defaults();
+    callback toggle-measurement();
 
     VerticalBox {
         padding: 20px;
@@ -40,6 +44,12 @@ export component MainWindow inherits Window {
             Text { text: "↕"; vertical-alignment: center; horizontal-alignment: center; }
             Button { text: root.vertical-second; clicked => { root.capture-key(1); } }
         }
+
+        Text { text: "Input Timing Measurement"; font-size: 22px; font-weight: 700; }
+        Text { text: "Measures only configured physical key edges while active. Results stay in memory."; wrap: word-wrap; color: #666; }
+        Button { text: root.measurement-active ? "Stop Measurement" : "Start Measurement"; clicked => { root.toggle-measurement(); } }
+        Text { text: root.measurement-summary; wrap: word-wrap; }
+        Text { text: root.measurement-recommendation; wrap: word-wrap; color: #356; }
 
         Text { text: "Timing"; font-size: 22px; font-weight: 700; }
         Text { text: "0 ms and 0% preserve immediate Last Input Priority."; color: #666; }
