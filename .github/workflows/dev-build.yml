@@ -1,9 +1,6 @@
 name: Dev build
 
 on:
-  push:
-    branches:
-      - dev
   workflow_dispatch:
 
 permissions:
