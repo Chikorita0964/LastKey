@@ -5,10 +5,9 @@ param(
     [string]$Version,
 
     [Parameter(Mandatory)]
-    [string]$Executable,
+    [string]$OutputDirectory,
 
-    [Parameter(Mandatory)]
-    [string]$OutputDirectory
+    [string]$Target = 'x86_64-pc-windows-msvc'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -37,14 +36,20 @@ function Invoke-SdkTool([string]$Tool, [string[]]$Arguments) {
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $template = Join-Path $PSScriptRoot 'AppxManifest.xml.in'
 $assets = Join-Path $PSScriptRoot 'Assets'
-$executablePath = [System.IO.Path]::GetFullPath((Join-Path $projectRoot $Executable))
+$cargo = Get-Command cargo -ErrorAction Stop
+$targetDirectory = Join-Path $projectRoot "target\$Target\release"
+$executablePath = Join-Path $targetDirectory 'lastkey.exe'
 $outputPath = [System.IO.Path]::GetFullPath((Join-Path $projectRoot $OutputDirectory))
 $stagePath = Join-Path $outputPath 'stage'
 $packagePath = Join-Path $outputPath "LastKey-$Version.msix"
 
-if (-not (Test-Path -LiteralPath $executablePath -PathType Leaf)) {
-    throw "Release executable was not found: $executablePath"
+Push-Location $projectRoot
+try {
+    & $cargo.Source build --locked --release --target $Target
+    if ($LASTEXITCODE -ne 0) { throw "cargo build failed with exit code $LASTEXITCODE." }
 }
+finally { Pop-Location }
+if (-not (Test-Path -LiteralPath $executablePath -PathType Leaf)) { throw "Rust release executable was not found: $executablePath" }
 
 # MSIX uses four numeric version components; LastKey's build component stays zero.
 $packageVersion = "$Version.0"
@@ -55,7 +60,11 @@ Remove-Item -LiteralPath $stagePath -Recurse -Force -ErrorAction SilentlyContinu
 Remove-Item -LiteralPath $packagePath -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Path $stagePath | Out-Null
 
-Set-Content -LiteralPath (Join-Path $stagePath 'AppxManifest.xml') -Value $manifest -Encoding utf8NoBOM
+[System.IO.File]::WriteAllText(
+    (Join-Path $stagePath 'AppxManifest.xml'),
+    $manifest,
+    [System.Text.UTF8Encoding]::new($false)
+)
 Copy-Item -LiteralPath $executablePath -Destination (Join-Path $stagePath 'LastKey.exe')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'LICENSE') -Destination (Join-Path $stagePath 'LICENSE.txt')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'LICENSES') -Destination (Join-Path $stagePath 'LICENSES') -Recurse

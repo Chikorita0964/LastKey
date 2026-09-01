@@ -1,0 +1,21 @@
+name: Rust tests
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  rust-tests:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+      - name: Check formatting and Windows tests
+        run: cargo fmt --check; cargo test; cargo clippy --all-targets -- -D warnings
+      - name: Check Linux backend
+        run: cargo check --target x86_64-unknown-linux-gnu --lib

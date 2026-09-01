@@ -44,7 +44,7 @@ Original physical events pass through only when safe, preventing simultaneous op
 
 ## Usage
 
-1. Download from GitHub Releases (or build it from source).
+1. Download the signed MSIX from the Microsoft Store, or the ZIP release from GitHub Releases.
 2. Run the executable. A system tray icon will appear.
 3. Right-click the tray icon to open the menu:
    - **Create desktop shortcut**: Creates a desktop shortcut.
@@ -72,51 +72,35 @@ LastKey operates entirely offline and never sends your data to the developer or 
 
 The optional input-timing measurement mode observes only physical edges for the four configured pair keys while it is active. It keeps aggregate transition and overlap results in memory for the active session; it does not write raw samples, key history, or typed text to disk.
 
-## Build
+## Build and package
 
 Open a **Visual Studio developer command prompt** in the project directory.
 
-### Using the batch script
-
 ```bat
-build.cmd
+cargo build --locked --release --target x86_64-pc-windows-msvc
 ```
 
-Output: `out\LastKey.exe`
+Output: `target\x86_64-pc-windows-msvc\release\lastkey.exe`
 
-### Using CMake directly
+To create and validate an unsigned Store-submission MSIX, install the Windows SDK and run:
 
-```bat
-cmake -G Ninja -S . -B out\cmake-release -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
-cmake --build out\cmake-release
+```powershell
+.\msix\package-msix.ps1 -Version 1.0.0 -OutputDirectory release
+.\msix\validate-msix.ps1 -Package .\release\LastKey-1.0.0.msix -Version 1.0.0
 ```
-Output: `out\cmake-release\LastKey.exe`
+
+The Microsoft Store signs submitted packages. Local MSIX output is intentionally unsigned.
 
 ## Customize
 
-To change the mapping, edit the `kKeys` declaration near the top of `LastKey.cpp`:
-
-```cpp
-constexpr KeySpec kKeys[kKeyCount] = {
-    {0x11, false}, // W
-    {0x1F, false}, // S
-    {0x1E, false}, // A
-    {0x20, false}, // D
-};
-```
-
-Each entry uses a hardware scan code and an extended flag (not a virtual-key code). For arrow keys, set the extended flag to `true` as they are extended keys.
+Use the settings window to choose four unique physical keys, configure transition or overlap timing, and start an in-memory timing measurement session. The active settings are saved locally under `%APPDATA%\LastKey\settings.toml`; raw timing samples and typed text are never persisted.
 
 ## Tests
 
-The table-driven state-transition tests in [`SocdStateTests.cpp`](SocdStateTests.cpp) simulate
-key events and output attempts, including configured success and failure results, without
-requiring a physical keyboard:
-
 ```bat
-cmake -G Ninja -S . -B out\cmake-tests -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON
-cmake --build out\cmake-tests
-ctest --test-dir out\cmake-tests --output-on-failure
+cargo fmt --check
+cargo test
+cargo clippy --all-targets -- -D warnings
 ```
 
 ## Credits and license
