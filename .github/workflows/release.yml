@@ -52,12 +52,16 @@ jobs:
     needs: validate-release-input
     uses: ./.github/workflows/socd-state-tests.yml
 
+  rust-tests:
+    needs: validate-release-input
+    uses: ./.github/workflows/rust-tests.yml
+
   release-form-tests:
     needs: validate-release-input
     uses: ./.github/workflows/release-form-tests.yml
 
   release:
-    needs: [validate-release-input, socd-state-tests, release-form-tests]
+    needs: [validate-release-input, socd-state-tests, rust-tests, release-form-tests]
     runs-on: windows-latest
     permissions:
       contents: write

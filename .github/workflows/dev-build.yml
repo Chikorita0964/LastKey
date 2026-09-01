@@ -1,0 +1,50 @@
+name: Dev build
+
+on:
+  push:
+    branches:
+      - dev
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dev-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust-tests:
+    uses: ./.github/workflows/rust-tests.yml
+
+  build-dev-artifact:
+    needs: rust-tests
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Verify Rust toolchain
+        run: |
+          $minimum = [version]'1.98.0'
+          $actualText = (rustc --version).Split(' ')[1]
+          $actual = [version]$actualText
+          if ($actual -lt $minimum) {
+            throw "Rust $minimum or later is required; found $actual."
+          }
+      - name: Build Rust release binary
+        run: cargo build --release
+      - name: Create test package
+        run: |
+          New-Item -ItemType Directory -Path release/package | Out-Null
+          Copy-Item -LiteralPath LICENSE -Destination release/package/LICENSE.txt
+          Copy-Item -LiteralPath target/release/lastkey.exe -Destination release/package/LastKey.exe
+          Compress-Archive -LiteralPath release/package/LastKey.exe, release/package/LICENSE.txt -DestinationPath release/LastKey-dev.zip
+      - name: Upload test package
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: LastKey-dev
+          path: release/LastKey-dev.zip
+          if-no-files-found: error
+          retention-days: 14
