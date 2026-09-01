@@ -112,9 +112,12 @@ jobs:
       - name: Package release
         run: |
           New-Item -ItemType Directory -Path release/package | Out-Null
+          New-Item -ItemType Directory -Path release/package/LICENSES | Out-Null
           Copy-Item -LiteralPath LICENSE -Destination release/package/LICENSE.txt
+          Copy-Item -LiteralPath LICENSES/MIT.txt -Destination release/package/LICENSES/MIT.txt
+          Copy-Item -LiteralPath NOTICE -Destination release/package/NOTICE.txt
           Copy-Item -LiteralPath out/cmake-release/LastKey.exe -Destination release/package/LastKey.exe
-          Compress-Archive -LiteralPath release/package/LastKey.exe, release/package/LICENSE.txt -DestinationPath "release/LastKey-$env:VERSION.zip"
+          Compress-Archive -LiteralPath release/package/LastKey.exe, release/package/LICENSE.txt, release/package/LICENSES, release/package/NOTICE.txt -DestinationPath "release/LastKey-$env:VERSION.zip"
       - name: Package MSIX
         run: |
           # The Store signs this package after it passes certification.

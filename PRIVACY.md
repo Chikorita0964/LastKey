@@ -2,7 +2,7 @@
 
 Last updated: August 28, 2026
 
-LastKey is a local, open-source Windows system tray application developed and maintained by Chikorita0964. Its source code is available on GitHub under the MIT License.
+LastKey is a local, open-source Windows system tray application developed and maintained by Chikorita0964. Its source code is available on GitHub under the GNU General Public License, version 3 only.
 
 ## Keyboard Input
 
