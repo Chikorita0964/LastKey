@@ -2,6 +2,7 @@
 .vs/
 out/
 build*/
+target/
 *.obj
 *.pdb
 *.res
