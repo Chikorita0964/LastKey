@@ -19,13 +19,16 @@ Using the A/D pair as an example:
 The same rule applies in reverse, and independently to W/S.
 Key repeat does not change priority or generate additional output transitions.
 
-## Timing settings
+## Physical overlap handling
 
-The Rust settings window can add an intentional transition gap or temporary overlap
-for each opposing-key switch. Transition and overlap durations are selected independently
-from their configured minimum and maximum; overlap can instead be selected per switch by
-probability, or forced with **Full overlap**. The defaults (all delays at 0 ms, probability
-0%, Full overlap off) retain the immediate behavior above and do not start scheduler work.
+When opposing physical keys overlap, LastKey normally resolves them into a neutral SOCD
+transition. Enabling **SOCD Transition Delay** applies the configured randomized neutral gap used
+for that resolution. Natural neutral transitions are left unchanged. **Preserve Overlap** becomes
+available only while SOCD Transition Delay is enabled and can retain
+a configured percentage of detected physical overlaps for a randomized **Preserved Overlap
+Duration**; the remaining overlaps still use the SOCD Transition Delay. With preservation
+disabled, LastKey retains its immediate Last Input Priority path while preserving the configured
+timing values for later use.
 
 ## If `SendInput` fails
 
@@ -70,7 +73,7 @@ service restart.
 
 LastKey operates entirely offline and never sends your data to the developer or third parties. Configured directional inputs are processed solely in memory and are never logged or stored. For more details, see the [Privacy Policy](PRIVACY.md).
 
-The optional input-timing measurement mode observes only physical edges for the four configured pair keys while it is active. It keeps aggregate transition and overlap results in memory for the active session; it does not write raw samples, key history, or typed text to disk.
+The optional input-timing measurement mode observes only physical edges for the four configured pair keys while it is active. Timing samples exist only in memory for the active session and are used to calculate transition and overlap distributions. LastKey does not write timing samples, key history, or typed text to disk.
 
 ## Build and package
 
@@ -93,7 +96,7 @@ The Microsoft Store signs submitted packages. Local MSIX output is intentionally
 
 ## Customize
 
-Use the settings window to choose four unique physical keys, configure transition or overlap timing, and start an in-memory timing measurement session. The active settings are saved locally under `%APPDATA%\LastKey\settings.toml`; raw timing samples and typed text are never persisted.
+Use the settings window to choose four unique physical keys, configure transition or overlap timing, and start an in-memory timing measurement session. The active settings are saved as `settings.toml` beside `lastkey.exe`; raw timing samples and typed text are never persisted.
 
 ## Tests
 

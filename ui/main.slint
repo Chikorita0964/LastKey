@@ -1,95 +1,692 @@
-import { Button, CheckBox, HorizontalBox, SpinBox, VerticalBox } from "std-widgets.slint";
+import { Button, CheckBox, HorizontalBox, ScrollView, VerticalBox } from "std-widgets.slint";
+
+component InfoIcon inherits Rectangle {
+    in property <string> help-text;
+    private property <bool> hovered: touch.has-hover;
+    private property <int> tooltip-line-count: max(1, ceil(root.help-text.character-count / 50));
+    private property <length> tooltip-height: 12px + root.tooltip-line-count * 16px;
+    width: 12px;
+    height: 20px;
+    Image {
+        y: 4px;
+        source: root.hovered ? @image-url("info-hover.svg") : @image-url("info.svg");
+        width: 12px;
+        height: 12px;
+        image-fit: contain;
+    }
+    touch := TouchArea {
+        width: 12px;
+        height: 20px;
+        clicked => { tip.show(); }
+    }
+    tip := PopupWindow {
+        x: 18px;
+        y: -8px;
+        width: 310px;
+        height: root.tooltip-height;
+        close-policy: close-on-click-outside;
+
+        Rectangle {
+            width: 310px;
+            height: root.tooltip-height;
+            background: #565c65;
+            border-radius: 6px;
+
+            Text {
+                x: 12px;
+                y: 6px;
+                width: 286px;
+                height: root.tooltip-line-count * 16px;
+                text: root.help-text;
+                color: #ffffff;
+                font-size: 12px;
+                wrap: word-wrap;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
+component StepButton inherits Rectangle {
+    in property <string> symbol;
+    in property <bool> button-enabled: true;
+    callback clicked();
+    width: 28px;
+    height: 28px;
+    border-radius: 3px;
+    background: button-enabled && touch.has-hover ? #dce5ee : transparent;
+
+    Text {
+        width: 28px;
+        height: 28px;
+        text: root.symbol;
+        color: root.button-enabled ? #52657a : #a8adb4;
+        font-size: 16px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    touch := TouchArea {
+        enabled: root.button-enabled;
+        clicked => { root.clicked(); }
+    }
+}
+
+component CompactTextInput inherits Rectangle {
+    in-out property <string> value-text: "0";
+    in property <bool> input-enabled: true;
+    width: 80px;
+    height: 28px;
+    clip: true;
+    background: input-enabled ? #fff : #f1f3f5;
+    border-width: input.has-focus ? 2px : 1px;
+    border-color: input.has-focus ? #0f62fe : #c6cbd1;
+    border-radius: 3px;
+
+    input := TextInput {
+        x: 9px;
+        width: 62px;
+        height: 28px;
+        text <=> root.value-text;
+        enabled: root.input-enabled;
+        single-line: true;
+        horizontal-alignment: left;
+        vertical-alignment: center;
+        color: root.input-enabled ? #20242a : #8a8f98;
+    }
+}
+
+component NumericInput inherits Rectangle {
+    in-out property <string> value-text: "0.0";
+    in property <bool> input-enabled: true;
+    callback adjust(int);
+    width: 140px;
+    height: 32px;
+
+    CompactTextInput {
+        x: 0px;
+        y: 2px;
+        value-text <=> root.value-text;
+        input-enabled: root.input-enabled;
+    }
+    StepButton {
+        x: 82px;
+        y: 2px;
+        symbol: "−";
+        button-enabled: root.input-enabled;
+        clicked => { root.adjust(-1); }
+    }
+    StepButton {
+        x: 112px;
+        y: 2px;
+        symbol: "+";
+        button-enabled: root.input-enabled;
+        clicked => { root.adjust(1); }
+    }
+}
+
+component NumericFieldRow inherits Rectangle {
+    in property <string> label;
+    in-out property <string> value-text: "0.0";
+    in property <bool> input-enabled: true;
+    in property <length> row-indent: 0px;
+    callback adjust(int);
+    height: 32px;
+
+    Text {
+        x: root.row-indent;
+        y: 0px;
+        text: root.label;
+        width: 64px;
+        height: 32px;
+        color: root.input-enabled ? #20242a : #8a8f98;
+        vertical-alignment: center;
+    }
+    NumericInput {
+        x: root.row-indent + 72px;
+        y: 0px;
+        value-text <=> root.value-text;
+        input-enabled: root.input-enabled;
+        adjust(delta) => { root.adjust(delta); }
+    }
+}
+
+component SectionHeader inherits HorizontalBox {
+    in property <string> title;
+    in property <string> help-text;
+    spacing: 6px;
+    height: 20px;
+    Text { text: root.title; height: 20px; font-size: 16px; font-weight: 700; vertical-alignment: center; }
+    InfoIcon { help-text: root.help-text; }
+    Rectangle { horizontal-stretch: 1; }
+}
+
+component OptionHeader inherits HorizontalBox {
+    in property <string> title;
+    in property <string> help-text;
+    in property <bool> option-enabled: true;
+    spacing: 6px;
+    height: 20px;
+    Text {
+        height: 20px;
+        text: root.title;
+        color: root.option-enabled ? #20242a : #8a8f98;
+        font-weight: 600;
+        vertical-alignment: center;
+    }
+    InfoIcon { help-text: root.help-text; opacity: root.option-enabled ? 1 : 0.5; }
+    Rectangle { horizontal-stretch: 1; }
+}
+
+component CheckOption inherits HorizontalBox {
+    in property <string> title;
+    in property <string> help-text;
+    in property <bool> option-enabled: true;
+    in-out property <bool> checked: false;
+    callback toggled(bool);
+    width: 400px;
+    height: 32px;
+    spacing: 6px;
+
+    option-check := CheckBox {
+        height: 32px;
+        horizontal-stretch: 0;
+        text: root.title;
+        font-weight: 600;
+        enabled: root.option-enabled;
+        checked <=> root.checked;
+        toggled => { root.toggled(option-check.checked); }
+    }
+    Rectangle {
+        width: 12px;
+        height: 32px;
+
+        InfoIcon {
+            x: 0px;
+            y: 6px;
+            width: 12px;
+            height: 20px;
+            help-text: root.help-text;
+            opacity: root.option-enabled ? 1 : 0.5;
+        }
+    }
+    Rectangle { horizontal-stretch: 1; }
+}
 
 export component MainWindow inherits Window {
-    width: 430px;
-    height: 700px;
-    title: "LastKey Settings";
+    width: 420px;
+    height: 720px;
+    title: "LastKey Settings [Temporary Key Logging Enabled]";
 
     in-out property <string> vertical-first: "W";
     in-out property <string> vertical-second: "S";
     in-out property <string> horizontal-first: "A";
     in-out property <string> horizontal-second: "D";
-    in-out property <string> status: "";
-    in-out property <int> transition-min-ms: 0;
-    in-out property <int> transition-max-ms: 0;
-    in-out property <int> overlap-min-ms: 0;
-    in-out property <int> overlap-max-ms: 0;
-    in-out property <int> overlap-probability: 0;
-    in-out property <bool> full-overlap: false;
-    in-out property <bool> measurement-active: false;
-    in-out property <string> measurement-summary: "Measurement is off. No samples are stored.";
-    in-out property <string> measurement-recommendation: "";
+    in-out property <string> mapping-status: "";
+    in-out property <string> action-status: "";
+    in-out property <string> socd-transition-min-ms: "2.0";
+    in-out property <string> socd-transition-max-ms: "4.0";
+    in-out property <bool> socd-transition-delay-enabled: false;
+    in-out property <bool> preserve-overlap: false;
+    in-out property <string> overlap-preservation-rate: "0";
+    in-out property <string> configured-overlap-preservation-rate: "50";
+    in-out property <string> preserved-overlap-min-ms: "2.0";
+    in-out property <string> preserved-overlap-max-ms: "6.0";
+    in-out property <string> debug-log-path: "";
+    in-out property <string> debug-process-id: "";
 
     callback capture-key(int);
     callback apply-settings();
     callback cancel-settings();
     callback restore-defaults();
+    callback restore-key-mappings();
+    callback open-measurement();
+    callback adjust-number(int, int);
+    callback toggle-socd-transition-delay(bool);
+    callback toggle-preserve-overlap(bool);
+
+    VerticalBox {
+        padding: 0px;
+        spacing: 10px;
+
+        ScrollView {
+            vertical-stretch: 1;
+            horizontal-stretch: 1;
+            mouse-drag-pan-enabled: true;
+
+            VerticalBox {
+                width: 400px;
+                padding-right: 10px;
+                spacing: 0px;
+
+                Rectangle {
+                    width: 400px;
+                    height: 30px;
+
+                    SectionHeader {
+                        x: 0px;
+                        y: 0px;
+                        width: 400px;
+                        height: 20px;
+                        title: "Key Mapping";
+                        help-text: "Choose four unique physical keyboard keys. Select a mapping button, then press the replacement key.";
+                    }
+                }
+                Rectangle {
+                    width: 400px;
+                    height: 70px;
+
+                    Text {
+                        x: 15px;
+                        y: 5px;
+                        width: 385px;
+                        height: 20px;
+                        text: "Vertical";
+                        font-size: 14px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                    HorizontalBox {
+                        x: 0px;
+                        y: 20px;
+                        width: 400px;
+                        height: 32px;
+                        padding-left: 15px;
+                        spacing: 5px;
+                        Button { text: root.vertical-first; width: 108px; height: 32px; clicked => { root.capture-key(0); } }
+                        Text { text: "↕"; width: 24px; height: 32px; font-size: 16px; vertical-alignment: center; horizontal-alignment: center; }
+                        Button { text: root.vertical-second; width: 108px; height: 32px; clicked => { root.capture-key(1); } }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+                }
+                Rectangle {
+                    width: 400px;
+                    height: 70px;
+
+                    Text {
+                        x: 15px;
+                        y: 5px;
+                        width: 385px;
+                        height: 20px;
+                        text: "Horizontal";
+                        font-size: 14px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                    HorizontalBox {
+                        x: 0px;
+                        y: 20px;
+                        width: 400px;
+                        height: 32px;
+                        padding-left: 15px;
+                        spacing: 5px;
+                        Button { text: root.horizontal-first; width: 108px; height: 32px; clicked => { root.capture-key(2); } }
+                        Text { text: "↔"; width: 24px; height: 32px; font-size: 16px; vertical-alignment: center; horizontal-alignment: center; }
+                        Button { text: root.horizontal-second; width: 108px; height: 32px; clicked => { root.capture-key(3); } }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+                }
+                Rectangle {
+                    width: 400px;
+                    height: root.mapping-status == "" ? 5px : 20px;
+                    visible: root.mapping-status != "";
+
+                    Text {
+                        x: 0px;
+                        y: 0px;
+                        width: 400px;
+                        height: 20px;
+                        text: root.mapping-status;
+                        color: #52657a;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+                }
+                Rectangle {
+                    width: 400px;
+                    height: 50px;
+
+                    Button {
+                        x: 0px;
+                        y: 0px;
+                        text: "Restore Key Mappings";
+                        width: 150px;
+                        height: 32px;
+                        clicked => { root.restore-key-mappings(); }
+                    }
+                }
+
+                Rectangle {
+                    width: 400px;
+                    height: 10px;
+
+                    Rectangle { x: 0px; y: 0px; width: 390px; height: 2px; background: #dde3e9; }
+                }
+
+                Rectangle {
+                    width: 400px;
+                    height: 30px;
+
+                    SectionHeader {
+                        x: 0px;
+                        y: 0px;
+                        width: 400px;
+                        height: 20px;
+                        title: "Physical Overlap Handling";
+                        help-text: "Controls how LastKey resolves physical overlap between opposing keys. Natural neutral transitions are not changed.";
+                    }
+                }
+                Rectangle {
+                    width: 400px;
+                    height: 126px;
+
+                    CheckOption {
+                        x: 0px;
+                        y: 0px;
+                        width: 400px;
+                        height: 32px;
+                        title: "SOCD Transition Delay";
+                        help-text: "Enables timed handling of physical overlaps. When disabled, overlaps are resolved immediately and overlap preservation is unavailable.";
+                        checked <=> root.socd-transition-delay-enabled;
+                        toggled(enabled) => { root.toggle-socd-transition-delay(enabled); }
+                    }
+                    NumericFieldRow {
+                        x: 0px;
+                        y: 46px;
+                        width: 400px;
+                        height: 32px;
+                        row-indent: 24px;
+                        label: "Min(ms)";
+                        value-text <=> root.socd-transition-min-ms;
+                        input-enabled: root.socd-transition-delay-enabled;
+                        adjust(delta) => { root.adjust-number(0, delta); }
+                    }
+                    NumericFieldRow {
+                        x: 0px;
+                        y: 86px;
+                        width: 400px;
+                        height: 32px;
+                        row-indent: 24px;
+                        label: "Max(ms)";
+                        value-text <=> root.socd-transition-max-ms;
+                        input-enabled: root.socd-transition-delay-enabled;
+                        adjust(delta) => { root.adjust-number(1, delta); }
+                    }
+                }
+                Rectangle {
+                    width: 400px;
+                    height: 40px;
+
+                    CheckOption {
+                        x: 0px;
+                        y: 0px;
+                        width: 400px;
+                        height: 32px;
+                        title: "Preserve Overlap";
+                        help-text: "Allows detected physical overlaps to remain overlaps instead of always converting them into SOCD transitions. Enable this option to configure the preservation rate and duration.";
+                        option-enabled: root.socd-transition-delay-enabled;
+                        checked <=> root.preserve-overlap;
+                        toggled(enabled) => { root.toggle-preserve-overlap(enabled); }
+                    }
+                }
+                Rectangle {
+                    width: 400px;
+                    height: 80px;
+
+                    OptionHeader {
+                        x: 0px;
+                        y: 0px;
+                        width: 400px;
+                        height: 20px;
+                        title: "Overlap Preservation Rate";
+                        help-text: "Sets the percentage of detected physical overlaps that LastKey preserves. The remaining overlaps are converted using the SOCD Transition Delay.";
+                        option-enabled: root.socd-transition-delay-enabled && root.preserve-overlap;
+                    }
+                    NumericFieldRow {
+                        x: 0px;
+                        y: 40px;
+                        width: 400px;
+                        height: 32px;
+                        row-indent: 24px;
+                        label: "Rate(%)";
+                        value-text <=> root.overlap-preservation-rate;
+                        input-enabled: root.socd-transition-delay-enabled && root.preserve-overlap;
+                        adjust(delta) => { root.adjust-number(2, delta); }
+                    }
+                }
+                Rectangle {
+                    width: 400px;
+                    height: 120px;
+
+                    OptionHeader {
+                        x: 0px;
+                        y: 0px;
+                        width: 400px;
+                        height: 20px;
+                        title: "Preserved Overlap Duration";
+                        help-text: "Sets the randomized duration for each preserved overlap in 0.1 ms increments. LastKey chooses a value between Min and Max.";
+                        option-enabled: root.socd-transition-delay-enabled && root.preserve-overlap;
+                    }
+                    NumericFieldRow {
+                        x: 0px;
+                        y: 40px;
+                        width: 400px;
+                        height: 32px;
+                        row-indent: 24px;
+                        label: "Min(ms)";
+                        value-text <=> root.preserved-overlap-min-ms;
+                        input-enabled: root.socd-transition-delay-enabled && root.preserve-overlap;
+                        adjust(delta) => { root.adjust-number(3, delta); }
+                    }
+                    NumericFieldRow {
+                        x: 0px;
+                        y: 80px;
+                        width: 400px;
+                        height: 32px;
+                        row-indent: 24px;
+                        label: "Max(ms)";
+                        value-text <=> root.preserved-overlap-max-ms;
+                        input-enabled: root.socd-transition-delay-enabled && root.preserve-overlap;
+                        adjust(delta) => { root.adjust-number(4, delta); }
+                    }
+                }
+
+                Rectangle {
+                    width: 400px;
+                    height: 18px;
+
+                    Rectangle { x: 0px; y: 8px; width: 390px; height: 2px; background: #dde3e9; }
+                }
+
+                Rectangle {
+                    width: 400px;
+                    height: 80px;
+
+                    SectionHeader {
+                        x: 0px;
+                        y: 0px;
+                        width: 400px;
+                        height: 20px;
+                        title: "Input Timing Measurement";
+                        help-text: "Open a separate measurement window to start, stop, and review live and final transition and overlap timing results.";
+                    }
+                    Button {
+                        x: 0px;
+                        y: 40px;
+                        width: 200px;
+                        height: 32px;
+                        text: "Open Input Timing Measurement";
+                        clicked => { root.open-measurement(); }
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            height: root.action-status == "" ? 0px : 12px;
+            visible: root.action-status != "";
+
+            Text {
+                x: 16px;
+                y: 0px;
+                width: 388px;
+                height: 24px;
+                text: root.action-status;
+                color: #356;
+                font-size: 12px;
+                wrap: word-wrap;
+                vertical-alignment: center;
+            }
+        }
+        HorizontalBox {
+            spacing: 8px;
+            Button { text: "Restore All Defaults"; width: 148px; clicked => { root.restore-defaults(); } }
+            Rectangle { horizontal-stretch: 1; }
+            Button { text: "Revert"; width: 88px; clicked => { root.cancel-settings(); } }
+            Button { text: "Apply"; width: 88px; primary: true; clicked => { root.apply-settings(); } }
+        }
+    }
+}
+
+export component ErrorWindow inherits Window {
+    width: 460px;
+    height: 220px;
+    title: "LastKey Error";
+    in-out property <string> error-title: "LastKey Error";
+    in-out property <string> error-message: "";
+    callback dismiss-error();
+
+    VerticalBox {
+        padding: 20px;
+        spacing: 14px;
+        Text { text: root.error-title; font-size: 18px; font-weight: 700; }
+        Text { text: root.error-message; color: #4a4f57; wrap: word-wrap; vertical-stretch: 1; }
+        HorizontalBox {
+            Rectangle { horizontal-stretch: 1; }
+            Button { text: "Close"; width: 88px; primary: true; clicked => { root.dismiss-error(); } }
+        }
+    }
+}
+
+export component MeasurementWindow inherits Window {
+    width: 780px;
+    height: 620px;
+    title: "LastKey Input Timing Results";
+
+    in-out property <bool> measurement-active: false;
+    in-out property <string> status: "Measurement has not started.";
+    in-out property <int> edge-count: 0;
+    in-out property <int> sample-count: 0;
+    in-out property <int> near-simultaneous-count: 0;
+    in-out property <int> transition-count: 0;
+    in-out property <string> transition-median: "—";
+    in-out property <string> transition-p10: "—";
+    in-out property <string> transition-p90: "—";
+    in-out property <string> transition-minimum: "—";
+    in-out property <string> transition-maximum: "—";
+    in-out property <int> overlap-count: 0;
+    in-out property <string> overlap-median: "—";
+    in-out property <string> overlap-p10: "—";
+    in-out property <string> overlap-p90: "—";
+    in-out property <string> overlap-minimum: "—";
+    in-out property <string> overlap-maximum: "—";
+    in-out property <string> observed-overlap-frequency: "—";
+    in-out property <string> near-simultaneous-frequency: "—";
+    in-out property <string> suggested-transition-range: "Collect 10 neutral transition samples.";
+    in-out property <string> suggested-overlap-range: "Collect 10 physical overlap samples.";
     callback toggle-measurement();
 
     VerticalBox {
         padding: 20px;
         spacing: 12px;
-
-        Text {
-            text: "Key Mapping";
-            font-size: 22px;
-            font-weight: 700;
+        SectionHeader {
+            title: "Input Timing Measurement";
+            help-text: "Measures the currently applied opposing key mappings and reports transition and overlap timing while measurement is active.";
         }
-        Text { text: "Choose four unique physical keyboard keys."; color: #666; }
-
-        Text { text: "Vertical"; font-weight: 600; }
+        Text { text: root.status; color: root.measurement-active ? #356 : #666; }
         HorizontalBox {
-            spacing: 8px;
-            Button { text: root.vertical-first; clicked => { root.capture-key(0); } }
-            Text { text: "↕"; vertical-alignment: center; horizontal-alignment: center; }
-            Button { text: root.vertical-second; clicked => { root.capture-key(1); } }
-        }
-
-        Text { text: "Input Timing Measurement"; font-size: 22px; font-weight: 700; }
-        Text { text: "Measures only configured physical key edges while active. Results stay in memory."; wrap: word-wrap; color: #666; }
-        Button { text: root.measurement-active ? "Stop Measurement" : "Start Measurement"; clicked => { root.toggle-measurement(); } }
-        Text { text: root.measurement-summary; wrap: word-wrap; }
-        Text { text: root.measurement-recommendation; wrap: word-wrap; color: #356; }
-
-        Text { text: "Timing"; font-size: 22px; font-weight: 700; }
-        Text { text: "0 ms and 0% preserve immediate Last Input Priority."; color: #666; }
-        HorizontalBox {
-            spacing: 8px;
-            Text { text: "Transition (ms)"; vertical-alignment: center; }
-            SpinBox { value <=> root.transition-min-ms; minimum: 0; maximum: 1000; }
-            Text { text: "to"; vertical-alignment: center; }
-            SpinBox { value <=> root.transition-max-ms; minimum: 0; maximum: 1000; }
-        }
-        HorizontalBox {
-            spacing: 8px;
-            Text { text: "Overlap (ms)"; vertical-alignment: center; }
-            SpinBox { value <=> root.overlap-min-ms; minimum: 0; maximum: 1000; }
-            Text { text: "to"; vertical-alignment: center; }
-            SpinBox { value <=> root.overlap-max-ms; minimum: 0; maximum: 1000; }
-        }
-        HorizontalBox {
-            spacing: 8px;
-            Text { text: "Overlap probability (%)"; vertical-alignment: center; }
-            SpinBox { value <=> root.overlap-probability; minimum: 0; maximum: 100; }
-            CheckBox { text: "Full overlap"; checked <=> root.full-overlap; }
-        }
-
-        Text { text: "Horizontal"; font-weight: 600; }
-        HorizontalBox {
-            spacing: 8px;
-            Button { text: root.horizontal-first; clicked => { root.capture-key(2); } }
-            Text { text: "↔"; vertical-alignment: center; horizontal-alignment: center; }
-            Button { text: root.horizontal-second; clicked => { root.capture-key(3); } }
-        }
-
-        Text { text: root.status; color: #a33; }
-
-        HorizontalBox {
-            spacing: 8px;
-            Button { text: "Restore Defaults"; clicked => { root.restore-defaults(); } }
+            Button {
+                text: root.measurement-active ? "Stop Measurement" : "Start Measurement";
+                width: 170px;
+                clicked => { root.toggle-measurement(); }
+            }
             Rectangle { horizontal-stretch: 1; }
-            Button { text: "Cancel"; clicked => { root.cancel-settings(); } }
-            Button { text: "Apply"; primary: true; clicked => { root.apply-settings(); } }
         }
+        Text {
+            text: "Measurement records raw physical input while the SOCD filter is bypassed. Configured delay values do not affect these results.";
+            wrap: word-wrap;
+            color: #666;
+        }
+        SectionHeader {
+            title: "Physical Input Profile";
+            help-text: "Neutral Transition Gap is the time between releasing one opposing key and pressing the other. Physical Overlap Duration is the time both opposing keys are physically held. Paired edges less than 1 ms apart are classified separately as near-simultaneous because keyboard scanning or OS event batching cannot reliably determine their intended order.";
+        }
+        Text {
+            text: root.edge-count + " physical key edges · " + root.sample-count + " valid paired samples";
+            font-weight: 600;
+        }
+        Text {
+            text: "Physical overlap: " + root.observed-overlap-frequency + " · Near-simultaneous (<1 ms): " + root.near-simultaneous-frequency;
+            color: #52657a;
+        }
+        HorizontalBox {
+            spacing: 8px;
+            Text { text: "Input pattern"; width: 135px; font-weight: 700; }
+            Text { text: "Count"; width: 60px; font-weight: 700; horizontal-alignment: center; }
+            Text { text: "Median"; width: 90px; font-weight: 700; horizontal-alignment: center; }
+            Text { text: "P10"; width: 90px; font-weight: 700; horizontal-alignment: center; }
+            Text { text: "P90"; width: 90px; font-weight: 700; horizontal-alignment: center; }
+            Text { text: "Minimum"; width: 90px; font-weight: 700; horizontal-alignment: center; }
+            Text { text: "Maximum"; width: 90px; font-weight: 700; horizontal-alignment: center; }
+        }
+        Rectangle { height: 1px; background: #ddd; }
+        HorizontalBox {
+            spacing: 8px;
+            Text { text: "Neutral transition"; width: 135px; font-weight: 600; }
+            Text { text: root.transition-count; width: 60px; horizontal-alignment: center; }
+            Text { text: root.transition-median; width: 90px; horizontal-alignment: center; }
+            Text { text: root.transition-p10; width: 90px; horizontal-alignment: center; }
+            Text { text: root.transition-p90; width: 90px; horizontal-alignment: center; }
+            Text { text: root.transition-minimum; width: 90px; horizontal-alignment: center; }
+            Text { text: root.transition-maximum; width: 90px; horizontal-alignment: center; }
+        }
+        HorizontalBox {
+            spacing: 8px;
+            Text { text: "Physical overlap"; width: 135px; font-weight: 600; }
+            Text { text: root.overlap-count; width: 60px; horizontal-alignment: center; }
+            Text { text: root.overlap-median; width: 90px; horizontal-alignment: center; }
+            Text { text: root.overlap-p10; width: 90px; horizontal-alignment: center; }
+            Text { text: root.overlap-p90; width: 90px; horizontal-alignment: center; }
+            Text { text: root.overlap-minimum; width: 90px; horizontal-alignment: center; }
+            Text { text: root.overlap-maximum; width: 90px; horizontal-alignment: center; }
+        }
+        HorizontalBox {
+            spacing: 8px;
+            Text { text: "Near-simultaneous"; width: 135px; font-weight: 600; }
+            Text { text: root.near-simultaneous-count; width: 60px; horizontal-alignment: center; }
+            Text { text: "<1 ms"; width: 90px; horizontal-alignment: center; }
+            Text { text: "—"; width: 90px; horizontal-alignment: center; }
+            Text { text: "—"; width: 90px; horizontal-alignment: center; }
+            Text { text: "—"; width: 90px; horizontal-alignment: center; }
+            Text { text: "—"; width: 90px; horizontal-alignment: center; }
+        }
+        Rectangle { height: 1px; background: #ddd; }
+        SectionHeader {
+            title: "Suggested SOCD Settings";
+            help-text: "Suggestions use P10 for Min and the median (P50) for Max, rounded to 0.1 ms and kept strictly below P90. Near-simultaneous samples below 1 ms are excluded. At least 10 classified samples of each input pattern are required.";
+        }
+        HorizontalBox {
+            Text { text: "SOCD Transition Delay"; width: 230px; font-weight: 600; }
+            Text { text: root.suggested-transition-range; color: #356; }
+        }
+        HorizontalBox {
+            Text { text: "Preserved Overlap Duration"; width: 230px; font-weight: 600; }
+            Text { text: root.suggested-overlap-range; color: #356; }
+        }
+        Text {
+            text: "Suggested ranges use the user's fast P10 timing through the typical P50 timing after excluding near-simultaneous samples. Actual output may end earlier when another physical input cancels pending work.";
+            wrap: word-wrap;
+            color: #666;
+        }
+        Text { text: "Both configured axes and directions are combined because the current SOCD timing settings are global."; color: #666; wrap: word-wrap; }
     }
 }

@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use lastkey::core::{KeyAction, LogicalKey, MeasurementSession, recommend};
+use lastkey::core::{KeyAction, LogicalKey, MeasurementSession, RecommendedTimingRange, recommend};
 
 #[test]
 fn measures_a_positive_neutral_transition_from_physical_edges() {
@@ -29,6 +29,13 @@ fn measures_a_positive_neutral_transition_from_physical_edges() {
     assert_eq!(statistics.transition_count(), 1);
     assert_eq!(statistics.overlap_count(), 0);
     assert_eq!(statistics.average_transition_micros(), Some(5_000));
+    assert_eq!(statistics.transition_min_micros(), Some(5_000));
+    assert_eq!(statistics.transition_max_micros(), Some(5_000));
+    assert_eq!(statistics.transition_latest_micros(), Some(5_000));
+    assert_eq!(statistics.transition_p10_micros(), Some(5_000));
+    assert_eq!(statistics.transition_median_micros(), Some(5_000));
+    assert_eq!(statistics.transition_p90_micros(), Some(5_000));
+    assert_eq!(statistics.overlap_min_micros(), None);
 }
 
 #[test]
@@ -52,7 +59,194 @@ fn measures_a_negative_overlap_from_physical_edges() {
         )
         .expect("overlap sample");
     assert_eq!(statistics.average_overlap_micros(), Some(-6_000));
-    assert_eq!(recommend(statistics).overlap_micros, Some(6_000));
+    assert_eq!(statistics.overlap_min_micros(), Some(6_000));
+    assert_eq!(statistics.overlap_max_micros(), Some(6_000));
+    assert_eq!(statistics.overlap_latest_micros(), Some(6_000));
+    assert_eq!(statistics.overlap_p10_micros(), Some(6_000));
+    assert_eq!(statistics.overlap_median_micros(), Some(6_000));
+    assert_eq!(statistics.overlap_p90_micros(), Some(6_000));
+    assert_eq!(recommend(statistics).preserved_overlap, None);
+}
+
+#[test]
+fn separates_near_simultaneous_edges_from_timing_distributions() {
+    let start = Instant::now();
+    let mut session = MeasurementSession::new();
+    session.observe(LogicalKey::HorizontalFirst, KeyAction::Down, start);
+    session.observe(
+        LogicalKey::HorizontalFirst,
+        KeyAction::Up,
+        start + Duration::from_millis(10),
+    );
+    let statistics = session
+        .observe(
+            LogicalKey::HorizontalSecond,
+            KeyAction::Down,
+            start + Duration::from_micros(10_999),
+        )
+        .expect("near-simultaneous sample");
+
+    assert_eq!(statistics.sample_count(), 1);
+    assert_eq!(statistics.near_simultaneous_count(), 1);
+    assert_eq!(statistics.transition_count(), 0);
+    assert_eq!(statistics.overlap_count(), 0);
+    assert_eq!(statistics.transition_min_micros(), None);
+    assert_eq!(recommend(statistics).socd_transition, None);
+}
+
+#[test]
+fn tracks_minimum_maximum_and_latest_values_for_each_sample_type() {
+    let start = Instant::now();
+    let mut session = MeasurementSession::new();
+
+    session.observe(LogicalKey::HorizontalFirst, KeyAction::Down, start);
+    session.observe(
+        LogicalKey::HorizontalFirst,
+        KeyAction::Up,
+        start + Duration::from_millis(10),
+    );
+    session.observe(
+        LogicalKey::HorizontalSecond,
+        KeyAction::Down,
+        start + Duration::from_millis(15),
+    );
+    session.observe(
+        LogicalKey::HorizontalSecond,
+        KeyAction::Up,
+        start + Duration::from_millis(20),
+    );
+    session.observe(
+        LogicalKey::HorizontalFirst,
+        KeyAction::Down,
+        start + Duration::from_millis(28),
+    );
+
+    session.observe(
+        LogicalKey::VerticalFirst,
+        KeyAction::Down,
+        start + Duration::from_millis(40),
+    );
+    session.observe(
+        LogicalKey::VerticalSecond,
+        KeyAction::Down,
+        start + Duration::from_millis(44),
+    );
+    session.observe(
+        LogicalKey::VerticalFirst,
+        KeyAction::Up,
+        start + Duration::from_millis(50),
+    );
+    session.observe(
+        LogicalKey::VerticalFirst,
+        KeyAction::Down,
+        start + Duration::from_millis(60),
+    );
+    session.observe(
+        LogicalKey::VerticalSecond,
+        KeyAction::Up,
+        start + Duration::from_millis(63),
+    );
+
+    let statistics = session.statistics();
+    assert_eq!(statistics.transition_min_micros(), Some(5_000));
+    assert_eq!(statistics.transition_max_micros(), Some(8_000));
+    assert_eq!(statistics.transition_latest_micros(), Some(8_000));
+    assert_eq!(statistics.transition_p10_micros(), Some(5_300));
+    assert_eq!(statistics.transition_median_micros(), Some(6_500));
+    assert_eq!(statistics.transition_p90_micros(), Some(7_700));
+    assert_eq!(statistics.overlap_min_micros(), Some(3_000));
+    assert_eq!(statistics.overlap_max_micros(), Some(6_000));
+    assert_eq!(statistics.overlap_latest_micros(), Some(3_000));
+    assert_eq!(statistics.overlap_p10_micros(), Some(3_300));
+    assert_eq!(statistics.overlap_median_micros(), Some(4_500));
+    assert_eq!(statistics.overlap_p90_micros(), Some(5_700));
+}
+
+#[test]
+fn recommends_p10_to_median_after_ten_transition_samples() {
+    let start = Instant::now();
+    let mut session = MeasurementSession::new();
+    let mut elapsed = Duration::ZERO;
+    let mut current = LogicalKey::HorizontalFirst;
+    session.observe(current, KeyAction::Down, start);
+
+    for gap_ms in (10..=100).step_by(10) {
+        elapsed += Duration::from_millis(1);
+        session.observe(current, KeyAction::Up, start + elapsed);
+        elapsed += Duration::from_millis(gap_ms);
+        current = if current == LogicalKey::HorizontalFirst {
+            LogicalKey::HorizontalSecond
+        } else {
+            LogicalKey::HorizontalFirst
+        };
+        session.observe(current, KeyAction::Down, start + elapsed);
+    }
+
+    let recommendation = recommend(session.statistics());
+    assert_eq!(
+        recommendation.socd_transition,
+        Some(RecommendedTimingRange {
+            min_micros: 19_000,
+            max_micros: 55_000,
+        })
+    );
+    assert_eq!(recommendation.preserved_overlap, None);
+}
+
+#[test]
+fn rounds_recommended_ranges_to_the_nearest_tenth_millisecond() {
+    let start = Instant::now();
+    let mut session = MeasurementSession::new();
+    let mut elapsed = Duration::ZERO;
+    let mut current = LogicalKey::HorizontalFirst;
+    session.observe(current, KeyAction::Down, start);
+
+    for _ in 0..10 {
+        elapsed += Duration::from_millis(1);
+        session.observe(current, KeyAction::Up, start + elapsed);
+        elapsed += Duration::from_micros(1_499);
+        current = if current == LogicalKey::HorizontalFirst {
+            LogicalKey::HorizontalSecond
+        } else {
+            LogicalKey::HorizontalFirst
+        };
+        session.observe(current, KeyAction::Down, start + elapsed);
+    }
+
+    assert_eq!(
+        recommend(session.statistics()).socd_transition,
+        Some(RecommendedTimingRange {
+            min_micros: 1_400,
+            max_micros: 1_400,
+        })
+    );
+}
+
+#[test]
+fn recommends_p10_to_median_after_ten_overlap_samples() {
+    let start = Instant::now();
+    let mut session = MeasurementSession::new();
+    let mut elapsed = Duration::ZERO;
+
+    for overlap_ms in (10..=100).step_by(10) {
+        session.observe(LogicalKey::VerticalFirst, KeyAction::Down, start + elapsed);
+        elapsed += Duration::from_millis(1);
+        session.observe(LogicalKey::VerticalSecond, KeyAction::Down, start + elapsed);
+        elapsed += Duration::from_millis(overlap_ms);
+        session.observe(LogicalKey::VerticalFirst, KeyAction::Up, start + elapsed);
+        elapsed += Duration::from_millis(1);
+        session.observe(LogicalKey::VerticalSecond, KeyAction::Up, start + elapsed);
+        elapsed += Duration::from_millis(1);
+    }
+
+    let recommendation = recommend(session.statistics());
+    assert_eq!(
+        recommendation.preserved_overlap,
+        Some(RecommendedTimingRange {
+            min_micros: 19_000,
+            max_micros: 55_000,
+        })
+    );
 }
 
 #[test]

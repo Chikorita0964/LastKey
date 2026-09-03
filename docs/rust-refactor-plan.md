@@ -10,7 +10,7 @@ LastKey will be rebuilt around a shared Rust core and a Slint configuration UI.
 
 - Preserve Last Input Priority SOCD behavior for the default W/S and A/D mappings.
 - Keep Windows input capture based on `WH_KEYBOARD_LL` and output injection based on `SendInput`.
-- Keep the default 0 ms path direct and independent from delayed scheduling.
+- Keep the default disabled timing path direct and independent from delayed scheduling.
 - Add runtime key mapping, configurable transition and overlap timing, and opt-in input timing measurement.
 - Add Linux support later through `evdev` input and `uinput` output.
 - Retain Windows MSIX and Microsoft Store distribution.
@@ -138,10 +138,10 @@ Default settings preserve the existing user-facing behavior:
 Pair 1: W <-> S
 Pair 2: A <-> D
 
-Transition Delay: 0..0 ms
-Overlap Delay:    0..0 ms
-Overlap Probability: 0%
-Full Overlap Mode: off
+SOCD Transition Delay: off (configured 2.0..4.0 ms)
+Preserve Overlap: off
+Overlap Preservation Rate: 50% configured, 0% effective
+Preserved Overlap Duration: 2.0..6.0 ms
 ```
 
 With these settings, a configured input follows the direct path:
@@ -177,12 +177,20 @@ Persisted settings may include mappings and timing configuration. The persistenc
 
 ## 8. Timing Features
 
-For every opposing-key switch, the controller chooses a mode independently:
+Timing policy is evaluated only when opposing physical keys actually overlap. Natural neutral
+transitions are not delayed or converted into overlaps.
 
-- **Transition:** release the old output, wait for a randomized delay, then press the new output.
-- **Overlap:** press the new output, keep both outputs pressed for a randomized delay, then release the old output.
+- **SOCD Transition:** release the old output, wait for a randomized SOCD Transition Delay,
+  then press the new output.
+- **Preserved Overlap:** press the new output, keep both outputs pressed for a randomized
+  Preserved Overlap Duration, then release the old output.
 
-When Full Overlap Mode is enabled, every opposing-key switch uses Overlap. Otherwise, Overlap Probability determines the independent random choice for each switch. Duration is chosen independently within the applicable minimum and maximum range.
+With SOCD Transition Delay disabled, every detected physical overlap is resolved immediately and
+Preserve Overlap is unavailable. Enabling SOCD Transition Delay activates its configured range
+and makes Preserve Overlap available. With Preserve Overlap enabled, Overlap Preservation Rate
+independently determines which detected physical overlaps are preserved; the remainder use the
+SOCD Transition Delay. A rate of 100% replaces the former Full Overlap option. Disabled features
+retain their configured numeric values so they can be enabled again without re-entering them.
 
 During normal operation and Transition, an axis has at most one actual output held. During an intentional Overlap, an axis may temporarily have both opposing outputs held. This is an explicit feature state, not a general SOCD invariant.
 
@@ -200,7 +208,19 @@ Measurement is an explicit, user-started mode for configured pair keys only.
 - No text history, raw keystroke log, or raw timing samples are written to disk or transmitted.
 - Only user-approved final settings may be persisted.
 
-Measurement pairing rules, near-zero classification, session duration, and recommendation compression remain intentionally open. They will be defined independently from event capture so the recommendation algorithm can evolve without changing privacy or input-routing behavior.
+The measurement UI reports the median, P10, P90, minimum, and maximum for physical neutral
+transitions and physical overlaps. Paired edges less than 1 ms apart are classified separately
+as near-simultaneous and excluded from both distributions because keyboard scanning and OS event
+batching cannot reliably establish their intended order. After at least ten classified samples
+of a pattern, the isolated recommendation layer uses P10 as the suggested minimum and the median
+(P50) as the suggested maximum. Both are rounded to the nearest 0.1 ms without applying a fixed
+recommendation floor, and the resulting range is capped strictly below P90. Timing settings are
+entered in 0.1 ms increments and scheduled with integer microsecond durations. P90 remains visible
+as reference data and acts only as the exclusive upper bound. Both configured axes and directions
+are combined because the current timing settings are global.
+
+Session duration remains intentionally open. Pairing and recommendation remain isolated from
+event capture so their algorithms can evolve without changing privacy or input-routing behavior.
 
 ## 10. Platform Scope
 

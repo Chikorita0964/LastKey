@@ -8,6 +8,8 @@ mod timing;
 pub use delivery::{DeliveryState, EventDisposition, InputRouter, OutputEmitter};
 pub use key::{Axis, KeyAction, LogicalKey, PhysicalKey};
 pub use measurement::{MeasurementSession, MeasurementStatistics};
-pub use recommendation::{TimingRecommendation, recommend};
+pub use recommendation::{
+    MIN_RECOMMENDATION_SAMPLES, RecommendedTimingRange, TimingRecommendation, recommend,
+};
 pub use socd::{AxisDecision, SocdState};
 pub use timing::TimingController;
