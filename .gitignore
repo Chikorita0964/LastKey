@@ -6,3 +6,7 @@ target/
 *.obj
 *.pdb
 *.res
+
+# Local agent session state and design scratch material
+.claude/
+stitch_ui_redesign_and_enhancement/
