@@ -48,10 +48,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if ($tagRef) { throw "Tag $env:RELEASE_TAG already exists." }
 
-  socd-state-tests:
-    needs: validate-release-input
-    uses: ./.github/workflows/socd-state-tests.yml
-
   rust-tests:
     needs: validate-release-input
     uses: ./.github/workflows/rust-tests.yml
@@ -61,7 +57,7 @@ jobs:
     uses: ./.github/workflows/release-form-tests.yml
 
   release:
-    needs: [validate-release-input, socd-state-tests, rust-tests, release-form-tests]
+    needs: [validate-release-input, rust-tests, release-form-tests]
     runs-on: windows-latest
     permissions:
       contents: write

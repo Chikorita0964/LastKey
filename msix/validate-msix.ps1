@@ -30,7 +30,7 @@ if ($LASTEXITCODE -ne 0) { throw "makeappx unpack failed with exit code $LASTEXI
 
 $manifest = [xml](Get-Content -LiteralPath (Join-Path $WorkingDirectory 'AppxManifest.xml') -Raw)
 if ($manifest.Package.Identity.Version -ne "$Version.0") { throw "Unexpected package version: $($manifest.Package.Identity.Version)" }
-foreach ($path in @('LastKey.exe', 'resources.pri', 'Assets\Square44x44Logo.png', 'Assets\Square150x150Logo.png', 'LICENSE.txt', 'NOTICE.txt')) {
+foreach ($path in @('LastKey.exe', 'LastKey.Settings.exe', 'resources.pri', 'Assets\Square44x44Logo.png', 'Assets\Square150x150Logo.png', 'LICENSE.txt', 'LICENSES\MIT.txt', 'NOTICE.txt')) {
     if (-not (Test-Path -LiteralPath (Join-Path $WorkingDirectory $path))) { throw "Required package file is missing: $path" }
 }
 Write-Output "Validated $packagePath"

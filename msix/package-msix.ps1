@@ -39,17 +39,21 @@ $assets = Join-Path $PSScriptRoot 'Assets'
 $cargo = Get-Command cargo -ErrorAction Stop
 $targetDirectory = Join-Path $projectRoot "target\$Target\release"
 $executablePath = Join-Path $targetDirectory 'lastkey.exe'
+$settingsExecutablePath = Join-Path $targetDirectory 'lastkey-settings.exe'
 $outputPath = [System.IO.Path]::GetFullPath((Join-Path $projectRoot $OutputDirectory))
 $stagePath = Join-Path $outputPath 'stage'
 $packagePath = Join-Path $outputPath "LastKey-$Version.msix"
 
 Push-Location $projectRoot
 try {
-    & $cargo.Source build --locked --release --target $Target
-    if ($LASTEXITCODE -ne 0) { throw "cargo build failed with exit code $LASTEXITCODE." }
+    & $cargo.Source build --locked --release --target $Target --bin lastkey
+    if ($LASTEXITCODE -ne 0) { throw "LastKey runtime build failed with exit code $LASTEXITCODE." }
+    & $cargo.Source build --locked --release --target $Target --no-default-features --features iced-ui --bin lastkey-settings
+    if ($LASTEXITCODE -ne 0) { throw "LastKey settings build failed with exit code $LASTEXITCODE." }
 }
 finally { Pop-Location }
 if (-not (Test-Path -LiteralPath $executablePath -PathType Leaf)) { throw "Rust release executable was not found: $executablePath" }
+if (-not (Test-Path -LiteralPath $settingsExecutablePath -PathType Leaf)) { throw "Rust settings executable was not found: $settingsExecutablePath" }
 
 # MSIX uses four numeric version components; LastKey's build component stays zero.
 $packageVersion = "$Version.0"
@@ -66,8 +70,11 @@ New-Item -ItemType Directory -Path $stagePath | Out-Null
     [System.Text.UTF8Encoding]::new($false)
 )
 Copy-Item -LiteralPath $executablePath -Destination (Join-Path $stagePath 'LastKey.exe')
+Copy-Item -LiteralPath $settingsExecutablePath -Destination (Join-Path $stagePath 'LastKey.Settings.exe')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'LICENSE') -Destination (Join-Path $stagePath 'LICENSE.txt')
-Copy-Item -LiteralPath (Join-Path $projectRoot 'LICENSES') -Destination (Join-Path $stagePath 'LICENSES') -Recurse
+$licenseStagePath = Join-Path $stagePath 'LICENSES'
+New-Item -ItemType Directory -Path $licenseStagePath | Out-Null
+Copy-Item -LiteralPath (Join-Path $projectRoot 'LICENSES\MIT.txt') -Destination $licenseStagePath
 Copy-Item -LiteralPath (Join-Path $projectRoot 'NOTICE') -Destination (Join-Path $stagePath 'NOTICE.txt')
 Copy-Item -LiteralPath $assets -Destination $stagePath -Recurse
 
