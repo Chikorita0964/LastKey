@@ -19,7 +19,6 @@ pub struct MeasurementUpdate {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AppSnapshot {
     pub saved: Settings,
-    pub active: Settings,
     pub draft: Settings,
     pub capture_slot: Option<LogicalKey>,
     pub measurement_active: bool,
@@ -28,7 +27,6 @@ pub struct AppSnapshot {
 
 pub(super) struct AppState {
     pub saved: Settings,
-    pub active: Settings,
     pub draft: Settings,
     pub capture_slot: Option<LogicalKey>,
     pub capture_generation: u64,
@@ -41,7 +39,6 @@ impl AppState {
     pub fn new(settings: Settings) -> Self {
         Self {
             saved: settings.clone(),
-            active: settings.clone(),
             draft: settings,
             capture_slot: None,
             capture_generation: 0,
@@ -54,7 +51,6 @@ impl AppState {
     pub fn snapshot(&self) -> AppSnapshot {
         AppSnapshot {
             saved: self.saved.clone(),
-            active: self.active.clone(),
             draft: self.draft.clone(),
             capture_slot: self.capture_slot,
             measurement_active: self.measurement_active,

@@ -112,11 +112,6 @@ impl TimingController {
         self.output[key.index()]
     }
 
-    pub fn reset<E: OutputEmitter>(&mut self, emitter: &mut E) {
-        self.release_all(emitter);
-        *self = Self::new(self.settings.clone());
-    }
-
     /// Clears both output and physical SOCD state at measurement boundaries.
     /// `release_all` alone leaves `physically_held` behind, so a key released
     /// during measurement would be treated as a repeat afterwards.

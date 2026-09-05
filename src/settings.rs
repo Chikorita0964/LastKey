@@ -56,6 +56,12 @@ impl StoredMilliseconds {
     }
 }
 
+/// Stored timing settings use only the current field names. Aliases from
+/// unreleased development builds (`transition_min_ms`, `overlap_probability`,
+/// `full_overlap`, and friends) are not recognized: no released build ever
+/// wrote a settings file, so there is nothing to migrate. Unknown fields are
+/// ignored and missing fields take the defaults below; anything else must
+/// pass `validate()` when the file is loaded.
 #[derive(Default, Deserialize)]
 struct StoredTimingSettings {
     #[serde(default)]
@@ -72,18 +78,6 @@ struct StoredTimingSettings {
     preserved_overlap_min_ms: Option<StoredMilliseconds>,
     #[serde(default)]
     preserved_overlap_max_ms: Option<StoredMilliseconds>,
-    #[serde(default)]
-    transition_min_ms: Option<StoredMilliseconds>,
-    #[serde(default)]
-    transition_max_ms: Option<StoredMilliseconds>,
-    #[serde(default)]
-    overlap_probability: Option<u8>,
-    #[serde(default)]
-    overlap_min_ms: Option<StoredMilliseconds>,
-    #[serde(default)]
-    overlap_max_ms: Option<StoredMilliseconds>,
-    #[serde(default)]
-    full_overlap: bool,
 }
 
 impl<'de> Deserialize<'de> for TimingSettings {
@@ -92,77 +86,30 @@ impl<'de> Deserialize<'de> for TimingSettings {
         D: Deserializer<'de>,
     {
         let stored = StoredTimingSettings::deserialize(deserializer)?;
-        let mut preservation_rate = stored
-            .overlap_preservation_rate
-            .or(stored.overlap_probability)
-            .unwrap_or(50);
-        if stored.full_overlap {
-            preservation_rate = 100;
-        }
-        if preservation_rate == 0 {
-            preservation_rate = 50;
-        }
-        let preserve_overlap = stored
-            .preserve_overlap
-            .unwrap_or(stored.full_overlap || stored.overlap_probability.unwrap_or_default() > 0);
-
-        let stored_transition_min_micros = stored
-            .socd_transition_min_ms
-            .or(stored.transition_min_ms)
-            .map(StoredMilliseconds::into_micros)
-            .transpose()?;
-        let stored_transition_max_micros = stored
-            .socd_transition_max_ms
-            .or(stored.transition_max_ms)
-            .map(StoredMilliseconds::into_micros)
-            .transpose()?;
-        let socd_transition_delay_enabled = stored.socd_transition_delay_enabled.unwrap_or(
-            stored_transition_min_micros.unwrap_or(0) > 0
-                || stored_transition_max_micros.unwrap_or(0) > 0
-                || preserve_overlap,
-        );
-        let (socd_transition_min_micros, socd_transition_max_micros) =
-            match (stored_transition_min_micros, stored_transition_max_micros) {
-                // Missing fields mean a legacy file without timing: use defaults.
-                (None, None) => (2_000, 4_000),
-                // Previous defaults were stored as explicit 0-0 without an enabled
-                // flag; migrate those to the configured defaults. Current files
-                // and IPC always carry the enabled flag, so explicit 0-0 there is
-                // preserved.
-                (Some(0), Some(0)) if stored.socd_transition_delay_enabled.is_none() => {
-                    (2_000, 4_000)
-                }
-                (minimum, maximum) => (minimum.unwrap_or(0), maximum.unwrap_or(0)),
-            };
-
-        let mut preserved_overlap_min_micros = stored
-            .preserved_overlap_min_ms
-            .or(stored.overlap_min_ms)
-            .map(StoredMilliseconds::into_micros)
-            .transpose()?
-            .unwrap_or(2_000);
-        let mut preserved_overlap_max_micros = stored
-            .preserved_overlap_max_ms
-            .or(stored.overlap_max_ms)
-            .map(StoredMilliseconds::into_micros)
-            .transpose()?
-            .unwrap_or(6_000);
-        if preserved_overlap_min_micros == 0 && preserved_overlap_max_micros == 0 {
-            preserved_overlap_min_micros = 2_000;
-            preserved_overlap_max_micros = 6_000;
-        }
-        preserved_overlap_min_micros = preserved_overlap_min_micros.max(100);
-        preserved_overlap_max_micros =
-            preserved_overlap_max_micros.max(preserved_overlap_min_micros);
-
         Ok(Self {
-            socd_transition_delay_enabled,
-            socd_transition_min_micros,
-            socd_transition_max_micros,
-            preserve_overlap,
-            overlap_preservation_rate: preservation_rate,
-            preserved_overlap_min_micros,
-            preserved_overlap_max_micros,
+            socd_transition_delay_enabled: stored.socd_transition_delay_enabled.unwrap_or(false),
+            socd_transition_min_micros: stored
+                .socd_transition_min_ms
+                .map(StoredMilliseconds::into_micros)
+                .transpose()?
+                .unwrap_or(2_000),
+            socd_transition_max_micros: stored
+                .socd_transition_max_ms
+                .map(StoredMilliseconds::into_micros)
+                .transpose()?
+                .unwrap_or(4_000),
+            preserve_overlap: stored.preserve_overlap.unwrap_or(false),
+            overlap_preservation_rate: stored.overlap_preservation_rate.unwrap_or(50),
+            preserved_overlap_min_micros: stored
+                .preserved_overlap_min_ms
+                .map(StoredMilliseconds::into_micros)
+                .transpose()?
+                .unwrap_or(2_000),
+            preserved_overlap_max_micros: stored
+                .preserved_overlap_max_ms
+                .map(StoredMilliseconds::into_micros)
+                .transpose()?
+                .unwrap_or(6_000),
         })
     }
 }
@@ -227,11 +174,17 @@ impl TimingSettings {
     }
 }
 
+/// Upper bound shared by every timing entry path: the settings UI clamps
+/// typed values at 1000 ms and sliders at 20 ms, so anything larger can only
+/// arrive from a hand-edited file or a skewed recommendation.
+pub const MAX_TIMING_MICROS: u32 = 1_000_000;
+
 #[derive(Debug)]
 pub enum SettingsError {
     DuplicateBinding,
     EmptyBinding,
     InvalidTimingRange,
+    InvalidTimingMaximum,
     InvalidOverlapPreservationRate,
     InvalidPreservedOverlapDuration,
     InvalidTimingPrecision,
@@ -247,6 +200,9 @@ impl fmt::Display for SettingsError {
             Self::EmptyBinding => write!(formatter, "a key binding cannot be empty"),
             Self::InvalidTimingRange => {
                 write!(formatter, "a timing minimum cannot exceed its maximum")
+            }
+            Self::InvalidTimingMaximum => {
+                write!(formatter, "a timing value cannot exceed 1000 ms")
             }
             Self::InvalidOverlapPreservationRate => {
                 write!(
@@ -320,6 +276,17 @@ impl Settings {
             || self.timing.preserved_overlap_min_micros > self.timing.preserved_overlap_max_micros
         {
             return Err(SettingsError::InvalidTimingRange);
+        }
+        if [
+            self.timing.socd_transition_min_micros,
+            self.timing.socd_transition_max_micros,
+            self.timing.preserved_overlap_min_micros,
+            self.timing.preserved_overlap_max_micros,
+        ]
+        .into_iter()
+        .any(|micros| micros > MAX_TIMING_MICROS)
+        {
+            return Err(SettingsError::InvalidTimingMaximum);
         }
         if !(1..=100).contains(&self.timing.overlap_preservation_rate) {
             return Err(SettingsError::InvalidOverlapPreservationRate);

@@ -1,4 +1,8 @@
-use std::{sync::mpsc as std_mpsc, thread, time::Duration};
+use std::{
+    sync::mpsc as std_mpsc,
+    thread,
+    time::{Duration, Instant},
+};
 
 use iced::{
     futures::{channel::mpsc, stream::StreamExt},
@@ -6,7 +10,7 @@ use iced::{
 };
 
 use crate::{
-    platform::windows::ipc::{IPC_POLL_INTERVAL, PipeConnection, SETTINGS_PIPE_NAME},
+    platform::windows::ipc::{PipeConnection, SETTINGS_PIPE_NAME, ipc_poll_interval},
     protocol::{UiCommand, UiEvent},
 };
 
@@ -46,8 +50,8 @@ pub fn connect() -> impl Sipper<Never, Event> {
 fn run_connection_loop(event_sender: mpsc::UnboundedSender<Event>) {
     // The sole owner of the pipe handle. A pending blocking read on one
     // handle stalls writes on a duplicate handle of the same synchronous
-    // pipe, so reads and writes for one session share this thread: drain
-    // outbound, Peek-gated inbound read, sleep (see IPC_POLL_INTERVAL).
+    // pipe, so reads and writes for one session share this thread: wait on
+    // the outbound queue, drain outbound, Peek-gated inbound read.
     loop {
         let mut pipe = match PipeConnection::connect(SETTINGS_PIPE_NAME, Duration::from_millis(500))
         {
@@ -64,8 +68,24 @@ fn run_connection_loop(event_sender: mpsc::UnboundedSender<Event>) {
         if !publish(&event_sender, Event::Connected(Connection(command_sender))) {
             return;
         }
+        let mut last_activity = Instant::now();
         'session: loop {
-            while let Ok(command) = command_receiver.try_recv() {
+            // Wait on the outbound queue with a timeout so locally queued
+            // commands leave immediately; only inbound discovery is bounded
+            // by the poll interval.
+            let interval = ipc_poll_interval(last_activity.elapsed());
+            let mut pending = match command_receiver.recv_timeout(interval) {
+                Ok(command) => Some(command),
+                Err(std_mpsc::RecvTimeoutError::Timeout) => None,
+                // The app dropped its Connection handle. Keep polling
+                // inbound, mirroring the old try_recv behavior.
+                Err(std_mpsc::RecvTimeoutError::Disconnected) => {
+                    thread::sleep(interval);
+                    None
+                }
+            };
+            while let Some(command) = pending {
+                last_activity = Instant::now();
                 let closing = command == UiCommand::CloseUiSession;
                 if pipe.send(&command).is_err() {
                     if !publish(
@@ -79,11 +99,13 @@ fn run_connection_loop(event_sender: mpsc::UnboundedSender<Event>) {
                 if closing {
                     return;
                 }
+                pending = command_receiver.try_recv().ok();
             }
             match pipe.has_pending_data() {
-                Ok(false) => thread::sleep(IPC_POLL_INTERVAL),
+                Ok(false) => {}
                 Ok(true) => match pipe.receive::<UiEvent>() {
                     Ok(event) => {
+                        last_activity = Instant::now();
                         if !publish(&event_sender, Event::Message(Box::new(event))) {
                             return;
                         }

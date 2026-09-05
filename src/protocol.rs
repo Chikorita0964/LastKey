@@ -8,7 +8,7 @@ use crate::{
     settings::Settings,
 };
 
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 pub const MAX_FRAME_SIZE: usize = 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -88,7 +88,6 @@ pub struct DisplayKey {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct UiSnapshot {
     pub saved: Settings,
-    pub active: Settings,
     pub draft: Settings,
     pub keys: [DisplayKey; 4],
     pub capture_slot: Option<KeySlot>,
@@ -104,7 +103,6 @@ impl UiSnapshot {
         });
         Self {
             saved: snapshot.saved,
-            active: snapshot.active,
             draft: snapshot.draft,
             keys,
             capture_slot: snapshot.capture_slot.map(Into::into),
@@ -157,22 +155,22 @@ impl From<MeasurementUpdate> for MeasurementSnapshot {
         let statistics = update.statistics;
         Self {
             observed_event_count: update.observed_event_count,
-            sample_count: statistics.sample_count(),
-            transition_count: statistics.transition_count(),
-            near_simultaneous_count: statistics.near_simultaneous_count(),
-            overlap_count: statistics.overlap_count(),
-            transition_min_micros: statistics.transition_min_micros(),
-            transition_max_micros: statistics.transition_max_micros(),
-            transition_latest_micros: statistics.transition_latest_micros(),
-            transition_p10_micros: statistics.transition_p10_micros(),
-            transition_median_micros: statistics.transition_median_micros(),
-            transition_p90_micros: statistics.transition_p90_micros(),
-            overlap_min_micros: statistics.overlap_min_micros(),
-            overlap_max_micros: statistics.overlap_max_micros(),
-            overlap_latest_micros: statistics.overlap_latest_micros(),
-            overlap_p10_micros: statistics.overlap_p10_micros(),
-            overlap_median_micros: statistics.overlap_median_micros(),
-            overlap_p90_micros: statistics.overlap_p90_micros(),
+            sample_count: statistics.sample_count,
+            transition_count: statistics.transition.count,
+            near_simultaneous_count: statistics.near_simultaneous_count,
+            overlap_count: statistics.overlap.count,
+            transition_min_micros: statistics.transition.min_micros,
+            transition_max_micros: statistics.transition.max_micros,
+            transition_latest_micros: statistics.transition.latest_micros,
+            transition_p10_micros: statistics.transition.p10_micros,
+            transition_median_micros: statistics.transition.median_micros,
+            transition_p90_micros: statistics.transition.p90_micros,
+            overlap_min_micros: statistics.overlap.min_micros,
+            overlap_max_micros: statistics.overlap.max_micros,
+            overlap_latest_micros: statistics.overlap.latest_micros,
+            overlap_p10_micros: statistics.overlap.p10_micros,
+            overlap_median_micros: statistics.overlap.median_micros,
+            overlap_p90_micros: statistics.overlap.p90_micros,
             recommended_transition: update.recommendation.socd_transition.map(Into::into),
             recommended_overlap: update.recommendation.preserved_overlap.map(Into::into),
         }

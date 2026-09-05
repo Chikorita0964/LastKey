@@ -7,7 +7,7 @@ mod timing;
 
 pub use delivery::{DeliveryState, EventDisposition, OutputEmitter};
 pub use key::{Axis, KeyAction, LogicalKey, PhysicalKey};
-pub use measurement::{MeasurementSession, MeasurementStatistics};
+pub use measurement::{MeasurementSession, MeasurementStatistics, SampleStats};
 pub use recommendation::{
     MIN_RECOMMENDATION_SAMPLES, RecommendedTimingRange, TimingRecommendation, recommend,
 };

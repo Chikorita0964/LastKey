@@ -34,14 +34,34 @@ use crate::protocol::{MAX_FRAME_SIZE, ProtocolError, decode, encode};
 pub const SETTINGS_PIPE_NAME: &str = r"\\.\pipe\LastKey.Settings.v1";
 const PIPE_SECURITY_SDDL: &str = "D:P(A;;GA;;;OW)(A;;GA;;;SY)";
 
-/// Poll interval for the single-threaded IPC pump loops.
+/// Active poll interval for the single-threaded IPC pump loops.
 ///
 /// A pending blocking read on one handle stalls writes on a duplicate
 /// handle of the same synchronous pipe instance, so each session pumps its
-/// pipe from exactly one thread: drain outbound, Peek-gated inbound read,
-/// sleep. A few milliseconds of settings-UI latency is irrelevant here;
-/// latency-sensitive input never crosses this pipe.
+/// pipe from exactly one thread: wait on the outbound queue with a timeout,
+/// drain outbound, Peek-gated inbound read. A few milliseconds of settings-UI
+/// latency is irrelevant here; latency-sensitive input never crosses this
+/// pipe.
 pub const IPC_POLL_INTERVAL: Duration = Duration::from_millis(2);
+
+/// Idle poll interval once a session has been quiet for [`IPC_IDLE_AFTER`].
+/// Fifty milliseconds is imperceptible in a settings dialog and cuts idle
+/// wakeups by more than tenfold.
+pub const IPC_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Silence after which a session pump backs off to [`IPC_IDLE_POLL_INTERVAL`].
+pub const IPC_IDLE_AFTER: Duration = Duration::from_millis(250);
+
+/// Returns the pump wait for the time since the last sent or received
+/// message. Any traffic resets the session to the active interval, so the
+/// step is invisible to the user.
+pub fn ipc_poll_interval(idle_for: Duration) -> Duration {
+    if idle_for >= IPC_IDLE_AFTER {
+        IPC_IDLE_POLL_INTERVAL
+    } else {
+        IPC_POLL_INTERVAL
+    }
+}
 
 pub struct NamedPipeServer {
     name: HSTRING,
@@ -211,7 +231,10 @@ mod tests {
 
     use crate::protocol::UiCommand;
 
-    use super::{NamedPipeServer, PipeConnection};
+    use super::{
+        IPC_IDLE_POLL_INTERVAL, IPC_POLL_INTERVAL, NamedPipeServer, PipeConnection,
+        ipc_poll_interval,
+    };
 
     #[test]
     fn named_pipe_transports_protocol_messages_in_both_directions() {
@@ -238,6 +261,23 @@ mod tests {
             UiCommand::Apply
         );
         server_thread.join().expect("server thread finishes");
+    }
+
+    #[test]
+    fn pump_interval_backs_off_only_after_sustained_silence() {
+        assert_eq!(ipc_poll_interval(Duration::ZERO), IPC_POLL_INTERVAL);
+        assert_eq!(
+            ipc_poll_interval(Duration::from_millis(249)),
+            IPC_POLL_INTERVAL
+        );
+        assert_eq!(
+            ipc_poll_interval(Duration::from_millis(250)),
+            IPC_IDLE_POLL_INTERVAL
+        );
+        assert_eq!(
+            ipc_poll_interval(Duration::from_secs(60)),
+            IPC_IDLE_POLL_INTERVAL
+        );
     }
 
     #[test]

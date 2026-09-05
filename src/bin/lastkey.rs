@@ -13,7 +13,7 @@ mod windows_runtime {
 
     use lastkey::{
         app::{AppController, FileSettingsStore},
-        platform::windows::{InputService, UiServer},
+        platform::windows::{HOOK_STATUS_MESSAGE, InputService, UiServer},
         protocol::UiView,
         settings::{self, Settings},
     };
@@ -24,7 +24,7 @@ mod windows_runtime {
     use windows::{
         Win32::{
             Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE},
-            System::Threading::CreateMutexW,
+            System::Threading::{CreateMutexW, GetCurrentThreadId},
             UI::WindowsAndMessaging::{DispatchMessageW, GetMessageW, MSG, TranslateMessage},
         },
         core::{HSTRING, w},
@@ -60,7 +60,9 @@ mod windows_runtime {
             show_error("Settings Load Error", &error.to_string());
             Settings::default()
         });
-        let input = InputService::start(settings.clone()).map_err(|error| error.to_string())?;
+        let main_thread = unsafe { GetCurrentThreadId() };
+        let input = InputService::start(settings.clone(), main_thread)
+            .map_err(|error| error.to_string())?;
         let controller = Arc::new(Mutex::new(AppController::new(
             settings,
             FileSettingsStore,
@@ -68,10 +70,10 @@ mod windows_runtime {
         )));
         let ui_server =
             UiServer::start(Arc::clone(&controller)).map_err(|error| error.to_string())?;
-        let _tray = create_tray()?;
+        let tray = create_tray()?;
         let mut settings_process = SettingsProcess::default();
 
-        run_message_loop(&ui_server, &mut settings_process)?;
+        run_message_loop(&ui_server, &tray, &mut settings_process)?;
 
         let _ = ui_server.notify_shutdown();
         settings_process.shutdown();
@@ -82,6 +84,7 @@ mod windows_runtime {
 
     fn run_message_loop(
         ui_server: &UiServer,
+        tray: &TrayIcon,
         settings_process: &mut SettingsProcess,
     ) -> Result<(), String> {
         let mut message = MSG::default();
@@ -92,6 +95,18 @@ mod windows_runtime {
             }
             if result.0 == 0 {
                 return Ok(());
+            }
+            // Thread messages carry a null window handle; tray notifications
+            // arrive as window messages, so the null check keeps the two
+            // apart before dispatch would silently drop ours.
+            if message.hwnd.0.is_null() && message.message == HOOK_STATUS_MESSAGE {
+                let lost = message.wParam.0 != 0;
+                let _ = tray.set_tooltip(Some(if lost {
+                    "LastKey — input hook unavailable"
+                } else {
+                    "LastKey"
+                }));
+                continue;
             }
             unsafe {
                 let _ = TranslateMessage(&message);

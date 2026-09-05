@@ -106,44 +106,6 @@ fn disabled_transition_delay_preserves_overlap_preference_without_applying_it() 
 }
 
 #[test]
-fn legacy_full_overlap_settings_migrate_to_full_preservation() {
-    let legacy = r#"
-transition_min_ms = 15
-transition_max_ms = 20
-overlap_min_ms = 5
-overlap_max_ms = 10
-overlap_probability = 50
-full_overlap = true
-"#;
-
-    let timing: TimingSettings = toml::from_str(legacy).expect("legacy timing settings");
-
-    assert_eq!(timing.socd_transition_min_micros, 15_000);
-    assert_eq!(timing.socd_transition_max_micros, 20_000);
-    assert!(timing.socd_transition_delay_enabled);
-    assert!(timing.preserve_overlap);
-    assert_eq!(timing.overlap_preservation_rate, 100);
-    assert_eq!(timing.preserved_overlap_min_micros, 5_000);
-    assert_eq!(timing.preserved_overlap_max_micros, 10_000);
-}
-
-#[test]
-fn legacy_probability_enables_overlap_preservation() {
-    let legacy = r#"
-overlap_probability = 35
-full_overlap = false
-"#;
-
-    let timing: TimingSettings = toml::from_str(legacy).expect("legacy timing settings");
-
-    assert!(timing.preserve_overlap);
-    assert_eq!(timing.overlap_preservation_rate, 35);
-    assert!(timing.socd_transition_delay_enabled);
-    assert_eq!(timing.preserved_overlap_min_micros, 2_000);
-    assert_eq!(timing.preserved_overlap_max_micros, 6_000);
-}
-
-#[test]
 fn decimal_millisecond_settings_round_trip_at_tenth_millisecond_precision() {
     let mut settings = Settings::default();
     settings.timing.socd_transition_min_micros = 1_900;
@@ -163,19 +125,30 @@ fn decimal_millisecond_settings_round_trip_at_tenth_millisecond_precision() {
 }
 
 #[test]
-fn previous_zero_defaults_migrate_to_disabled_configured_defaults() {
-    let previous = r#"
-socd_transition_min_ms = 0
-socd_transition_max_ms = 0
-preserve_overlap = false
-overlap_preservation_rate = 0
-preserved_overlap_min_ms = 0
-preserved_overlap_max_ms = 0
+fn unrecognized_alias_fields_are_ignored_instead_of_migrated() {
+    let legacy = r#"
+transition_min_ms = 15
+overlap_probability = 35
+full_overlap = true
 "#;
 
-    let timing: TimingSettings = toml::from_str(previous).expect("previous defaults");
+    let timing: TimingSettings = toml::from_str(legacy).expect("legacy timing settings");
 
     assert_eq!(timing, TimingSettings::default());
+}
+
+#[test]
+fn explicit_zero_transition_is_preserved_from_file() {
+    let explicit = r#"
+socd_transition_delay_enabled = false
+socd_transition_min_ms = 0
+socd_transition_max_ms = 0
+"#;
+
+    let timing: TimingSettings = toml::from_str(explicit).expect("explicit zero timing");
+
+    assert_eq!(timing.socd_transition_min_micros, 0);
+    assert_eq!(timing.socd_transition_max_micros, 0);
 }
 
 #[test]
@@ -204,4 +177,18 @@ fn explicit_zero_transition_survives_ipc_round_trip() {
     assert_eq!(restored.timing.socd_transition_min_micros, 0);
     assert_eq!(restored.timing.socd_transition_max_micros, 0);
     assert!(!restored.timing.socd_transition_delay_enabled);
+}
+
+#[test]
+fn timing_values_above_one_second_are_rejected() {
+    let mut settings = Settings::default();
+    settings.timing.preserved_overlap_max_micros = 2_000_000;
+
+    assert!(matches!(
+        settings.validate(),
+        Err(SettingsError::InvalidTimingMaximum)
+    ));
+
+    settings.timing.preserved_overlap_max_micros = 1_000_000;
+    assert!(settings.validate().is_ok());
 }

@@ -20,6 +20,10 @@ impl SettingsStore for FileSettingsStore {
 pub trait RuntimeService {
     fn apply(&self, settings: Settings) -> Result<(), String>;
 
+    /// Returns the settings the runtime is currently running. Queued behind
+    /// any in-flight Apply, so the answer confirms whether it activated.
+    fn active_settings(&self) -> Result<Settings, String>;
+
     fn begin_key_capture(&self) -> Result<Receiver<CapturedKey>, String>;
 
     fn cancel_key_capture(&self) -> Result<(), String>;

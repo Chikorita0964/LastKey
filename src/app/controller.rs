@@ -72,21 +72,54 @@ where
             .map_err(AppControllerError::Persistence)?;
 
         if let Err(runtime_error) = self.runtime.apply(next.clone()) {
-            return match self.store.save(&previous) {
+            return self.reconcile_apply_outcome(next, previous, runtime_error);
+        }
+
+        self.state.saved = next.clone();
+        self.state.draft = next;
+        self.state.invalidate_capture();
+        self.state.invalidate_measurement();
+        Ok(self.snapshot())
+    }
+
+    /// Confirms whether a failed Apply still activated before deciding
+    /// between rollback and adoption. The fence queues behind the late Apply,
+    /// so its answer is authoritative about the outcome.
+    fn reconcile_apply_outcome(
+        &mut self,
+        next: Settings,
+        previous: Settings,
+        runtime_error: String,
+    ) -> Result<AppSnapshot, AppControllerError> {
+        match self.runtime.active_settings() {
+            // Late activation won: the candidate file is already on disk.
+            Ok(active) if active == next => {
+                self.state.saved = next.clone();
+                self.state.draft = next;
+                self.state.invalidate_capture();
+                self.state.invalidate_measurement();
+                Ok(self.snapshot())
+            }
+            // The engine never activated: restore the previous file.
+            Ok(_) => match self.store.save(&previous) {
                 Ok(()) => Err(AppControllerError::Runtime(runtime_error)),
                 Err(rollback) => Err(AppControllerError::RuntimeWithRollbackFailure {
                     runtime: runtime_error,
                     rollback,
                 }),
-            };
+            },
+            // The engine state is unknowable: restore the file but say so.
+            Err(fence_error) => match self.store.save(&previous) {
+                Ok(()) => Err(AppControllerError::RuntimeUnconfirmed {
+                    runtime: runtime_error,
+                    fence: fence_error,
+                }),
+                Err(rollback) => Err(AppControllerError::RuntimeWithRollbackFailure {
+                    runtime: runtime_error,
+                    rollback: format!("{rollback}; confirmation also failed: {fence_error}"),
+                }),
+            },
         }
-
-        self.state.saved = next.clone();
-        self.state.active = next.clone();
-        self.state.draft = next;
-        self.state.invalidate_capture();
-        self.state.invalidate_measurement();
-        Ok(self.snapshot())
     }
 
     pub fn begin_key_capture(
@@ -163,11 +196,10 @@ where
 
     pub fn close_ui_session(&mut self) -> Result<(), AppControllerError> {
         let capture_result = self.runtime.cancel_key_capture();
-        let measurement_result = if self.state.measurement_active {
-            self.runtime.stop_measurement().map(|_| ())
-        } else {
-            Ok(())
-        };
+        // Stop unconditionally: a start whose acknowledgement timed out may
+        // still have armed the engine afterwards, leaving measurement_active
+        // false here. Stopping an inactive session is a no-op.
+        let measurement_result = self.runtime.stop_measurement().map(|_| ());
         self.state.invalidate_capture();
         self.state.invalidate_measurement();
 
@@ -210,7 +242,9 @@ mod tests {
     #[derive(Clone, Default)]
     struct MockRuntime {
         applied: Rc<RefCell<Vec<Settings>>>,
+        active: Rc<RefCell<Settings>>,
         apply_results: Rc<RefCell<VecDeque<Result<(), String>>>>,
+        active_results: Rc<RefCell<VecDeque<Result<Settings, String>>>>,
         capture_sender: Rc<RefCell<Option<Sender<CapturedKey>>>>,
         measurement_sender: Rc<RefCell<Option<Sender<MeasurementUpdate>>>>,
         final_measurement: Rc<RefCell<Option<MeasurementUpdate>>>,
@@ -220,11 +254,23 @@ mod tests {
 
     impl RuntimeService for MockRuntime {
         fn apply(&self, settings: Settings) -> Result<(), String> {
-            self.applied.borrow_mut().push(settings);
-            self.apply_results
+            self.applied.borrow_mut().push(settings.clone());
+            let result = self
+                .apply_results
                 .borrow_mut()
                 .pop_front()
-                .unwrap_or(Ok(()))
+                .unwrap_or(Ok(()));
+            if result.is_ok() {
+                *self.active.borrow_mut() = settings;
+            }
+            result
+        }
+
+        fn active_settings(&self) -> Result<Settings, String> {
+            self.active_results
+                .borrow_mut()
+                .pop_front()
+                .unwrap_or_else(|| Ok(self.active.borrow().clone()))
         }
 
         fn begin_key_capture(&self) -> Result<Receiver<CapturedKey>, String> {
@@ -282,10 +328,10 @@ mod tests {
         let snapshot = controller.apply().expect("apply succeeds");
 
         assert_eq!(snapshot.saved, changed);
-        assert_eq!(snapshot.active, changed);
         assert_eq!(snapshot.draft, changed);
         assert_eq!(&*store.saves.borrow(), std::slice::from_ref(&changed));
-        assert_eq!(&*runtime.applied.borrow(), &[changed]);
+        assert_eq!(&*runtime.applied.borrow(), std::slice::from_ref(&changed));
+        assert_eq!(*runtime.active.borrow(), changed);
     }
 
     #[test]
@@ -318,7 +364,7 @@ mod tests {
         ));
         let snapshot = controller.snapshot();
         assert_eq!(snapshot.saved, Settings::default());
-        assert_eq!(snapshot.active, Settings::default());
+        assert_eq!(*runtime.active.borrow(), Settings::default());
         assert!(runtime.applied.borrow().is_empty());
     }
 
@@ -339,7 +385,50 @@ mod tests {
         assert_eq!(&*store.saves.borrow(), &[changed, Settings::default()]);
         let snapshot = controller.snapshot();
         assert_eq!(snapshot.saved, Settings::default());
-        assert_eq!(snapshot.active, Settings::default());
+        assert_eq!(*runtime.active.borrow(), Settings::default());
+    }
+
+    #[test]
+    fn late_activation_after_timeout_is_adopted_not_rolled_back() {
+        let (mut controller, store, runtime) = controller();
+        runtime
+            .apply_results
+            .borrow_mut()
+            .push_back(Err("service timeout".into()));
+        let changed = changed_settings();
+        controller.replace_draft(changed.clone());
+        // The engine activated despite the lost acknowledgement.
+        *runtime.active.borrow_mut() = changed.clone();
+
+        let snapshot = controller.apply().expect("late activation is adopted");
+
+        assert_eq!(snapshot.saved, changed);
+        assert_eq!(*runtime.active.borrow(), changed);
+        // No rollback save: the candidate file already on disk is correct.
+        assert_eq!(&*store.saves.borrow(), std::slice::from_ref(&changed));
+    }
+
+    #[test]
+    fn unconfirmable_activation_reports_uncertainty_after_rollback() {
+        let (mut controller, store, runtime) = controller();
+        runtime
+            .apply_results
+            .borrow_mut()
+            .push_back(Err("service timeout".into()));
+        runtime
+            .active_results
+            .borrow_mut()
+            .push_back(Err("service stopped".into()));
+        controller.replace_draft(changed_settings());
+
+        assert!(matches!(
+            controller.apply(),
+            Err(AppControllerError::RuntimeUnconfirmed { .. })
+        ));
+        assert_eq!(store.saves.borrow().len(), 2);
+        let snapshot = controller.snapshot();
+        assert_eq!(snapshot.saved, Settings::default());
+        assert_eq!(*runtime.active.borrow(), Settings::default());
     }
 
     #[test]
@@ -468,9 +557,21 @@ mod tests {
         controller.close_ui_session().expect("session closes");
 
         let snapshot = controller.snapshot();
-        assert_eq!(snapshot.active, Settings::default());
+        assert_eq!(snapshot.saved, Settings::default());
         assert!(!snapshot.measurement_active);
         assert_eq!(runtime.capture_cancellations.get(), 1);
         assert_eq!(runtime.measurement_stops.get(), 1);
+    }
+
+    #[test]
+    fn closing_an_idle_session_still_stops_runtime_measurement() {
+        let (mut controller, _store, runtime) = controller();
+
+        controller.close_ui_session().expect("session closes");
+
+        // A start whose acknowledgement timed out may still have armed the
+        // engine afterwards; the flag cannot be trusted here.
+        assert_eq!(runtime.measurement_stops.get(), 1);
+        assert!(!controller.snapshot().measurement_active);
     }
 }

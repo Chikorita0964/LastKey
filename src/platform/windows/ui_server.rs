@@ -2,29 +2,54 @@ use std::{
     io,
     os::windows::io::AsRawHandle,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, MutexGuard,
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Sender},
     },
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use crate::{
-    app::{AppController, AppControllerError, FileSettingsStore},
+    app::{AppController, AppControllerError, CapturedKey, FileSettingsStore, MeasurementUpdate},
     core::LogicalKey,
-    protocol::{ErrorView, KeySlot, UiCommand, UiEvent, UiSnapshot},
+    protocol::{DisplayKey, ErrorView, KeySlot, UiCommand, UiEvent, UiSnapshot},
 };
 use windows::Win32::{Foundation::HANDLE, System::IO::CancelSynchronousIo};
 
 use super::{
     InputService,
-    ipc::{IPC_POLL_INTERVAL, NamedPipeServer, PipeConnection, SETTINGS_PIPE_NAME},
+    ipc::{NamedPipeServer, PipeConnection, SETTINGS_PIPE_NAME, ipc_poll_interval},
     physical_key_name,
 };
 
 type Controller = Arc<Mutex<AppController<FileSettingsStore, InputService>>>;
-type EventQueue = Sender<UiEvent>;
+/// Locks the controller. Poisoning means an earlier handler panicked while
+/// holding it, so the session state is unknown and continuing to serve a UI
+/// from it would publish garbage; failing fast is the only safe answer.
+fn locked(
+    controller: &Controller,
+) -> MutexGuard<'_, AppController<FileSettingsStore, InputService>> {
+    controller
+        .lock()
+        .expect("app controller mutex is not poisoned")
+}
+/// Pump-bound events. Capture completions travel through the same queue as
+/// outbound replies so the pump validates, applies, and answers them in one
+/// defined sequence instead of racing a later Revert.
+enum ServerEvent {
+    Out(Box<UiEvent>),
+    KeyCaptureDone {
+        generation: u64,
+        slot: KeySlot,
+        captured: CapturedKey,
+    },
+    MeasurementUpdated {
+        generation: u64,
+        update: Box<MeasurementUpdate>,
+    },
+}
+type EventQueue = Sender<ServerEvent>;
 type SharedQueue = Arc<Mutex<Option<EventQueue>>>;
 
 pub struct UiServer {
@@ -63,7 +88,7 @@ impl UiServer {
             .lock()
             .expect("settings IPC client mutex is not poisoned")
             .as_ref()
-            .is_some_and(|queue| queue.send(event).is_ok())
+            .is_some_and(|queue| queue.send(ServerEvent::Out(Box::new(event))).is_ok())
     }
 }
 
@@ -115,10 +140,7 @@ fn run(
         *client
             .lock()
             .expect("settings IPC client mutex is not poisoned") = None;
-        let _ = controller
-            .lock()
-            .expect("app controller mutex is not poisoned")
-            .close_ui_session();
+        let _ = locked(&controller).close_ui_session();
     }
 }
 
@@ -131,25 +153,68 @@ fn serve_connection(
     // Every pipe syscall for this session runs on this thread. A pending
     // blocking read on one handle stalls writes on a duplicate handle of
     // the same synchronous pipe, so the session is never split across
-    // threads: drain outbound, Peek-gated inbound read, sleep.
-    let (event_sender, event_receiver) = mpsc::channel::<UiEvent>();
+    // threads: wait on the outbound queue, drain outbound, Peek-gated
+    // inbound read.
+    let (event_sender, event_receiver) = mpsc::channel::<ServerEvent>();
     *client
         .lock()
         .expect("settings IPC client mutex is not poisoned") = Some(event_sender.clone());
+    let mut last_activity = Instant::now();
 
     loop {
-        while let Ok(event) = event_receiver.try_recv() {
-            if !send_reply(&mut connection, &event) {
-                return;
+        // Wait on the outbound queue with a timeout so worker events leave
+        // immediately; only inbound discovery is bounded by the poll interval.
+        let interval = ipc_poll_interval(last_activity.elapsed());
+        let mut pending = match event_receiver.recv_timeout(interval) {
+            Ok(event) => Some(event),
+            Err(mpsc::RecvTimeoutError::Timeout) => None,
+            // The queue sender is owned by this session and outlives it, so
+            // disconnection cannot happen here; sleep to preserve the shape.
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                thread::sleep(interval);
+                None
             }
+        };
+        while let Some(event) = pending {
+            last_activity = Instant::now();
+            match event {
+                ServerEvent::Out(event) => {
+                    if !send_reply(&mut connection, &event) {
+                        return;
+                    }
+                }
+                ServerEvent::KeyCaptureDone {
+                    generation,
+                    slot,
+                    captured,
+                } => {
+                    if !complete_key_capture(
+                        controller,
+                        &mut connection,
+                        generation,
+                        slot,
+                        captured,
+                    ) {
+                        return;
+                    }
+                }
+                ServerEvent::MeasurementUpdated { generation, update } => {
+                    if !accept_measurement_update(controller, &mut connection, generation, *update)
+                    {
+                        return;
+                    }
+                }
+            }
+            pending = event_receiver.try_recv().ok();
         }
         if stopping.load(Ordering::Acquire) {
             return;
         }
         match connection.has_pending_data() {
-            Ok(false) => thread::sleep(IPC_POLL_INTERVAL),
+            Ok(false) => {}
             Ok(true) => match connection.receive::<UiCommand>() {
                 Ok(command) => {
+                    last_activity = Instant::now();
                     if !dispatch(command, controller, &mut connection, &event_sender) {
                         return;
                     }
@@ -171,19 +236,14 @@ fn dispatch(
         UiCommand::RequestSnapshot => send_snapshot(controller, connection),
         UiCommand::UpdateDraft(draft) => {
             let snapshot = {
-                let mut controller = controller
-                    .lock()
-                    .expect("app controller mutex is not poisoned");
+                let mut controller = locked(controller);
                 controller.replace_draft(draft);
                 controller.snapshot()
             };
             send_reply(connection, &UiEvent::Snapshot(ui_snapshot(snapshot)))
         }
         UiCommand::Apply => {
-            let result = controller
-                .lock()
-                .expect("app controller mutex is not poisoned")
-                .apply();
+            let result = locked(controller).apply();
             match result {
                 Ok(snapshot) => {
                     send_reply(connection, &UiEvent::ApplySucceeded(ui_snapshot(snapshot)))
@@ -219,10 +279,7 @@ fn dispatch(
             })
         }
         UiCommand::CloseUiSession => {
-            let result = controller
-                .lock()
-                .expect("app controller mutex is not poisoned")
-                .close_ui_session();
+            let result = locked(controller).close_ui_session();
             if let Err(error) = result {
                 let _ = send_reply(
                     connection,
@@ -240,13 +297,9 @@ fn begin_key_capture(
     connection: &mut PipeConnection,
     events: &EventQueue,
 ) -> bool {
-    let result = controller
-        .lock()
-        .expect("app controller mutex is not poisoned")
-        .begin_key_capture(LogicalKey::from(slot));
+    let result = locked(controller).begin_key_capture(LogicalKey::from(slot));
     match result {
         Ok((generation, receiver)) => {
-            let worker_controller = Arc::clone(controller);
             let worker_events = events.clone();
             if thread::Builder::new()
                 .name("lastkey-ipc-key-capture".into())
@@ -254,25 +307,18 @@ fn begin_key_capture(
                     let Ok(captured) = receiver.recv() else {
                         return;
                     };
-                    let key = crate::protocol::DisplayKey {
-                        physical: captured.physical,
-                        name: captured.name.clone(),
-                    };
-                    let accepted = worker_controller
-                        .lock()
-                        .expect("app controller mutex is not poisoned")
-                        .complete_key_capture(generation, captured)
-                        .is_some();
-                    if accepted {
-                        let _ = worker_events.send(UiEvent::KeyCaptured { slot, key });
-                    }
+                    // Validation happens on the pump thread, where this
+                    // completion is sequenced against later commands such as
+                    // Revert instead of racing them.
+                    let _ = worker_events.send(ServerEvent::KeyCaptureDone {
+                        generation,
+                        slot,
+                        captured,
+                    });
                 })
                 .is_err()
             {
-                let _ = controller
-                    .lock()
-                    .expect("app controller mutex is not poisoned")
-                    .cancel_key_capture();
+                let _ = locked(controller).cancel_key_capture();
                 return send_reply(
                     connection,
                     &UiEvent::RuntimeError(ErrorView {
@@ -291,41 +337,73 @@ fn begin_key_capture(
     }
 }
 
+/// Validates a capture completion against the current generation, applies it,
+/// and answers from the pump thread, so a Revert processed either before or
+/// after can neither be undone by it nor leave it unanswered. A stale
+/// completion is dropped silently: the answering Snapshot already carries the
+/// reverted state. Returns false when the session is over.
+fn complete_key_capture(
+    controller: &Controller,
+    connection: &mut PipeConnection,
+    generation: u64,
+    slot: KeySlot,
+    captured: CapturedKey,
+) -> bool {
+    let key = DisplayKey {
+        physical: captured.physical,
+        name: captured.name.clone(),
+    };
+    let accepted = locked(controller)
+        .complete_key_capture(generation, captured)
+        .is_some();
+    if accepted {
+        send_reply(connection, &UiEvent::KeyCaptured { slot, key })
+    } else {
+        true
+    }
+}
+
+/// Validates a measurement update against the current generation, applies
+/// it, and answers from the pump thread, so an update accepted for one
+/// session can never surface in the next. Stale updates drop silently:
+/// the Stop/Start snapshots already carry the authoritative state. Returns
+/// false when the session is over.
+fn accept_measurement_update(
+    controller: &Controller,
+    connection: &mut PipeConnection,
+    generation: u64,
+    update: MeasurementUpdate,
+) -> bool {
+    let accepted = locked(controller).update_measurement(generation, update);
+    if accepted {
+        send_reply(connection, &UiEvent::MeasurementUpdated(update.into()))
+    } else {
+        true
+    }
+}
+
 fn start_measurement(
     controller: &Controller,
     connection: &mut PipeConnection,
     events: &EventQueue,
 ) -> bool {
-    let result = controller
-        .lock()
-        .expect("app controller mutex is not poisoned")
-        .start_measurement();
+    let result = locked(controller).start_measurement();
     match result {
         Ok((generation, receiver)) => {
-            let worker_controller = Arc::clone(controller);
             let worker_events = events.clone();
             if thread::Builder::new()
                 .name("lastkey-ipc-measurement".into())
                 .spawn(move || {
+                    // Validation happens on the pump thread, where this update
+                    // is sequenced against Stop and the next Start instead of
+                    // racing them.
                     while let Ok(update) = receiver.recv() {
-                        let accepted = worker_controller
-                            .lock()
-                            .expect("app controller mutex is not poisoned")
-                            .update_measurement(generation, update);
-                        if !accepted {
-                            continue;
-                        }
-                        // The stop snapshot can win the race after acceptance;
-                        // re-check before sending so stale events do not revive
-                        // a stopped measurement session in the UI.
-                        let still_current = worker_controller
-                            .lock()
-                            .expect("app controller mutex is not poisoned")
-                            .is_current_measurement(generation);
-                        if still_current
-                            && worker_events
-                                .send(UiEvent::MeasurementUpdated(update.into()))
-                                .is_err()
+                        if worker_events
+                            .send(ServerEvent::MeasurementUpdated {
+                                generation,
+                                update: Box::new(update),
+                            })
+                            .is_err()
                         {
                             break;
                         }
@@ -333,10 +411,7 @@ fn start_measurement(
                 })
                 .is_err()
             {
-                let _ = controller
-                    .lock()
-                    .expect("app controller mutex is not poisoned")
-                    .stop_measurement();
+                let _ = locked(controller).stop_measurement();
                 return send_reply(
                     connection,
                     &UiEvent::RuntimeError(ErrorView {
@@ -362,11 +437,7 @@ fn controller_snapshot_command(
         &mut AppController<FileSettingsStore, InputService>,
     ) -> Result<crate::app::AppSnapshot, AppControllerError>,
 ) -> bool {
-    let result = command(
-        &mut controller
-            .lock()
-            .expect("app controller mutex is not poisoned"),
-    );
+    let result = command(&mut locked(controller));
     match result {
         Ok(snapshot) => send_reply(connection, &UiEvent::Snapshot(ui_snapshot(snapshot))),
         Err(error) => send_reply(
@@ -377,10 +448,7 @@ fn controller_snapshot_command(
 }
 
 fn send_snapshot(controller: &Controller, connection: &mut PipeConnection) -> bool {
-    let snapshot = controller
-        .lock()
-        .expect("app controller mutex is not poisoned")
-        .snapshot();
+    let snapshot = locked(controller).snapshot();
     send_reply(connection, &UiEvent::Snapshot(ui_snapshot(snapshot)))
 }
 

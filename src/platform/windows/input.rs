@@ -59,6 +59,9 @@ pub use crate::app::{CapturedKey, MeasurementUpdate};
 const INJECTION_TAG: usize = 0x4C41_5354_4B45_5931; // "LASTKEY1"
 
 const COMMAND_MESSAGE: u32 = WM_APP + 1;
+/// Posted to the main thread when the keyboard hook is lost or recovered.
+/// `wParam` is nonzero while lost. Read by `src/bin/lastkey.rs`.
+pub const HOOK_STATUS_MESSAGE: u32 = WM_APP + 2;
 const RAW_KEY_BREAK: u16 = 0x01;
 const RAW_KEY_E0: u16 = 0x02;
 const RAW_KEY_E1: u16 = 0x04;
@@ -66,6 +69,9 @@ const HOOK_EVENT_MAX_AGE: Duration = Duration::from_secs(1);
 const HOOK_EVENT_QUEUE_CAPACITY: usize = 64;
 const HOOK_MISSES_BEFORE_REINSTALL: u8 = 3;
 const HOOK_REINSTALL_COOLDOWN: Duration = Duration::from_secs(2);
+/// Consecutive reinstall failures before the hook counts as lost. Attempts
+/// are spaced by the cooldown above, so notification needs no timer.
+const HOOK_LOST_AFTER_FAILURES: u8 = 3;
 const SERVICE_START_TIMEOUT: Duration = Duration::from_secs(5);
 const COMMAND_ACK_TIMEOUT: Duration = Duration::from_secs(2);
 const WAIT_OBJECT_0_VALUE: u32 = 0;
@@ -103,15 +109,25 @@ pub struct InputService {
 enum InputCommand {
     Apply {
         settings: Settings,
-        ready: mpsc::SyncSender<()>,
+        /// Commands queued behind a stall must not activate after the caller
+        /// gave up and rolled persistence back.
+        deadline: Instant,
+        ready: mpsc::SyncSender<bool>,
     },
+    ActiveSettings(mpsc::SyncSender<Settings>),
     Capture {
         sender: Sender<CapturedKey>,
+        /// Like Apply and StartMeasurement: a capture that outlives its
+        /// acknowledgement wait must not arm for a caller that gave up.
+        deadline: Instant,
         ready: mpsc::SyncSender<Result<(), InputServiceError>>,
     },
     CancelCapture(mpsc::SyncSender<()>),
     StartMeasurement {
         sender: Sender<MeasurementUpdate>,
+        /// Like Apply: a start that outlives its acknowledgement wait must
+        /// not arm a session its caller already abandoned.
+        deadline: Instant,
         ready: mpsc::SyncSender<Result<(), InputServiceError>>,
     },
     StopMeasurement(mpsc::SyncSender<Option<MeasurementUpdate>>),
@@ -119,12 +135,15 @@ enum InputCommand {
 }
 
 impl InputService {
-    pub fn start(settings: Settings) -> std::result::Result<Self, InputServiceError> {
+    pub fn start(
+        settings: Settings,
+        status_thread: u32,
+    ) -> std::result::Result<Self, InputServiceError> {
         let (command_sender, command_receiver) = mpsc::channel();
         let (started_sender, started_receiver) = mpsc::sync_channel(1);
         let thread = thread::Builder::new()
             .name("lastkey-input".into())
-            .spawn(move || input_thread(settings, command_receiver, started_sender))
+            .spawn(move || input_thread(settings, command_receiver, started_sender, status_thread))
             .map_err(|error| InputServiceError::Hook(error.to_string()))?;
 
         let thread_id = receive_service_response(started_receiver, SERVICE_START_TIMEOUT)??;
@@ -142,47 +161,56 @@ impl InputService {
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
         self.send(InputCommand::Apply {
             settings,
+            deadline: Instant::now() + COMMAND_ACK_TIMEOUT,
             ready: ready_sender,
         })?;
-        receive_service_response(ready_receiver, COMMAND_ACK_TIMEOUT)
+        if receive_service_response(ready_receiver, COMMAND_ACK_TIMEOUT)? {
+            Ok(())
+        } else {
+            // The engine discarded an expired command instead of activating
+            // it; report the timeout so the caller reconciles the outcome.
+            Err(InputServiceError::ServiceTimeout)
+        }
+    }
+
+    /// Returns the settings the input engine is currently running. Queued
+    /// behind any in-flight Apply, so the answer confirms its outcome.
+    pub fn active_settings(&self) -> std::result::Result<Settings, InputServiceError> {
+        self.request(InputCommand::ActiveSettings)
     }
 
     pub fn capture_next(&self) -> std::result::Result<Receiver<CapturedKey>, InputServiceError> {
         let (sender, receiver) = mpsc::channel();
-        let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
-        self.send(InputCommand::Capture {
+        let deadline = Instant::now() + COMMAND_ACK_TIMEOUT;
+        self.request(|ready| InputCommand::Capture {
             sender,
-            ready: ready_sender,
-        })?;
-        receive_service_response(ready_receiver, COMMAND_ACK_TIMEOUT)??;
+            deadline,
+            ready,
+        })??;
         Ok(receiver)
     }
 
     pub fn cancel_capture(&self) -> std::result::Result<(), InputServiceError> {
-        let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
-        self.send(InputCommand::CancelCapture(ready_sender))?;
-        receive_service_response(ready_receiver, COMMAND_ACK_TIMEOUT)
+        self.request(InputCommand::CancelCapture)
     }
 
     pub fn start_measurement(
         &self,
     ) -> std::result::Result<Receiver<MeasurementUpdate>, InputServiceError> {
         let (sender, receiver) = mpsc::channel();
-        let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
-        self.send(InputCommand::StartMeasurement {
+        let deadline = Instant::now() + COMMAND_ACK_TIMEOUT;
+        self.request(|ready| InputCommand::StartMeasurement {
             sender,
-            ready: ready_sender,
-        })?;
-        receive_service_response(ready_receiver, COMMAND_ACK_TIMEOUT)??;
+            deadline,
+            ready,
+        })??;
         Ok(receiver)
     }
 
     pub fn stop_measurement(
         &self,
     ) -> std::result::Result<Option<MeasurementUpdate>, InputServiceError> {
-        let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
-        self.send(InputCommand::StopMeasurement(ready_sender))?;
-        receive_service_response(ready_receiver, COMMAND_ACK_TIMEOUT)
+        self.request(InputCommand::StopMeasurement)
     }
 
     pub fn stop(mut self) {
@@ -196,6 +224,21 @@ impl InputService {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+    }
+
+    /// Sends one command and waits for its acknowledgement. Every request-shaped
+    /// command shares this: a one-slot channel, `COMMAND_ACK_TIMEOUT`, and a
+    /// disconnect that means the service is gone (see `receive_service_response`).
+    /// Arming commands (Apply, Capture, StartMeasurement) additionally carry a
+    /// deadline so a late activation cannot arm for a caller that gave up;
+    /// disarming commands deliberately do not.
+    fn request<T>(
+        &self,
+        command: impl FnOnce(mpsc::SyncSender<T>) -> InputCommand,
+    ) -> std::result::Result<T, InputServiceError> {
+        let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
+        self.send(command(ready_sender))?;
+        receive_service_response(ready_receiver, COMMAND_ACK_TIMEOUT)
     }
 
     fn send(&self, command: InputCommand) -> std::result::Result<(), InputServiceError> {
@@ -222,6 +265,10 @@ impl RuntimeService for InputService {
         InputService::apply(self, settings).map_err(|error| error.to_string())
     }
 
+    fn active_settings(&self) -> Result<Settings, String> {
+        InputService::active_settings(self).map_err(|error| error.to_string())
+    }
+
     fn begin_key_capture(&self) -> Result<Receiver<CapturedKey>, String> {
         self.capture_next().map_err(|error| error.to_string())
     }
@@ -245,7 +292,6 @@ struct InputEngine {
     capture_sender: Option<Sender<CapturedKey>>,
     measurement: Option<MeasurementSession>,
     measurement_sender: Option<Sender<MeasurementUpdate>>,
-    measurement_event_count: u32,
     // Capture consumes key-down, so its matching key-up must also be consumed.
     captured_key_awaiting_release: Option<PhysicalKey>,
     scheduler: Option<HighResolutionTimer>,
@@ -264,6 +310,8 @@ struct HookHealth {
     consecutive_misses: u8,
     reinstall_requested: bool,
     last_reinstall_request: Option<Instant>,
+    consecutive_reinstall_failures: u8,
+    status_reported_as_lost: bool,
 }
 
 struct HighResolutionTimer {
@@ -346,6 +394,8 @@ impl HookHealth {
             consecutive_misses: 0,
             reinstall_requested: false,
             last_reinstall_request: None,
+            consecutive_reinstall_failures: 0,
+            status_reported_as_lost: false,
         }
     }
 
@@ -390,6 +440,22 @@ impl HookHealth {
     fn reinstalled(&mut self) {
         self.observed_events.clear();
         self.consecutive_misses = 0;
+        self.consecutive_reinstall_failures = 0;
+    }
+
+    fn note_reinstall_failed(&mut self) {
+        self.consecutive_reinstall_failures = self.consecutive_reinstall_failures.saturating_add(1);
+    }
+
+    /// Reports `Some(lost)` exactly once per lost/recovered transition, so a
+    /// permanently dead hook notifies once instead of on every retry.
+    fn take_hook_status_change(&mut self) -> Option<bool> {
+        let lost = self.consecutive_reinstall_failures >= HOOK_LOST_AFTER_FAILURES;
+        if lost == self.status_reported_as_lost {
+            return None;
+        }
+        self.status_reported_as_lost = lost;
+        Some(lost)
     }
 
     fn prune(&mut self, now: Instant) {
@@ -409,7 +475,6 @@ impl InputEngine {
             capture_sender: None,
             measurement: None,
             measurement_sender: None,
-            measurement_event_count: 0,
             captured_key_awaiting_release: None,
             scheduler: None,
             hook_health: HookHealth::new(),
@@ -434,12 +499,13 @@ impl InputEngine {
         }
 
         if self.capture_sender.is_some() {
-            if action == KeyAction::Down {
+            if action == KeyAction::Down && is_capture_eligible(physical) {
                 self.complete_capture(physical);
                 return EventDisposition::Consume;
             }
             // A key held before capture started has no consumed key-down,
             // so its key-up must pass through to release existing output.
+            // Ineligible modifiers pass through as well and keep waiting.
             return EventDisposition::PassThrough;
         }
 
@@ -473,7 +539,9 @@ impl InputEngine {
             return;
         }
         if action == KeyAction::Down && self.capture_sender.is_some() {
-            self.complete_capture(physical);
+            if is_capture_eligible(physical) {
+                self.complete_capture(physical);
+            }
             return;
         }
 
@@ -484,15 +552,27 @@ impl InputEngine {
             self.hook_health.observe_raw(physical, action, now);
         }
         if let Some(session) = self.measurement.as_mut() {
-            self.measurement_event_count += 1;
+            let edges = session.edge_count();
             session.observe(key, action, now);
+            // Repeat down or duplicate up: nothing observable changed.
+            if session.edge_count() == edges {
+                return;
+            }
             let statistics = session.statistics();
-            if let Some(sender) = &self.measurement_sender {
-                let _ = sender.send(MeasurementUpdate {
-                    observed_event_count: self.measurement_event_count,
-                    statistics,
-                    recommendation: recommend(statistics),
-                });
+            let update = MeasurementUpdate {
+                observed_event_count: session.edge_count(),
+                statistics,
+                recommendation: recommend(statistics),
+            };
+            let delivered = self
+                .measurement_sender
+                .as_ref()
+                .is_some_and(|sender| sender.send(update).is_ok());
+            if !delivered {
+                // The consumer is gone; running on would bypass SOCD with no
+                // owner, so drop the session instead of feeding a dead queue.
+                self.measurement = None;
+                self.measurement_sender = None;
             }
         }
     }
@@ -508,7 +588,23 @@ impl InputEngine {
         self.capture_sender = None;
         self.measurement = None;
         self.measurement_sender = None;
-        self.measurement_event_count = 0;
+    }
+
+    /// Activates settings unless the caller's acknowledgement wait already
+    /// expired, in which case persistence was rolled back and a late
+    /// activation would diverge from it. Returns whether it activated.
+    /// Check-then-execute runs on the single input thread, and execution is
+    /// immediate, so a command started in time always reports back in time.
+    fn apply_if_current(&mut self, settings: Settings, deadline: Instant) -> bool {
+        if Instant::now() > deadline {
+            return false;
+        }
+        self.apply(settings);
+        true
+    }
+
+    fn active_settings(&self) -> Settings {
+        self.settings.clone()
     }
 
     fn release_all(&mut self) {
@@ -542,13 +638,51 @@ impl InputEngine {
         self.cancel_timer();
     }
 
+    /// Entering capture reconciles live state first: any held output is
+    /// released, physical SOCD state is cleared, and pending transitions are
+    /// dropped. Otherwise a pre-held key's auto-repeat could become the
+    /// captured input while its release is consumed, leaving output held
+    /// with no key down to release it.
+    fn begin_capture(&mut self, sender: Sender<CapturedKey>) {
+        self.captured_key_awaiting_release = None;
+        self.reset_timing_state();
+        self.capture_sender = Some(sender);
+    }
+
+    /// Arms capture unless the caller's acknowledgement wait already expired,
+    /// in which case the caller reported failure and dropped its receiver.
+    /// Arming then would release live output and swallow the next keystroke
+    /// for nobody. Returns whether it armed.
+    fn begin_capture_if_current(&mut self, sender: Sender<CapturedKey>, deadline: Instant) -> bool {
+        if Instant::now() > deadline {
+            return false;
+        }
+        self.begin_capture(sender);
+        true
+    }
+
     fn start_measurement(&mut self, sender: Sender<MeasurementUpdate>) {
         self.capture_sender = None;
         self.captured_key_awaiting_release = None;
         self.reset_timing_state();
         self.measurement = Some(MeasurementSession::new());
         self.measurement_sender = Some(sender);
-        self.measurement_event_count = 0;
+    }
+
+    /// Arms a session unless the caller's acknowledgement wait already
+    /// expired, in which case the caller reported failure and dropped its
+    /// receiver. Arming then would bypass SOCD with no owner. Returns
+    /// whether it armed.
+    fn start_measurement_if_current(
+        &mut self,
+        sender: Sender<MeasurementUpdate>,
+        deadline: Instant,
+    ) -> bool {
+        if Instant::now() > deadline {
+            return false;
+        }
+        self.start_measurement(sender);
+        true
     }
 
     fn cancel_capture(&mut self) {
@@ -568,18 +702,23 @@ impl InputEngine {
     }
 
     fn stop_measurement(&mut self) -> Option<MeasurementUpdate> {
-        let update = self.measurement.take().and_then(|session| {
-            (self.measurement_event_count > 0).then(|| {
-                let statistics = session.statistics();
-                MeasurementUpdate {
-                    observed_event_count: self.measurement_event_count,
-                    statistics,
-                    recommendation: recommend(statistics),
-                }
-            })
+        // Only a session that actually ran needs the timing reset: SOCD was
+        // bypassed while it ran, so physical and output state are stale. With
+        // no session there is nothing to reconcile, and resetting would
+        // release live output — a UI disconnect must never interrupt SOCD.
+        let Some(session) = self.measurement.take() else {
+            self.measurement_sender = None;
+            return None;
+        };
+        let update = (session.edge_count() > 0).then(|| {
+            let statistics = session.statistics();
+            MeasurementUpdate {
+                observed_event_count: session.edge_count(),
+                statistics,
+                recommendation: recommend(statistics),
+            }
         });
         self.measurement_sender = None;
-        self.measurement_event_count = 0;
         self.reset_timing_state();
         update
     }
@@ -605,6 +744,18 @@ impl InputEngine {
 
     fn hook_reinstalled(&mut self) {
         self.hook_health.reinstalled();
+    }
+
+    /// Records a failed reinstall attempt. Any output held at that moment is
+    /// released first: with the hook gone, no release event will ever arrive
+    /// to clear it, so leaving it held would stick a key down.
+    fn hook_reinstall_failed(&mut self) {
+        self.release_all();
+        self.hook_health.note_reinstall_failed();
+    }
+
+    fn take_hook_status_change(&mut self) -> Option<bool> {
+        self.hook_health.take_hook_status_change()
     }
 }
 
@@ -772,6 +923,16 @@ unsafe extern "system" fn raw_input_window_proc(
     unsafe { DefWindowProcW(window, message, w_param, l_param) }
 }
 
+/// Whether raw input arrived without a device handle, marking it as injected
+/// (our own `SendInput` output, or another app's) rather than physical.
+/// Injected input must not reach hook-health: the hook never observes our own
+/// emissions, so each one would count as a hook miss toward a spurious
+/// reinstall (runtime invariant 4). Capture and measurement must not observe
+/// it either: an armed capture would otherwise complete on our own output.
+fn is_injected(header: &RAWINPUTHEADER) -> bool {
+    header.hDevice.0.is_null()
+}
+
 fn process_raw_input(handle: HRAWINPUT) {
     let mut raw = std::mem::MaybeUninit::<RAWINPUT>::zeroed();
     let mut byte_count = size_of::<RAWINPUT>() as u32;
@@ -790,6 +951,9 @@ fn process_raw_input(handle: HRAWINPUT) {
 
     let raw = unsafe { raw.assume_init() };
     if raw.header.dwType != RIM_TYPEKEYBOARD.0 {
+        return;
+    }
+    if is_injected(&raw.header) {
         return;
     }
     let keyboard = unsafe { raw.data.keyboard };
@@ -817,6 +981,7 @@ fn input_thread(
     settings: Settings,
     commands: Receiver<InputCommand>,
     started: mpsc::SyncSender<Result<u32, InputServiceError>>,
+    status_thread: u32,
 ) {
     let mut ignored = MSG::default();
     unsafe {
@@ -899,30 +1064,47 @@ fn input_thread(
         if message.message == COMMAND_MESSAGE {
             while let Ok(command) = commands.try_recv() {
                 match command {
-                    InputCommand::Apply { settings, ready } => ENGINE.with(|engine| {
-                        engine
+                    InputCommand::Apply {
+                        settings,
+                        deadline,
+                        ready,
+                    } => ENGINE.with(|engine| {
+                        let activated = engine
                             .borrow_mut()
                             .as_mut()
                             .expect("input engine is initialized")
-                            .apply(settings);
-                        let _ = ready.send(());
+                            .apply_if_current(settings, deadline);
+                        let _ = ready.send(activated);
                     }),
-                    InputCommand::Capture { sender, ready } => {
-                        match raw_input_window.ensure_keyboard_registration() {
-                            Ok(()) => {
-                                ENGINE.with(|engine| {
-                                    let mut engine = engine.borrow_mut();
-                                    let engine =
-                                        engine.as_mut().expect("input engine is initialized");
-                                    engine.capture_sender = Some(sender);
-                                });
+                    InputCommand::ActiveSettings(ready) => ENGINE.with(|engine| {
+                        let settings = engine
+                            .borrow()
+                            .as_ref()
+                            .expect("input engine is initialized")
+                            .active_settings();
+                        let _ = ready.send(settings);
+                    }),
+                    InputCommand::Capture {
+                        sender,
+                        deadline,
+                        ready,
+                    } => match raw_input_window.ensure_keyboard_registration() {
+                        Ok(()) => ENGINE.with(|engine| {
+                            let armed = engine
+                                .borrow_mut()
+                                .as_mut()
+                                .expect("input engine is initialized")
+                                .begin_capture_if_current(sender, deadline);
+                            if armed {
                                 let _ = ready.send(Ok(()));
+                            } else {
+                                let _ = ready.send(Err(InputServiceError::ServiceTimeout));
                             }
-                            Err(error) => {
-                                let _ = ready.send(Err(error));
-                            }
+                        }),
+                        Err(error) => {
+                            let _ = ready.send(Err(error));
                         }
-                    }
+                    },
                     InputCommand::CancelCapture(ready) => ENGINE.with(|engine| {
                         engine
                             .borrow_mut()
@@ -931,23 +1113,27 @@ fn input_thread(
                             .cancel_capture();
                         let _ = ready.send(());
                     }),
-                    InputCommand::StartMeasurement { sender, ready } => {
-                        match raw_input_window.ensure_keyboard_registration() {
-                            Ok(()) => {
-                                ENGINE.with(|engine| {
-                                    engine
-                                        .borrow_mut()
-                                        .as_mut()
-                                        .expect("input engine is initialized")
-                                        .start_measurement(sender);
-                                });
+                    InputCommand::StartMeasurement {
+                        sender,
+                        deadline,
+                        ready,
+                    } => match raw_input_window.ensure_keyboard_registration() {
+                        Ok(()) => ENGINE.with(|engine| {
+                            let started = engine
+                                .borrow_mut()
+                                .as_mut()
+                                .expect("input engine is initialized")
+                                .start_measurement_if_current(sender, deadline);
+                            if started {
                                 let _ = ready.send(Ok(()));
+                            } else {
+                                let _ = ready.send(Err(InputServiceError::ServiceTimeout));
                             }
-                            Err(error) => {
-                                let _ = ready.send(Err(error));
-                            }
+                        }),
+                        Err(error) => {
+                            let _ = ready.send(Err(error));
                         }
-                    }
+                    },
                     InputCommand::StopMeasurement(ready) => ENGINE.with(|engine| {
                         let update = engine
                             .borrow_mut()
@@ -978,14 +1164,31 @@ fn input_thread(
                 .expect("input engine is initialized")
                 .take_hook_reinstall_request()
         });
-        if reinstall_requested && replace_keyboard_hook(&mut hook, instance).is_ok() {
-            ENGINE.with(|engine| {
-                engine
-                    .borrow_mut()
-                    .as_mut()
-                    .expect("input engine is initialized")
-                    .hook_reinstalled();
+        if reinstall_requested {
+            let restored = replace_keyboard_hook(&mut hook, instance).is_ok();
+            let change = ENGINE.with(|engine| {
+                let mut engine = engine.borrow_mut();
+                let engine = engine.as_mut().expect("input engine is initialized");
+                if restored {
+                    engine.hook_reinstalled();
+                    // Keys pressed and released while the hook was gone were
+                    // never observed, so physical state from before is stale.
+                    engine.reset_timing_state();
+                } else {
+                    engine.hook_reinstall_failed();
+                }
+                engine.take_hook_status_change()
             });
+            if let Some(lost) = change {
+                let _ = unsafe {
+                    PostThreadMessageW(
+                        status_thread,
+                        HOOK_STATUS_MESSAGE,
+                        WPARAM(usize::from(lost)),
+                        LPARAM(0),
+                    )
+                };
+            }
         }
     }
 
@@ -1081,6 +1284,16 @@ fn action_for(message: WPARAM) -> Option<KeyAction> {
     }
 }
 
+/// Capture is for SOCD movement keys. A bound modifier would be swallowed
+/// globally, so modifiers stay eligible for normal typing instead: their
+/// key-down passes through and capture keeps waiting.
+fn is_capture_eligible(physical: PhysicalKey) -> bool {
+    !matches!(
+        (physical.scan_code, physical.extended),
+        (0x2A, false) | (0x36, false) | (0x1D, _) | (0x38, _)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1134,7 +1347,11 @@ mod tests {
         assert_eq!(
             {
                 engine.process_raw(first, KeyAction::Down, start);
-                engine.measurement_event_count
+                engine
+                    .measurement
+                    .as_ref()
+                    .expect("measurement is active")
+                    .edge_count()
             },
             1
         );
@@ -1156,9 +1373,32 @@ mod tests {
 
         let update = engine.stop_measurement().expect("final measurement update");
         assert_eq!(update.observed_event_count, 4);
-        assert_eq!(update.statistics.sample_count(), 1);
-        assert_eq!(update.statistics.transition_count(), 1);
-        assert_eq!(update.statistics.overlap_count(), 0);
+        assert_eq!(update.statistics.sample_count, 1);
+        assert_eq!(update.statistics.transition.count, 1);
+        assert_eq!(update.statistics.overlap.count, 0);
+    }
+
+    #[test]
+    fn stop_without_session_leaves_live_socd_state_untouched() {
+        let settings = Settings::default();
+        let key = LogicalKey::HorizontalFirst;
+        let mut engine = InputEngine::new(settings);
+        let mut emitter = TestEmitter { attempts: vec![] };
+        let now = Instant::now();
+        engine
+            .timing
+            .process(key, KeyAction::Down, now, &mut emitter);
+        assert_eq!(emitter.attempts.len(), 1);
+
+        assert!(engine.stop_measurement().is_none());
+
+        // Still physically held, so this is a repeat: no new emission.
+        // Counting (rather than asserting Consume) is what discriminates:
+        // a cleared state would press and emit here.
+        engine
+            .timing
+            .process(key, KeyAction::Down, now, &mut emitter);
+        assert_eq!(emitter.attempts.len(), 1);
     }
 
     #[test]
@@ -1169,6 +1409,31 @@ mod tests {
         engine.start_measurement(sender);
 
         assert!(engine.stop_measurement().is_none());
+    }
+
+    #[test]
+    fn expired_measurement_start_arms_no_session() {
+        let mut engine = InputEngine::new(Settings::default());
+        let (sender, _receiver) = mpsc::channel();
+
+        assert!(
+            !engine.start_measurement_if_current(sender, Instant::now() - Duration::from_secs(1))
+        );
+        assert!(engine.measurement.is_none());
+    }
+
+    #[test]
+    fn disconnected_consumer_drops_the_measurement_session() {
+        let settings = Settings::default();
+        let key = settings.binding(LogicalKey::HorizontalFirst);
+        let mut engine = InputEngine::new(settings);
+        let (sender, receiver) = mpsc::channel();
+        engine.start_measurement(sender);
+        drop(receiver);
+
+        engine.process_raw(key, KeyAction::Down, Instant::now());
+
+        assert!(engine.measurement.is_none());
     }
 
     #[test]
@@ -1207,6 +1472,166 @@ mod tests {
         assert_eq!(engine.captured_key_awaiting_release, Some(captured));
     }
 
+    struct TestEmitter {
+        attempts: Vec<(LogicalKey, KeyAction)>,
+    }
+
+    impl OutputEmitter for TestEmitter {
+        fn emit(&mut self, key: LogicalKey, action: KeyAction) -> bool {
+            self.attempts.push((key, action));
+            true
+        }
+    }
+
+    fn enabled_timing_settings() -> Settings {
+        let mut settings = Settings::default();
+        settings.timing.socd_transition_delay_enabled = true;
+        settings
+    }
+
+    #[test]
+    fn begin_capture_clears_stale_physical_state_without_emitting() {
+        let mut engine = InputEngine::new(enabled_timing_settings());
+        let mut emitter = TestEmitter { attempts: vec![] };
+        let start = Instant::now();
+
+        // A Down, then D Down: A is released through the fake emitter and D
+        // is left pending, so output is empty while A stays physically held.
+        engine.timing.process(
+            LogicalKey::HorizontalFirst,
+            KeyAction::Down,
+            start,
+            &mut emitter,
+        );
+        engine.timing.process(
+            LogicalKey::HorizontalSecond,
+            KeyAction::Down,
+            start,
+            &mut emitter,
+        );
+
+        let (sender, _receiver) = mpsc::channel();
+        engine.begin_capture(sender);
+        assert!(engine.capture_sender.is_some());
+
+        // The stale physical hold is gone: the release passes through to the
+        // timing core instead of resurrecting output.
+        let attempts = emitter.attempts.len();
+        assert_eq!(
+            engine.timing.process(
+                LogicalKey::HorizontalFirst,
+                KeyAction::Up,
+                start,
+                &mut emitter,
+            ),
+            EventDisposition::PassThrough
+        );
+        assert_eq!(emitter.attempts.len(), attempts);
+    }
+
+    #[test]
+    fn capture_repeat_then_release_leaves_no_held_output() {
+        let mut engine = InputEngine::new(Settings::default());
+        let key = LogicalKey::HorizontalFirst;
+        let physical = engine.settings.binding(key);
+        let (sender, receiver) = mpsc::channel();
+        engine.begin_capture(sender);
+
+        // Auto-repeat of a pre-held key becomes the captured input.
+        assert_eq!(
+            engine.process_hook(physical, KeyAction::Down, Instant::now()),
+            EventDisposition::Consume
+        );
+        assert_eq!(receiver.recv().expect("captured key").physical, physical);
+        // Its release is consumed by the capture contract.
+        assert_eq!(
+            engine.process_hook(physical, KeyAction::Up, Instant::now()),
+            EventDisposition::Consume
+        );
+        engine.cancel_capture();
+
+        assert_eq!(
+            engine.timing.output_state(key),
+            crate::core::DeliveryState::NotHeld
+        );
+        // A fresh press works instead of being swallowed as a repeat.
+        let mut emitter = TestEmitter { attempts: vec![] };
+        engine
+            .timing
+            .process(key, KeyAction::Down, Instant::now(), &mut emitter);
+        assert_eq!(emitter.attempts.len(), 1);
+    }
+
+    #[test]
+    fn expired_capture_arms_no_capture() {
+        let mut engine = InputEngine::new(Settings::default());
+        let (sender, _receiver) = mpsc::channel();
+
+        assert!(!engine.begin_capture_if_current(sender, Instant::now() - Duration::from_secs(1)));
+        assert!(engine.capture_sender.is_none());
+    }
+
+    #[test]
+    fn expired_capture_preserves_live_output() {
+        let settings = Settings::default();
+        let key = LogicalKey::HorizontalFirst;
+        let mut engine = InputEngine::new(settings);
+        let mut emitter = TestEmitter { attempts: vec![] };
+        engine
+            .timing
+            .process(key, KeyAction::Down, Instant::now(), &mut emitter);
+        assert_eq!(emitter.attempts.len(), 1);
+
+        let (sender, _receiver) = mpsc::channel();
+        assert!(!engine.begin_capture_if_current(sender, Instant::now() - Duration::from_secs(1)));
+        assert!(engine.capture_sender.is_none());
+
+        // Still held live: no release was emitted for the skipped capture.
+        assert_eq!(emitter.attempts.len(), 1);
+        assert_eq!(
+            engine.timing.output_state(key),
+            crate::core::DeliveryState::SyntheticHeld
+        );
+    }
+
+    #[test]
+    fn modifier_scan_codes_are_not_capture_eligible() {
+        for physical in [
+            PhysicalKey::new(0x2A, false),
+            PhysicalKey::new(0x36, false),
+            PhysicalKey::new(0x1D, false),
+            PhysicalKey::new(0x1D, true),
+            PhysicalKey::new(0x38, false),
+            PhysicalKey::new(0x38, true),
+        ] {
+            assert!(!is_capture_eligible(physical));
+        }
+        for physical in [
+            PhysicalKey::new(0x11, false),
+            PhysicalKey::new(0x1E, false),
+            PhysicalKey::new(0x48, true),
+        ] {
+            assert!(is_capture_eligible(physical));
+        }
+    }
+
+    #[test]
+    fn modifier_down_during_capture_passes_through_and_keeps_waiting() {
+        let mut engine = InputEngine::new(Settings::default());
+        let (sender, receiver) = mpsc::channel();
+        engine.capture_sender = Some(sender);
+        let shift = PhysicalKey::new(0x2A, false);
+
+        assert_eq!(
+            engine.process_hook(shift, KeyAction::Down, Instant::now()),
+            EventDisposition::PassThrough
+        );
+        engine.process_raw(shift, KeyAction::Down, Instant::now());
+
+        assert!(engine.capture_sender.is_some());
+        assert!(receiver.try_recv().is_err());
+    }
+
     #[test]
     fn starting_measurement_cancels_a_pending_capture() {
         let mut engine = InputEngine::new(Settings::default());
@@ -1223,6 +1648,20 @@ mod tests {
         ));
         assert_eq!(engine.captured_key_awaiting_release, None);
         assert!(engine.measurement.is_some());
+    }
+
+    #[test]
+    fn expired_apply_is_skipped_without_touching_settings() {
+        let mut engine = InputEngine::new(Settings::default());
+        let mut next = Settings::default();
+        next.timing.socd_transition_delay_enabled = true;
+
+        assert!(!engine.apply_if_current(next, Instant::now() - Duration::from_secs(1)));
+        assert_eq!(engine.settings, Settings::default());
+
+        assert!(
+            engine.apply_if_current(Settings::default(), Instant::now() + Duration::from_secs(2))
+        );
     }
 
     #[test]
@@ -1268,6 +1707,40 @@ mod tests {
         );
 
         assert!(health.take_reinstall_request());
+    }
+
+    #[test]
+    fn hook_status_changes_once_per_lost_and_recovered_transition() {
+        let mut health = HookHealth::new();
+        assert_eq!(health.take_hook_status_change(), None);
+
+        for _ in 0..HOOK_LOST_AFTER_FAILURES - 1 {
+            health.note_reinstall_failed();
+            assert_eq!(health.take_hook_status_change(), None);
+        }
+        health.note_reinstall_failed();
+        assert_eq!(health.take_hook_status_change(), Some(true));
+        // A permanently dead hook notifies once, not on every retry.
+        health.note_reinstall_failed();
+        assert_eq!(health.take_hook_status_change(), None);
+
+        health.reinstalled();
+        assert_eq!(health.take_hook_status_change(), Some(false));
+        assert_eq!(health.take_hook_status_change(), None);
+    }
+
+    #[test]
+    fn injected_raw_input_is_identified_by_a_null_device() {
+        let mut header = RAWINPUTHEADER {
+            dwType: RIM_TYPEKEYBOARD.0,
+            dwSize: 0,
+            hDevice: HANDLE(std::ptr::null_mut()),
+            wParam: WPARAM(0),
+        };
+        assert!(is_injected(&header));
+
+        header.hDevice = HANDLE(std::ptr::without_provenance_mut(1));
+        assert!(!is_injected(&header));
     }
 
     #[test]
@@ -1345,7 +1818,32 @@ mod tests {
         let (second_sender, _second_receiver) = mpsc::channel();
         engine.start_measurement(second_sender);
         assert!(engine.measurement.is_some());
-        assert_eq!(engine.measurement_event_count, 0);
+        assert_eq!(
+            engine
+                .measurement
+                .as_ref()
+                .expect("measurement is active")
+                .edge_count(),
+            0
+        );
+    }
+
+    #[test]
+    fn repeat_down_produces_no_measurement_update() {
+        let settings = Settings::default();
+        let key = settings.binding(LogicalKey::HorizontalFirst);
+        let mut engine = InputEngine::new(settings);
+        let (sender, receiver) = mpsc::channel();
+        engine.start_measurement(sender);
+
+        engine.process_raw(key, KeyAction::Down, Instant::now());
+        receiver.recv().expect("first edge reports");
+
+        engine.process_raw(key, KeyAction::Down, Instant::now());
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
     }
 
     #[test]

@@ -297,7 +297,7 @@ fn shutdown_releases_all_held_output() {
 }
 
 #[test]
-fn reset_releases_output_and_clears_physical_state_before_mapping_replacement() {
+fn reset_state_clears_output_and_physical_state() {
     let mut controller = disabled_controller();
     let mut emitter = TestEmitter::new([true, true]);
 
@@ -307,7 +307,7 @@ fn reset_releases_output_and_clears_physical_state_before_mapping_replacement() 
         LogicalKey::HorizontalFirst,
         KeyAction::Down,
     );
-    controller.reset(&mut emitter);
+    controller.reset_state(&mut emitter);
 
     assert_eq!(
         emitter.attempts,

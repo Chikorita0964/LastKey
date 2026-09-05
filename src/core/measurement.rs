@@ -5,83 +5,38 @@ use super::{KeyAction, LogicalKey};
 const MAX_PAIR_GAP: Duration = Duration::from_secs(1);
 pub const NEAR_SIMULTANEOUS_THRESHOLD_MICROS: u64 = 1_000;
 
+/// One per-distribution sample summary. Transition and overlap share the
+/// same shape, so they share this type instead of repeating six prefixed
+/// fields each.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct MeasurementStatistics {
-    sample_count: u32,
-    near_simultaneous_count: u32,
-    transition_count: u32,
-    overlap_count: u32,
-    transition_total_micros: i128,
-    overlap_total_micros: i128,
-    transition_min_micros: Option<u64>,
-    transition_max_micros: Option<u64>,
-    transition_latest_micros: Option<u64>,
-    transition_p10_micros: Option<u64>,
-    transition_median_micros: Option<u64>,
-    transition_p90_micros: Option<u64>,
-    overlap_min_micros: Option<u64>,
-    overlap_max_micros: Option<u64>,
-    overlap_latest_micros: Option<u64>,
-    overlap_p10_micros: Option<u64>,
-    overlap_median_micros: Option<u64>,
-    overlap_p90_micros: Option<u64>,
+pub struct SampleStats {
+    pub count: u32,
+    pub min_micros: Option<u64>,
+    pub max_micros: Option<u64>,
+    pub latest_micros: Option<u64>,
+    pub p10_micros: Option<u64>,
+    pub median_micros: Option<u64>,
+    pub p90_micros: Option<u64>,
 }
 
-impl MeasurementStatistics {
-    pub fn sample_count(self) -> u32 {
-        self.sample_count
+impl SampleStats {
+    fn push(&mut self, magnitude: u64, samples: &mut Vec<u64>) {
+        self.count += 1;
+        update_range(&mut self.min_micros, &mut self.max_micros, magnitude);
+        self.latest_micros = Some(magnitude);
+        insert_sorted(samples, magnitude);
+        self.p10_micros = percentile(samples, 10);
+        self.median_micros = percentile(samples, 50);
+        self.p90_micros = percentile(samples, 90);
     }
-    pub fn transition_count(self) -> u32 {
-        self.transition_count
-    }
-    pub fn near_simultaneous_count(self) -> u32 {
-        self.near_simultaneous_count
-    }
-    pub fn overlap_count(self) -> u32 {
-        self.overlap_count
-    }
-    pub fn average_transition_micros(self) -> Option<i64> {
-        average(self.transition_total_micros, self.transition_count)
-    }
-    pub fn average_overlap_micros(self) -> Option<i64> {
-        average(self.overlap_total_micros, self.overlap_count)
-    }
-    pub fn transition_min_micros(self) -> Option<u64> {
-        self.transition_min_micros
-    }
-    pub fn transition_max_micros(self) -> Option<u64> {
-        self.transition_max_micros
-    }
-    pub fn transition_latest_micros(self) -> Option<u64> {
-        self.transition_latest_micros
-    }
-    pub fn transition_p10_micros(self) -> Option<u64> {
-        self.transition_p10_micros
-    }
-    pub fn transition_median_micros(self) -> Option<u64> {
-        self.transition_median_micros
-    }
-    pub fn transition_p90_micros(self) -> Option<u64> {
-        self.transition_p90_micros
-    }
-    pub fn overlap_min_micros(self) -> Option<u64> {
-        self.overlap_min_micros
-    }
-    pub fn overlap_max_micros(self) -> Option<u64> {
-        self.overlap_max_micros
-    }
-    pub fn overlap_latest_micros(self) -> Option<u64> {
-        self.overlap_latest_micros
-    }
-    pub fn overlap_p10_micros(self) -> Option<u64> {
-        self.overlap_p10_micros
-    }
-    pub fn overlap_median_micros(self) -> Option<u64> {
-        self.overlap_median_micros
-    }
-    pub fn overlap_p90_micros(self) -> Option<u64> {
-        self.overlap_p90_micros
-    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MeasurementStatistics {
+    pub sample_count: u32,
+    pub near_simultaneous_count: u32,
+    pub transition: SampleStats,
+    pub overlap: SampleStats,
 }
 
 /// Opt-in, in-memory physical edge measurement for the two configured axes.
@@ -89,39 +44,22 @@ pub struct MeasurementSession {
     held: [bool; 4],
     released_at: [Option<Instant>; 4],
     pressed_at: [Option<Instant>; 4],
+    edge_count: u32,
     transition_samples: Vec<u64>,
     overlap_samples: Vec<u64>,
     statistics: MeasurementStatistics,
 }
 
 impl MeasurementSession {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             held: [false; 4],
             released_at: [None; 4],
             pressed_at: [None; 4],
+            edge_count: 0,
             transition_samples: Vec::new(),
             overlap_samples: Vec::new(),
-            statistics: MeasurementStatistics {
-                sample_count: 0,
-                near_simultaneous_count: 0,
-                transition_count: 0,
-                overlap_count: 0,
-                transition_total_micros: 0,
-                overlap_total_micros: 0,
-                transition_min_micros: None,
-                transition_max_micros: None,
-                transition_latest_micros: None,
-                transition_p10_micros: None,
-                transition_median_micros: None,
-                transition_p90_micros: None,
-                overlap_min_micros: None,
-                overlap_max_micros: None,
-                overlap_latest_micros: None,
-                overlap_p10_micros: None,
-                overlap_median_micros: None,
-                overlap_p90_micros: None,
-            },
+            statistics: MeasurementStatistics::default(),
         }
     }
 
@@ -132,17 +70,29 @@ impl MeasurementSession {
         now: Instant,
     ) -> Option<MeasurementStatistics> {
         let other = opposing_key(key);
+        // Auto-repeat downs and duplicate ups are not physical edges and
+        // must never inflate the count.
+        if action == KeyAction::Down && self.held[key.index()] {
+            return None;
+        }
+        if action == KeyAction::Up && !self.held[key.index()] {
+            return None;
+        }
+        self.edge_count += 1;
         match action {
-            KeyAction::Down if self.held[key.index()] => return None,
-            KeyAction::Up if !self.held[key.index()] => return None,
             KeyAction::Down => {
                 self.held[key.index()] = true;
+                // A re-press retires this key's old release candidate: it was
+                // either consumed already (None) or is stale, so it must never
+                // become the start of a later neutral-transition sample.
+                self.released_at[key.index()] = None;
                 if self.held[other.index()] {
                     self.pressed_at[key.index()] = Some(now);
-                } else if let Some(released) = self.released_at[other.index()].take()
-                    && now.saturating_duration_since(released) <= MAX_PAIR_GAP
-                {
-                    return Some(self.record(now, released, false));
+                } else if let Some(released) = self.released_at[other.index()].take() {
+                    let gap = now.saturating_duration_since(released);
+                    if gap <= MAX_PAIR_GAP {
+                        return Some(self.record(gap, false));
+                    }
                 }
             }
             KeyAction::Up => {
@@ -152,10 +102,16 @@ impl MeasurementSession {
                 // of the first key over-reports the overlap.
                 if let Some(pressed) = self.pressed_at[key.index()].take() {
                     self.pressed_at[other.index()] = None;
-                    return Some(self.record(pressed, now, true));
+                    let gap = now.saturating_duration_since(pressed);
+                    if gap <= MAX_PAIR_GAP {
+                        return Some(self.record(gap, true));
+                    }
                 }
                 if let Some(pressed) = self.pressed_at[other.index()].take() {
-                    return Some(self.record(pressed, now, true));
+                    let gap = now.saturating_duration_since(pressed);
+                    if gap <= MAX_PAIR_GAP {
+                        return Some(self.record(gap, true));
+                    }
                 }
                 self.released_at[key.index()] = Some(now);
             }
@@ -167,44 +123,27 @@ impl MeasurementSession {
         self.statistics
     }
 
-    fn record(&mut self, press: Instant, release: Instant, overlap: bool) -> MeasurementStatistics {
-        let micros = if overlap {
-            -(release.saturating_duration_since(press).as_micros() as i64)
-        } else {
-            press.saturating_duration_since(release).as_micros() as i64
-        };
-        let magnitude = micros.unsigned_abs();
+    pub fn edge_count(&self) -> u32 {
+        self.edge_count
+    }
+
+    /// Records a pre-checked pair gap. Callers apply the `MAX_PAIR_GAP`
+    /// filter first; this stores whatever gap it is given.
+    fn record(&mut self, gap: Duration, overlap: bool) -> MeasurementStatistics {
+        let magnitude = gap.as_micros() as u64;
         self.statistics.sample_count += 1;
         if magnitude < NEAR_SIMULTANEOUS_THRESHOLD_MICROS {
             self.statistics.near_simultaneous_count += 1;
             return self.statistics;
         }
         if overlap {
-            self.statistics.overlap_count += 1;
-            self.statistics.overlap_total_micros += i128::from(micros);
-            update_range(
-                &mut self.statistics.overlap_min_micros,
-                &mut self.statistics.overlap_max_micros,
-                magnitude,
-            );
-            self.statistics.overlap_latest_micros = Some(magnitude);
-            insert_sorted(&mut self.overlap_samples, magnitude);
-            self.statistics.overlap_p10_micros = percentile(&self.overlap_samples, 10);
-            self.statistics.overlap_median_micros = percentile(&self.overlap_samples, 50);
-            self.statistics.overlap_p90_micros = percentile(&self.overlap_samples, 90);
+            self.statistics
+                .overlap
+                .push(magnitude, &mut self.overlap_samples);
         } else {
-            self.statistics.transition_count += 1;
-            self.statistics.transition_total_micros += i128::from(micros);
-            update_range(
-                &mut self.statistics.transition_min_micros,
-                &mut self.statistics.transition_max_micros,
-                magnitude,
-            );
-            self.statistics.transition_latest_micros = Some(magnitude);
-            insert_sorted(&mut self.transition_samples, magnitude);
-            self.statistics.transition_p10_micros = percentile(&self.transition_samples, 10);
-            self.statistics.transition_median_micros = percentile(&self.transition_samples, 50);
-            self.statistics.transition_p90_micros = percentile(&self.transition_samples, 90);
+            self.statistics
+                .transition
+                .push(magnitude, &mut self.transition_samples);
         }
         self.statistics
     }
@@ -219,10 +158,6 @@ impl Default for MeasurementSession {
 fn opposing_key(key: LogicalKey) -> LogicalKey {
     let (first, second) = LogicalKey::axis_keys(key.axis());
     if key == first { second } else { first }
-}
-
-fn average(total: i128, count: u32) -> Option<i64> {
-    (count > 0).then(|| (total / i128::from(count)) as i64)
 }
 
 fn update_range(minimum: &mut Option<u64>, maximum: &mut Option<u64>, value: u64) {
