@@ -1,7 +1,5 @@
-LastKey is distributed under the GNU General Public License, version 3 only.
+LastKey is distributed under the MIT License.
 
 Portions of LastKey are derived from Hitboxer by Valentin Ignatev
 (https://github.com/valignatev/hitboxer). The original MIT copyright and
 license notice for those portions is preserved in LICENSES/MIT.txt.
-
-LastKey uses Slint under GPLv3.

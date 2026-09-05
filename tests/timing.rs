@@ -340,6 +340,53 @@ fn axes_keep_independent_pending_transitions() {
 }
 
 #[test]
+fn measurement_boundary_reset_clears_physical_repeat_state() {
+    let start = Instant::now();
+    let mut controller = TimingController::with_seed(
+        TimingSettings {
+            socd_transition_delay_enabled: false,
+            ..TimingSettings::default()
+        },
+        1,
+    );
+    let mut emitter = Emitter::default();
+    controller.process(
+        LogicalKey::HorizontalFirst,
+        KeyAction::Down,
+        start,
+        &mut emitter,
+    );
+    assert_eq!(emitter.0.len(), 1);
+
+    // Repeat without release is consumed without new output.
+    controller.process(
+        LogicalKey::HorizontalFirst,
+        KeyAction::Down,
+        start + Duration::from_millis(1),
+        &mut emitter,
+    );
+    assert_eq!(emitter.0.len(), 1);
+
+    // Measurement boundaries must clear physical state plus output.
+    controller.reset_state(&mut emitter);
+    assert_eq!(
+        emitter.0.last(),
+        Some(&Attempt(LogicalKey::HorizontalFirst, KeyAction::Up))
+    );
+
+    controller.process(
+        LogicalKey::HorizontalFirst,
+        KeyAction::Down,
+        start + Duration::from_millis(2),
+        &mut emitter,
+    );
+    assert_eq!(
+        emitter.0.last(),
+        Some(&Attempt(LogicalKey::HorizontalFirst, KeyAction::Down))
+    );
+}
+
+#[test]
 fn failed_overlap_release_attempts_to_restore_a_non_conflicting_output() {
     let start = Instant::now();
     let mut controller = TimingController::with_seed(timing((0, 0), (1, 1), true, 100), 1);

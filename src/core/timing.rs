@@ -1,6 +1,5 @@
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::debug_log;
 use crate::settings::TimingSettings;
 
 use super::{
@@ -14,23 +13,10 @@ enum PendingKind {
     Release(LogicalKey),
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TimingMode {
-    Transition,
-    Overlap,
-}
-
 #[derive(Clone, Copy, Debug)]
 struct PendingTransition {
     due: Instant,
     kind: PendingKind,
-    mode: TimingMode,
-    trace_id: u64,
-    axis: Axis,
-    old: LogicalKey,
-    new: LogicalKey,
-    scheduled_at: Instant,
-    requested_delay: Duration,
 }
 
 /// Reconciles SOCD decisions with immediate or delayed output. The platform calls
@@ -41,7 +27,6 @@ pub struct TimingController {
     settings: TimingSettings,
     pending: [Option<PendingTransition>; 2],
     random_state: u64,
-    next_trace_id: u64,
 }
 
 impl TimingController {
@@ -59,7 +44,6 @@ impl TimingController {
             settings,
             pending: [None, None],
             random_state: seed,
-            next_trace_id: 1,
         }
     }
 
@@ -81,17 +65,7 @@ impl TimingController {
         }
         let decision = self.socd.apply(key, action);
         let axis = axis_index(decision.axis);
-        if let Some(cancelled) = self.pending[axis].take() {
-            debug_log::write(format_args!(
-                "timing trace={} pending-cancelled mode={:?} axis={:?} old={:?} new={:?} pending={:?} reason=new-physical-input",
-                cancelled.trace_id,
-                cancelled.mode,
-                cancelled.axis,
-                cancelled.old,
-                cancelled.new,
-                cancelled.kind
-            ));
-        }
+        self.pending[axis] = None;
         self.reconcile(decision, key, action, now, emitter)
     }
 
@@ -105,24 +79,12 @@ impl TimingController {
                 continue;
             }
             self.pending[index] = None;
-            let actual_delay = now.saturating_duration_since(pending.scheduled_at);
-            let lateness = actual_delay.saturating_sub(pending.requested_delay);
-            debug_log::write(format_args!(
-                "timing trace={} timer-fired mode={:?} axis={:?} old={:?} new={:?} pending={:?} requested_delay_us={} actual_delay_us={} lateness_us={}",
-                pending.trace_id,
-                pending.mode,
-                pending.axis,
-                pending.old,
-                pending.new,
-                pending.kind,
-                pending.requested_delay.as_micros(),
-                actual_delay.as_micros(),
-                lateness.as_micros()
-            ));
-            let emitted = match pending.kind {
+            match pending.kind {
                 PendingKind::Press(key) => self.press(key, emitter),
                 PendingKind::Release(key) => {
                     if !self.release(key, emitter) {
+                        // Release the new output instead so the two directions
+                        // are never held together.
                         let (first, second) = LogicalKey::axis_keys(key.axis());
                         let new = if key == first { second } else { first };
                         self.release(new, emitter)
@@ -131,10 +93,6 @@ impl TimingController {
                     }
                 }
             };
-            debug_log::write(format_args!(
-                "timing trace={} delayed-output-completed mode={:?} pending={:?} success={emitted}",
-                pending.trace_id, pending.mode, pending.kind
-            ));
         }
     }
 
@@ -147,8 +105,9 @@ impl TimingController {
     }
 
     pub fn is_enabled(&self) -> bool {
-        self.settings_enabled()
+        self.settings.socd_transition_delay_enabled
     }
+
     pub fn output_state(&self, key: LogicalKey) -> DeliveryState {
         self.output[key.index()]
     }
@@ -156,6 +115,14 @@ impl TimingController {
     pub fn reset<E: OutputEmitter>(&mut self, emitter: &mut E) {
         self.release_all(emitter);
         *self = Self::new(self.settings.clone());
+    }
+
+    /// Clears both output and physical SOCD state at measurement boundaries.
+    /// `release_all` alone leaves `physically_held` behind, so a key released
+    /// during measurement would be treated as a repeat afterwards.
+    pub fn reset_state<E: OutputEmitter>(&mut self, emitter: &mut E) {
+        self.release_all(emitter);
+        self.socd = SocdState::new();
     }
 
     pub fn release_all<E: OutputEmitter>(&mut self, emitter: &mut E) {
@@ -179,30 +146,14 @@ impl TimingController {
             .find(|key| self.output[key.index()].is_held());
         if let (Some(old), Some(new)) = (held, decision.desired)
             && old != new
-            && self.settings_enabled()
+            && self.is_enabled()
         {
-            let trace_id = self.next_trace_id;
-            self.next_trace_id = self.next_trace_id.wrapping_add(1).max(1);
-            let (overlap_selected, probability_roll) = self.choose_overlap();
-            let selected_mode = if overlap_selected {
-                TimingMode::Overlap
-            } else {
-                TimingMode::Transition
-            };
-            debug_log::write(format_args!(
-                "timing trace={trace_id} decision source=physical-overlap axis={:?} old={old:?} new={new:?} mode={selected_mode:?} transition_delay_enabled={} preserve_overlap={} configured_rate={} effective_rate={} roll={} socd_transition_range_ms={}-{} preserved_overlap_range_ms={}-{}",
-                decision.axis,
-                self.settings.socd_transition_delay_enabled,
-                self.settings.preserve_overlap,
-                self.settings.overlap_preservation_rate,
-                self.settings.effective_overlap_preservation_rate(),
-                probability_roll.map_or_else(|| "none".to_owned(), |roll| roll.to_string()),
-                format_millis(self.settings.socd_transition_min_micros),
-                format_millis(self.settings.socd_transition_max_micros),
-                format_millis(self.settings.preserved_overlap_min_micros),
-                format_millis(self.settings.preserved_overlap_max_micros)
-            ));
+            let overlap_selected = self.choose_overlap();
             if overlap_selected {
+                // If the overlapping press fails, keep the old output held and
+                // drop the new direction. Unlike the immediate path there is no
+                // physical pass-through here because both keys are already held
+                // and the delayed release is still pending for the old key.
                 if self.press(new, emitter) {
                     let delay = self.random_delay(
                         self.settings.preserved_overlap_min_micros,
@@ -211,23 +162,7 @@ impl TimingController {
                     self.pending[axis_index(decision.axis)] = Some(PendingTransition {
                         due: now + delay,
                         kind: PendingKind::Release(old),
-                        mode: TimingMode::Overlap,
-                        trace_id,
-                        axis: decision.axis,
-                        old,
-                        new,
-                        scheduled_at: now,
-                        requested_delay: delay,
                     });
-                    debug_log::write(format_args!(
-                        "timing trace={trace_id} scheduled mode=Overlap immediate={new:?}:Down delayed={old:?}:Up requested_delay_ms={:.1} requested_delay_us={}",
-                        delay.as_secs_f64() * 1_000.0,
-                        delay.as_micros()
-                    ));
-                } else {
-                    debug_log::write(format_args!(
-                        "timing trace={trace_id} schedule-aborted mode=Overlap failed={new:?}:Down"
-                    ));
                 }
             } else if self.release(old, emitter) {
                 let delay = self.random_delay(
@@ -237,23 +172,7 @@ impl TimingController {
                 self.pending[axis_index(decision.axis)] = Some(PendingTransition {
                     due: now + delay,
                     kind: PendingKind::Press(new),
-                    mode: TimingMode::Transition,
-                    trace_id,
-                    axis: decision.axis,
-                    old,
-                    new,
-                    scheduled_at: now,
-                    requested_delay: delay,
                 });
-                debug_log::write(format_args!(
-                    "timing trace={trace_id} scheduled mode=Transition immediate={old:?}:Up delayed={new:?}:Down requested_delay_ms={:.1} requested_delay_us={}",
-                    delay.as_secs_f64() * 1_000.0,
-                    delay.as_micros()
-                ));
-            } else {
-                debug_log::write(format_args!(
-                    "timing trace={trace_id} schedule-aborted mode=Transition failed={old:?}:Up"
-                ));
             }
             return EventDisposition::Consume;
         }
@@ -318,35 +237,30 @@ impl TimingController {
         }
     }
 
-    fn settings_enabled(&self) -> bool {
-        self.settings.socd_transition_delay_enabled
-    }
-    fn choose_overlap(&mut self) -> (bool, Option<u8>) {
+    fn choose_overlap(&mut self) -> bool {
         let preservation_rate = self.settings.effective_overlap_preservation_rate();
         if preservation_rate == 0 {
-            return (false, None);
+            return false;
         }
         if preservation_rate == 100 {
-            return (true, None);
+            return true;
         }
         let roll = (self.next_random() % 100) as u8;
-        (roll < preservation_rate, Some(roll))
+        roll < preservation_rate
     }
+
     fn random_delay(&mut self, min_micros: u32, max_micros: u32) -> Duration {
         let step_count = u64::from((max_micros - min_micros) / 100);
         let selected_step = self.next_random() % (step_count + 1);
         Duration::from_micros(u64::from(min_micros) + selected_step * 100)
     }
+
     fn next_random(&mut self) -> u64 {
         self.random_state ^= self.random_state << 13;
         self.random_state ^= self.random_state >> 7;
         self.random_state ^= self.random_state << 17;
         self.random_state
     }
-}
-
-fn format_millis(micros: u32) -> String {
-    format!("{}.{:01}", micros / 1_000, (micros % 1_000) / 100)
 }
 
 fn axis_index(axis: Axis) -> usize {

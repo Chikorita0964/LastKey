@@ -2,7 +2,7 @@
 
 Last updated: September 1, 2026
 
-LastKey is a local, open-source Windows application with an experimental Linux input backend, developed and maintained by Chikorita0964. Its source code is available on GitHub under the GNU General Public License, version 3 only.
+LastKey is a local, open-source Windows application with an experimental Linux input backend, developed and maintained by Chikorita0964. Its source code is available on GitHub under the MIT License.
 
 ## Keyboard Input
 

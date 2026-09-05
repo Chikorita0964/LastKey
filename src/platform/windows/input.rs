@@ -7,13 +7,13 @@ use std::{
 };
 use std::{
     fmt,
-    sync::mpsc::{self, Receiver, Sender},
+    sync::mpsc::{self, Receiver, RecvTimeoutError, Sender},
     thread::{self, JoinHandle},
 };
 
 use windows::{
     Win32::{
-        Foundation::{CloseHandle, GetLastError, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM},
+        Foundation::{CloseHandle, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM},
         System::{
             LibraryLoader::GetModuleHandleW,
             Threading::{
@@ -46,13 +46,15 @@ use windows::{
 };
 
 use crate::{
+    app::RuntimeService,
     core::{
-        EventDisposition, KeyAction, LogicalKey, MeasurementSession, MeasurementStatistics,
-        OutputEmitter, PhysicalKey, TimingController, TimingRecommendation, recommend,
+        EventDisposition, KeyAction, LogicalKey, MeasurementSession, OutputEmitter, PhysicalKey,
+        TimingController, recommend,
     },
-    debug_log,
     settings::Settings,
 };
+
+pub use crate::app::{CapturedKey, MeasurementUpdate};
 
 const INJECTION_TAG: usize = 0x4C41_5354_4B45_5931; // "LASTKEY1"
 
@@ -64,6 +66,8 @@ const HOOK_EVENT_MAX_AGE: Duration = Duration::from_secs(1);
 const HOOK_EVENT_QUEUE_CAPACITY: usize = 64;
 const HOOK_MISSES_BEFORE_REINSTALL: u8 = 3;
 const HOOK_REINSTALL_COOLDOWN: Duration = Duration::from_secs(2);
+const SERVICE_START_TIMEOUT: Duration = Duration::from_secs(5);
+const COMMAND_ACK_TIMEOUT: Duration = Duration::from_secs(2);
 const WAIT_OBJECT_0_VALUE: u32 = 0;
 const WAIT_FAILED_VALUE: u32 = u32::MAX;
 
@@ -71,23 +75,11 @@ thread_local! {
     static ENGINE: RefCell<Option<InputEngine>> = const { RefCell::new(None) };
 }
 
-#[derive(Clone, Debug)]
-pub struct CapturedKey {
-    pub physical: PhysicalKey,
-    pub name: String,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct MeasurementUpdate {
-    pub observed_event_count: u32,
-    pub statistics: MeasurementStatistics,
-    pub recommendation: TimingRecommendation,
-}
-
 #[derive(Debug)]
 pub enum InputServiceError {
     Hook(String),
     ServiceStopped,
+    ServiceTimeout,
 }
 
 impl fmt::Display for InputServiceError {
@@ -95,6 +87,7 @@ impl fmt::Display for InputServiceError {
         match self {
             Self::Hook(message) => write!(formatter, "Windows keyboard hook failed: {message}"),
             Self::ServiceStopped => write!(formatter, "the input service is no longer running"),
+            Self::ServiceTimeout => write!(formatter, "the input service did not respond in time"),
         }
     }
 }
@@ -108,11 +101,15 @@ pub struct InputService {
 }
 
 enum InputCommand {
-    Apply(Settings),
+    Apply {
+        settings: Settings,
+        ready: mpsc::SyncSender<()>,
+    },
     Capture {
         sender: Sender<CapturedKey>,
         ready: mpsc::SyncSender<Result<(), InputServiceError>>,
     },
+    CancelCapture(mpsc::SyncSender<()>),
     StartMeasurement {
         sender: Sender<MeasurementUpdate>,
         ready: mpsc::SyncSender<Result<(), InputServiceError>>,
@@ -130,9 +127,7 @@ impl InputService {
             .spawn(move || input_thread(settings, command_receiver, started_sender))
             .map_err(|error| InputServiceError::Hook(error.to_string()))?;
 
-        let thread_id = started_receiver
-            .recv()
-            .map_err(|_| InputServiceError::ServiceStopped)??;
+        let thread_id = receive_service_response(started_receiver, SERVICE_START_TIMEOUT)??;
         Ok(Self {
             commands: command_sender,
             thread_id,
@@ -144,7 +139,12 @@ impl InputService {
         settings
             .validate()
             .map_err(|error| InputServiceError::Hook(error.to_string()))?;
-        self.send(InputCommand::Apply(settings))
+        let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
+        self.send(InputCommand::Apply {
+            settings,
+            ready: ready_sender,
+        })?;
+        receive_service_response(ready_receiver, COMMAND_ACK_TIMEOUT)
     }
 
     pub fn capture_next(&self) -> std::result::Result<Receiver<CapturedKey>, InputServiceError> {
@@ -154,10 +154,14 @@ impl InputService {
             sender,
             ready: ready_sender,
         })?;
-        ready_receiver
-            .recv()
-            .map_err(|_| InputServiceError::ServiceStopped)??;
+        receive_service_response(ready_receiver, COMMAND_ACK_TIMEOUT)??;
         Ok(receiver)
+    }
+
+    pub fn cancel_capture(&self) -> std::result::Result<(), InputServiceError> {
+        let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
+        self.send(InputCommand::CancelCapture(ready_sender))?;
+        receive_service_response(ready_receiver, COMMAND_ACK_TIMEOUT)
     }
 
     pub fn start_measurement(
@@ -169,9 +173,7 @@ impl InputService {
             sender,
             ready: ready_sender,
         })?;
-        ready_receiver
-            .recv()
-            .map_err(|_| InputServiceError::ServiceStopped)??;
+        receive_service_response(ready_receiver, COMMAND_ACK_TIMEOUT)??;
         Ok(receiver)
     }
 
@@ -180,9 +182,7 @@ impl InputService {
     ) -> std::result::Result<Option<MeasurementUpdate>, InputServiceError> {
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
         self.send(InputCommand::StopMeasurement(ready_sender))?;
-        ready_receiver
-            .recv()
-            .map_err(|_| InputServiceError::ServiceStopped)
+        receive_service_response(ready_receiver, COMMAND_ACK_TIMEOUT)
     }
 
     pub fn stop(mut self) {
@@ -217,6 +217,28 @@ impl Drop for InputService {
     }
 }
 
+impl RuntimeService for InputService {
+    fn apply(&self, settings: Settings) -> Result<(), String> {
+        InputService::apply(self, settings).map_err(|error| error.to_string())
+    }
+
+    fn begin_key_capture(&self) -> Result<Receiver<CapturedKey>, String> {
+        self.capture_next().map_err(|error| error.to_string())
+    }
+
+    fn cancel_key_capture(&self) -> Result<(), String> {
+        self.cancel_capture().map_err(|error| error.to_string())
+    }
+
+    fn start_measurement(&self) -> Result<Receiver<MeasurementUpdate>, String> {
+        InputService::start_measurement(self).map_err(|error| error.to_string())
+    }
+
+    fn stop_measurement(&self) -> Result<Option<MeasurementUpdate>, String> {
+        InputService::stop_measurement(self).map_err(|error| error.to_string())
+    }
+}
+
 struct InputEngine {
     timing: TimingController,
     settings: Settings,
@@ -224,7 +246,8 @@ struct InputEngine {
     measurement: Option<MeasurementSession>,
     measurement_sender: Option<Sender<MeasurementUpdate>>,
     measurement_event_count: u32,
-    capture_suppressed_key: Option<PhysicalKey>,
+    // Capture consumes key-down, so its matching key-up must also be consumed.
+    captured_key_awaiting_release: Option<PhysicalKey>,
     scheduler: Option<HighResolutionTimer>,
     hook_health: HookHealth,
 }
@@ -246,7 +269,17 @@ struct HookHealth {
 struct HighResolutionTimer {
     handle: HANDLE,
     armed: bool,
-    high_resolution: bool,
+}
+
+fn receive_service_response<T>(
+    receiver: Receiver<T>,
+    timeout: Duration,
+) -> Result<T, InputServiceError> {
+    match receiver.recv_timeout(timeout) {
+        Ok(response) => Ok(response),
+        Err(RecvTimeoutError::Disconnected) => Err(InputServiceError::ServiceStopped),
+        Err(RecvTimeoutError::Timeout) => Err(InputServiceError::ServiceTimeout),
+    }
 }
 
 impl HighResolutionTimer {
@@ -259,27 +292,14 @@ impl HighResolutionTimer {
                 TIMER_ALL_ACCESS.0,
             )
         };
-        let (handle, high_resolution) = match high_resolution {
-            Ok(handle) => (handle, true),
-            Err(error) => {
-                debug_log::write(format_args!(
-                    "timing scheduler high-resolution creation failed; falling back error={error}"
-                ));
-                let handle = unsafe { CreateWaitableTimerExW(None, None, 0, TIMER_ALL_ACCESS.0) }
-                    .map_err(|fallback_error| {
-                    InputServiceError::Hook(fallback_error.to_string())
-                })?;
-                (handle, false)
-            }
+        let handle = match high_resolution {
+            Ok(handle) => handle,
+            Err(_) => unsafe { CreateWaitableTimerExW(None, None, 0, TIMER_ALL_ACCESS.0) }
+                .map_err(|error| InputServiceError::Hook(error.to_string()))?,
         };
-        debug_log::write(format_args!(
-            "timing scheduler created kind=waitable-timer high_resolution={high_resolution} handle=0x{:X}",
-            handle.0 as usize,
-        ));
         Ok(Self {
             handle,
             armed: false,
-            high_resolution,
         })
     }
 
@@ -294,11 +314,6 @@ impl HighResolutionTimer {
         unsafe { SetWaitableTimerEx(self.handle, &relative_due_time, 0, None, None, None, 0) }
             .map_err(|error| InputServiceError::Hook(error.to_string()))?;
         self.armed = true;
-        debug_log::write(format_args!(
-            "timing scheduler armed kind=waitable-timer high_resolution={} requested_wait_us={}",
-            self.high_resolution,
-            remaining.as_micros()
-        ));
         Ok(())
     }
 
@@ -306,14 +321,7 @@ impl HighResolutionTimer {
         if !self.armed {
             return;
         }
-        match unsafe { CancelWaitableTimer(self.handle) } {
-            Ok(()) => debug_log::write(format_args!(
-                "timing scheduler cancelled kind=waitable-timer"
-            )),
-            Err(error) => debug_log::write(format_args!(
-                "timing scheduler cancel-failed kind=waitable-timer error={error}"
-            )),
-        }
+        let _ = unsafe { CancelWaitableTimer(self.handle) };
         self.armed = false;
     }
 
@@ -366,23 +374,12 @@ impl HookHealth {
         }
 
         self.consecutive_misses = self.consecutive_misses.saturating_add(1);
-        debug_log::write(format_args!(
-            "keyboard hook health miss count={} threshold={} key={} scan=0x{:02X} action={action:?}",
-            self.consecutive_misses,
-            HOOK_MISSES_BEFORE_REINSTALL,
-            key_name(physical),
-            physical.scan_code
-        ));
         let cooldown_elapsed = self
             .last_reinstall_request
             .is_none_or(|last| now.saturating_duration_since(last) >= HOOK_REINSTALL_COOLDOWN);
         if self.consecutive_misses >= HOOK_MISSES_BEFORE_REINSTALL && cooldown_elapsed {
             self.reinstall_requested = true;
             self.last_reinstall_request = Some(now);
-            debug_log::write(format_args!(
-                "keyboard hook health requested reinstall after {} consecutive misses",
-                self.consecutive_misses
-            ));
         }
     }
 
@@ -413,7 +410,7 @@ impl InputEngine {
             measurement: None,
             measurement_sender: None,
             measurement_event_count: 0,
-            capture_suppressed_key: None,
+            captured_key_awaiting_release: None,
             scheduler: None,
             hook_health: HookHealth::new(),
         }
@@ -429,47 +426,33 @@ impl InputEngine {
         action: KeyAction,
         now: Instant,
     ) -> EventDisposition {
-        self.hook_health.observe_hook(physical, action, now);
-        debug_log::write(format_args!(
-            "hook engine event key={} scan=0x{:02X} extended={} action={action:?} capture_waiting={} measurement_active={}",
-            key_name(physical),
-            physical.scan_code,
-            physical.extended,
-            self.capture_sender.is_some(),
-            self.measurement.is_some()
-        ));
-        if self.capture_suppressed_key == Some(physical) {
+        if self.captured_key_awaiting_release == Some(physical) {
             if action == KeyAction::Up {
-                self.capture_suppressed_key = None;
-                debug_log::write(format_args!(
-                    "hook consumed captured key-up key={} scan=0x{:02X}",
-                    key_name(physical),
-                    physical.scan_code
-                ));
+                self.captured_key_awaiting_release = None;
             }
             return EventDisposition::Consume;
         }
 
         if self.capture_sender.is_some() {
             if action == KeyAction::Down {
-                self.complete_capture(physical, "hook");
+                self.complete_capture(physical);
+                return EventDisposition::Consume;
             }
-            debug_log::write(format_args!("hook consumed event for key capture"));
-            return EventDisposition::Consume;
+            // A key held before capture started has no consumed key-down,
+            // so its key-up must pass through to release existing output.
+            return EventDisposition::PassThrough;
         }
 
         let Some(key) = self.settings.logical_key_for(physical) else {
-            debug_log::write(format_args!(
-                "hook event is not a configured key; passing through"
-            ));
             return EventDisposition::PassThrough;
         };
         if self.measurement.is_some() {
-            debug_log::write(format_args!(
-                "hook passed configured event to raw measurement path logical={key:?}"
-            ));
             return EventDisposition::PassThrough;
         }
+        // Mirror process_raw: only configured keys outside capture and
+        // measurement feed hook-health, keeping the queue free of unrelated
+        // typing and out of the hottest hook path for other applications.
+        self.hook_health.observe_hook(physical, action, now);
         let mut emitter = WindowsEmitter {
             settings: &self.settings,
         };
@@ -477,32 +460,20 @@ impl InputEngine {
         if self.timing.is_enabled() {
             self.update_timer();
         }
-        debug_log::write(format_args!(
-            "mapping event logical={key:?} disposition={disposition:?}"
-        ));
         disposition
     }
 
     fn process_raw(&mut self, physical: PhysicalKey, action: KeyAction, now: Instant) {
-        debug_log::write(format_args!(
-            "raw engine event key={} scan=0x{:02X} extended={} action={action:?} capture_waiting={} measurement_active={}",
-            key_name(physical),
-            physical.scan_code,
-            physical.extended,
-            self.capture_sender.is_some(),
-            self.measurement.is_some()
-        ));
-        if action == KeyAction::Up && self.capture_suppressed_key == Some(physical) {
-            self.capture_suppressed_key = None;
-            debug_log::write(format_args!(
-                "raw observed captured key-up and cleared suppression key={} scan=0x{:02X}",
-                key_name(physical),
-                physical.scan_code
-            ));
+        // Mirror process_hook: consume auto-repeat downs as well so they never
+        // reach hook-health as false misses while the captured key is held.
+        if self.captured_key_awaiting_release == Some(physical) {
+            if action == KeyAction::Up {
+                self.captured_key_awaiting_release = None;
+            }
             return;
         }
         if action == KeyAction::Down && self.capture_sender.is_some() {
-            self.complete_capture(physical, "raw");
+            self.complete_capture(physical);
             return;
         }
 
@@ -516,14 +487,6 @@ impl InputEngine {
             self.measurement_event_count += 1;
             session.observe(key, action, now);
             let statistics = session.statistics();
-            debug_log::write(format_args!(
-                "measurement edge logical={key:?} edges={} samples={} near_simultaneous={} transitions={} overlaps={}",
-                self.measurement_event_count,
-                statistics.sample_count(),
-                statistics.near_simultaneous_count(),
-                statistics.transition_count(),
-                statistics.overlap_count()
-            ));
             if let Some(sender) = &self.measurement_sender {
                 let _ = sender.send(MeasurementUpdate {
                     observed_event_count: self.measurement_event_count,
@@ -571,19 +534,28 @@ impl InputEngine {
         self.poll();
     }
 
+    fn reset_timing_state(&mut self) {
+        let mut emitter = WindowsEmitter {
+            settings: &self.settings,
+        };
+        self.timing.reset_state(&mut emitter);
+        self.cancel_timer();
+    }
+
     fn start_measurement(&mut self, sender: Sender<MeasurementUpdate>) {
-        let capture_cancelled = self.capture_sender.take().is_some();
-        self.capture_suppressed_key = None;
-        self.release_all();
+        self.capture_sender = None;
+        self.captured_key_awaiting_release = None;
+        self.reset_timing_state();
         self.measurement = Some(MeasurementSession::new());
         self.measurement_sender = Some(sender);
         self.measurement_event_count = 0;
-        debug_log::write(format_args!(
-            "measurement engine started pending_capture_cancelled={capture_cancelled}"
-        ));
     }
 
-    fn complete_capture(&mut self, physical: PhysicalKey, source: &str) {
+    fn cancel_capture(&mut self) {
+        self.capture_sender = None;
+    }
+
+    fn complete_capture(&mut self, physical: PhysicalKey) {
         let Some(sender) = self.capture_sender.take() else {
             return;
         };
@@ -591,11 +563,8 @@ impl InputEngine {
             physical,
             name: key_name(physical),
         };
-        let delivered = sender.send(captured.clone()).is_ok();
-        self.capture_suppressed_key = Some(physical);
-        debug_log::write(format_args!(
-            "{source} capture completed on key-down captured={captured:?} delivered={delivered}"
-        ));
+        let _ = sender.send(captured);
+        self.captured_key_awaiting_release = Some(physical);
     }
 
     fn stop_measurement(&mut self) -> Option<MeasurementUpdate> {
@@ -611,9 +580,7 @@ impl InputEngine {
         });
         self.measurement_sender = None;
         self.measurement_event_count = 0;
-        debug_log::write(format_args!(
-            "measurement engine stopped final_update={update:?}"
-        ));
+        self.reset_timing_state();
         update
     }
 
@@ -621,11 +588,8 @@ impl InputEngine {
         self.cancel_timer();
         if let Some(deadline) = self.timing.next_deadline()
             && let Some(scheduler) = self.scheduler.as_mut()
-            && let Err(error) = scheduler.arm(deadline)
         {
-            debug_log::write(format_args!(
-                "timing scheduler arm-failed kind=waitable-timer error={error}"
-            ));
+            let _ = scheduler.arm(deadline);
         }
     }
 
@@ -672,25 +636,7 @@ impl OutputEmitter for WindowsEmitter<'_> {
             },
         };
 
-        debug_log::write(format_args!(
-            "synthetic output attempt logical={key:?} physical={} scan=0x{:02X} extended={} action={action:?}",
-            key_name(physical),
-            physical.scan_code,
-            physical.extended
-        ));
-        let sent = unsafe { SendInput(&[input], size_of::<INPUT>() as i32) };
-        if sent == 1 {
-            debug_log::write(format_args!(
-                "synthetic output completed logical={key:?} action={action:?} success=true"
-            ));
-            true
-        } else {
-            debug_log::write(format_args!(
-                "synthetic output completed logical={key:?} action={action:?} success=false sent={sent} error={}",
-                unsafe { GetLastError() }.0
-            ));
-            false
-        }
+        (unsafe { SendInput(&[input], size_of::<INPUT>() as i32) }) == 1
     }
 }
 
@@ -741,18 +687,11 @@ impl RawInputWindow {
         };
 
         let raw_input_window = Self { window, instance };
-        raw_input_window.ensure_keyboard_registration("input-thread-startup")?;
+        raw_input_window.ensure_keyboard_registration()?;
         Ok(raw_input_window)
     }
 
-    fn ensure_keyboard_registration(&self, reason: &str) -> Result<(), InputServiceError> {
-        let before = registered_keyboard_target()?;
-        debug_log::write(format_args!(
-            "raw input registration before reason={reason:?} expected=0x{:X} actual={}",
-            self.window.0 as usize,
-            format_window_handle(before)
-        ));
-
+    fn ensure_keyboard_registration(&self) -> Result<(), InputServiceError> {
         let device = RAWINPUTDEVICE {
             usUsagePage: 0x01,
             usUsage: 0x06,
@@ -766,11 +705,6 @@ impl RawInputWindow {
         }
 
         let after = registered_keyboard_target()?;
-        debug_log::write(format_args!(
-            "raw input registration after reason={reason:?} expected=0x{:X} actual={}",
-            self.window.0 as usize,
-            format_window_handle(after)
-        ));
         if after != Some(self.window) {
             return Err(InputServiceError::Hook(format!(
                 "raw keyboard input registration belongs to {} instead of 0x{:X}",
@@ -823,7 +757,6 @@ impl Drop for RawInputWindow {
             let _ = DestroyWindow(self.window);
             let _ = UnregisterClassW(RAW_INPUT_WINDOW_CLASS, Some(self.instance));
         }
-        debug_log::write(format_args!("raw input window destroyed"));
     }
 }
 
@@ -852,9 +785,6 @@ fn process_raw_input(handle: HRAWINPUT) {
         )
     };
     if copied == u32::MAX || copied == 0 {
-        debug_log::write(format_args!(
-            "raw input read failed copied={copied} byte_count={byte_count}"
-        ));
         return;
     }
 
@@ -864,10 +794,6 @@ fn process_raw_input(handle: HRAWINPUT) {
     }
     let keyboard = unsafe { raw.data.keyboard };
     if keyboard.MakeCode == 0 {
-        debug_log::write(format_args!(
-            "raw keyboard event ignored zero make-code vkey=0x{:02X} flags=0x{:02X}",
-            keyboard.VKey, keyboard.Flags
-        ));
         return;
     }
 
@@ -878,14 +804,6 @@ fn process_raw_input(handle: HRAWINPUT) {
     };
     let extended = keyboard.Flags & (RAW_KEY_E0 | RAW_KEY_E1) != 0;
     let physical = PhysicalKey::new(keyboard.MakeCode, extended);
-    debug_log::write(format_args!(
-        "raw event key={} scan=0x{:02X} extended={} action={action:?} vkey=0x{:02X} flags=0x{:02X}",
-        key_name(physical),
-        physical.scan_code,
-        physical.extended,
-        keyboard.VKey,
-        keyboard.Flags
-    ));
     ENGINE.with(|engine| {
         engine
             .borrow_mut()
@@ -900,7 +818,6 @@ fn input_thread(
     commands: Receiver<InputCommand>,
     started: mpsc::SyncSender<Result<u32, InputServiceError>>,
 ) {
-    debug_log::write(format_args!("input thread starting"));
     let mut ignored = MSG::default();
     unsafe {
         let _ = PeekMessageW(&mut ignored, None, 0, 0, PM_NOREMOVE);
@@ -941,10 +858,6 @@ fn input_thread(
             return;
         }
     };
-    debug_log::write(format_args!(
-        "keyboard hook installed handle=0x{:X} module=0x{:X}",
-        hook.0 as usize, instance.0 as usize
-    ));
     let _ = started.send(Ok(unsafe { GetCurrentThreadId() }));
 
     let mut message = MSG::default();
@@ -959,27 +872,22 @@ fn input_thread(
             )
         };
         if wait_result.0 == WAIT_OBJECT_0_VALUE {
+            // Never panic on re-entry: if the hook is inside SendInput above,
+            // skip this tick and let the next deadline retry the poll.
             ENGINE.with(|engine| {
-                engine
-                    .borrow_mut()
-                    .as_mut()
-                    .expect("input engine is initialized")
-                    .handle_timer_signal();
+                if let Ok(mut borrowed) = engine.try_borrow_mut() {
+                    borrowed
+                        .as_mut()
+                        .expect("input engine is initialized")
+                        .handle_timer_signal();
+                }
             });
             continue;
         }
         if wait_result.0 == WAIT_FAILED_VALUE {
-            debug_log::write(format_args!(
-                "timing scheduler wait failed error={}",
-                unsafe { GetLastError() }.0
-            ));
             break;
         }
         if wait_result.0 != WAIT_OBJECT_0_VALUE + 1 {
-            debug_log::write(format_args!(
-                "timing scheduler wait returned unexpected result={}",
-                wait_result.0
-            ));
             break;
         }
         if !unsafe { PeekMessageW(&mut message, None, 0, 0, PM_REMOVE) }.as_bool() {
@@ -991,17 +899,16 @@ fn input_thread(
         if message.message == COMMAND_MESSAGE {
             while let Ok(command) = commands.try_recv() {
                 match command {
-                    InputCommand::Apply(settings) => ENGINE.with(|engine| {
-                        debug_log::write(format_args!("command apply received"));
+                    InputCommand::Apply { settings, ready } => ENGINE.with(|engine| {
                         engine
                             .borrow_mut()
                             .as_mut()
                             .expect("input engine is initialized")
                             .apply(settings);
+                        let _ = ready.send(());
                     }),
                     InputCommand::Capture { sender, ready } => {
-                        debug_log::write(format_args!("command capture received"));
-                        match raw_input_window.ensure_keyboard_registration("capture") {
+                        match raw_input_window.ensure_keyboard_registration() {
                             Ok(()) => {
                                 ENGINE.with(|engine| {
                                     let mut engine = engine.borrow_mut();
@@ -1009,20 +916,23 @@ fn input_thread(
                                         engine.as_mut().expect("input engine is initialized");
                                     engine.capture_sender = Some(sender);
                                 });
-                                debug_log::write(format_args!("command capture armed"));
                                 let _ = ready.send(Ok(()));
                             }
                             Err(error) => {
-                                debug_log::write(format_args!(
-                                    "command capture registration failed error={error}"
-                                ));
                                 let _ = ready.send(Err(error));
                             }
                         }
                     }
+                    InputCommand::CancelCapture(ready) => ENGINE.with(|engine| {
+                        engine
+                            .borrow_mut()
+                            .as_mut()
+                            .expect("input engine is initialized")
+                            .cancel_capture();
+                        let _ = ready.send(());
+                    }),
                     InputCommand::StartMeasurement { sender, ready } => {
-                        debug_log::write(format_args!("command start-measurement received"));
-                        match raw_input_window.ensure_keyboard_registration("measurement") {
+                        match raw_input_window.ensure_keyboard_registration() {
                             Ok(()) => {
                                 ENGINE.with(|engine| {
                                     engine
@@ -1034,15 +944,11 @@ fn input_thread(
                                 let _ = ready.send(Ok(()));
                             }
                             Err(error) => {
-                                debug_log::write(format_args!(
-                                    "command start-measurement registration failed error={error}"
-                                ));
                                 let _ = ready.send(Err(error));
                             }
                         }
                     }
                     InputCommand::StopMeasurement(ready) => ENGINE.with(|engine| {
-                        debug_log::write(format_args!("command stop-measurement received"));
                         let update = engine
                             .borrow_mut()
                             .as_mut()
@@ -1051,7 +957,6 @@ fn input_thread(
                         let _ = ready.send(update);
                     }),
                     InputCommand::Stop => {
-                        debug_log::write(format_args!("command stop received"));
                         keep_running = false;
                         break;
                     }
@@ -1073,19 +978,14 @@ fn input_thread(
                 .expect("input engine is initialized")
                 .take_hook_reinstall_request()
         });
-        if reinstall_requested {
-            match replace_keyboard_hook(&mut hook, instance) {
-                Ok(()) => ENGINE.with(|engine| {
-                    engine
-                        .borrow_mut()
-                        .as_mut()
-                        .expect("input engine is initialized")
-                        .hook_reinstalled();
-                }),
-                Err(error) => {
-                    debug_log::write(format_args!("keyboard hook reinstall failed error={error}"))
-                }
-            }
+        if reinstall_requested && replace_keyboard_hook(&mut hook, instance).is_ok() {
+            ENGINE.with(|engine| {
+                engine
+                    .borrow_mut()
+                    .as_mut()
+                    .expect("input engine is initialized")
+                    .hook_reinstalled();
+            });
         }
     }
 
@@ -1096,9 +996,6 @@ fn input_thread(
     });
     let _ = unsafe { UnhookWindowsHookEx(hook) };
     drop(raw_input_window);
-    debug_log::write(format_args!(
-        "keyboard hook uninstalled; input thread stopped"
-    ));
 }
 
 fn install_keyboard_hook(instance: HINSTANCE) -> Result<HHOOK, InputServiceError> {
@@ -1107,17 +1004,9 @@ fn install_keyboard_hook(instance: HINSTANCE) -> Result<HHOOK, InputServiceError
 }
 
 fn replace_keyboard_hook(hook: &mut HHOOK, instance: HINSTANCE) -> Result<(), InputServiceError> {
-    debug_log::write(format_args!(
-        "keyboard hook reinstall starting previous_handle=0x{:X}",
-        hook.0 as usize
-    ));
     let replacement = install_keyboard_hook(instance)?;
     let previous = std::mem::replace(hook, replacement);
-    let removed = unsafe { UnhookWindowsHookEx(previous) }.is_ok();
-    debug_log::write(format_args!(
-        "keyboard hook reinstall completed new_handle=0x{:X} previous_removed={removed}",
-        hook.0 as usize
-    ));
+    let _ = unsafe { UnhookWindowsHookEx(previous) };
     Ok(())
 }
 
@@ -1136,34 +1025,24 @@ unsafe extern "system" fn keyboard_proc(code: i32, message: WPARAM, l_param: LPA
         return unsafe { CallNextHookEx(None, code, message, l_param) };
     };
     if event.flags.0 & LLKHF_INJECTED.0 != 0 && event.dwExtraInfo == INJECTION_TAG {
-        debug_log::write(format_args!(
-            "synthetic output observed-by-hook scan=0x{:02X} action={action:?} flags=0x{:02X}",
-            event.scanCode, event.flags.0
-        ));
         return unsafe { CallNextHookEx(None, code, message, l_param) };
     }
 
     let physical = PhysicalKey::new(event.scanCode as u16, event.flags.0 & 0x01 != 0);
-    debug_log::write(format_args!(
-        "hook event key={} scan=0x{:02X} extended={} action={action:?} flags=0x{:02X}",
-        key_name(physical),
-        physical.scan_code,
-        physical.extended,
-        event.flags.0
-    ));
 
-    let disposition = ENGINE.with(|engine| {
-        engine
-            .borrow_mut()
+    // SendInput from this thread can re-enter the hook while the engine is
+    // borrowed above. Passing through on re-entry is safer than panicking
+    // across the extern "system" boundary.
+    let disposition = ENGINE.with(|engine| match engine.try_borrow_mut() {
+        Ok(mut borrowed) => borrowed
             .as_mut()
             .expect("input engine is initialized")
-            .process_hook(physical, action, Instant::now())
+            .process_hook(physical, action, Instant::now()),
+        Err(_) => EventDisposition::PassThrough,
     });
     if disposition == EventDisposition::PassThrough {
-        debug_log::write(format_args!("hook disposition=pass-through"));
         unsafe { CallNextHookEx(None, code, message, l_param) }
     } else {
-        debug_log::write(format_args!("hook disposition=consume"));
         LRESULT(1)
     }
 }
@@ -1205,6 +1084,27 @@ fn action_for(message: WPARAM) -> Option<KeyAction> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn service_response_timeout_is_reported() {
+        let (_sender, receiver) = mpsc::sync_channel::<()>(1);
+
+        assert!(matches!(
+            receive_service_response(receiver, Duration::ZERO),
+            Err(InputServiceError::ServiceTimeout)
+        ));
+    }
+
+    #[test]
+    fn disconnected_service_response_is_reported() {
+        let (sender, receiver) = mpsc::sync_channel::<()>(1);
+        drop(sender);
+
+        assert!(matches!(
+            receive_service_response(receiver, COMMAND_ACK_TIMEOUT),
+            Err(InputServiceError::ServiceStopped)
+        ));
+    }
 
     #[test]
     fn physical_key_names_hide_internal_representation() {
@@ -1285,11 +1185,11 @@ mod tests {
             },
             captured
         );
-        assert_eq!(engine.capture_suppressed_key, Some(captured));
+        assert_eq!(engine.captured_key_awaiting_release, Some(captured));
 
         engine.process_raw(captured, KeyAction::Up, Instant::now());
 
-        assert_eq!(engine.capture_suppressed_key, None);
+        assert_eq!(engine.captured_key_awaiting_release, None);
     }
 
     #[test]
@@ -1304,7 +1204,7 @@ mod tests {
             EventDisposition::Consume
         );
         assert_eq!(receiver.recv().expect("captured key").physical, captured);
-        assert_eq!(engine.capture_suppressed_key, Some(captured));
+        assert_eq!(engine.captured_key_awaiting_release, Some(captured));
     }
 
     #[test]
@@ -1313,7 +1213,7 @@ mod tests {
         let (capture_sender, capture_receiver) = mpsc::channel();
         let (measurement_sender, _measurement_receiver) = mpsc::channel();
         engine.capture_sender = Some(capture_sender);
-        engine.capture_suppressed_key = Some(PhysicalKey::new(0x17, false));
+        engine.captured_key_awaiting_release = Some(PhysicalKey::new(0x17, false));
 
         engine.start_measurement(measurement_sender);
 
@@ -1321,7 +1221,7 @@ mod tests {
             capture_receiver.try_recv(),
             Err(mpsc::TryRecvError::Disconnected)
         ));
-        assert_eq!(engine.capture_suppressed_key, None);
+        assert_eq!(engine.captured_key_awaiting_release, None);
         assert!(engine.measurement.is_some());
     }
 
@@ -1397,5 +1297,72 @@ mod tests {
         scheduler.cancel();
 
         assert!(!scheduler.armed);
+    }
+
+    #[test]
+    fn capture_waiting_passes_through_preexisting_key_release() {
+        let mut engine = InputEngine::new(Settings::default());
+        let (sender, _receiver) = mpsc::channel();
+        let preexisting = PhysicalKey::new(0x1E, false);
+        engine.capture_sender = Some(sender);
+
+        assert_eq!(
+            engine.process_hook(preexisting, KeyAction::Up, Instant::now()),
+            EventDisposition::PassThrough
+        );
+        assert!(engine.capture_sender.is_some());
+        assert_eq!(engine.captured_key_awaiting_release, None);
+    }
+
+    #[test]
+    fn capture_consumes_only_its_own_key_down_and_release() {
+        let mut engine = InputEngine::new(Settings::default());
+        let (sender, receiver) = mpsc::channel();
+        let captured = PhysicalKey::new(0x17, false);
+        engine.capture_sender = Some(sender);
+
+        assert_eq!(
+            engine.process_hook(captured, KeyAction::Down, Instant::now()),
+            EventDisposition::Consume
+        );
+        assert_eq!(receiver.recv().expect("captured key").physical, captured);
+
+        assert_eq!(
+            engine.process_hook(captured, KeyAction::Up, Instant::now()),
+            EventDisposition::Consume
+        );
+        assert_eq!(engine.captured_key_awaiting_release, None);
+    }
+
+    #[test]
+    fn measurement_boundaries_clear_physical_and_output_state() {
+        let mut engine = InputEngine::new(Settings::default());
+        let (sender, _receiver) = mpsc::channel();
+        engine.start_measurement(sender);
+        let _ = engine.stop_measurement();
+        // After start/stop without SendInput, the timing state must be fresh:
+        // a subsequent measurement session starts clean.
+        let (second_sender, _second_receiver) = mpsc::channel();
+        engine.start_measurement(second_sender);
+        assert!(engine.measurement.is_some());
+        assert_eq!(engine.measurement_event_count, 0);
+    }
+
+    #[test]
+    fn captured_key_auto_repeat_never_reaches_hook_health() {
+        let settings = Settings::default();
+        let captured = settings.binding(LogicalKey::VerticalFirst);
+        let mut engine = InputEngine::new(settings);
+        let (sender, receiver) = mpsc::channel();
+        engine.capture_sender = Some(sender);
+
+        engine.process_raw(captured, KeyAction::Down, Instant::now());
+        assert_eq!(receiver.recv().expect("captured key").physical, captured);
+
+        // Auto-repeat while the captured key is still held.
+        engine.process_raw(captured, KeyAction::Down, Instant::now());
+
+        assert_eq!(engine.hook_health.consecutive_misses, 0);
+        assert_eq!(engine.captured_key_awaiting_release, Some(captured));
     }
 }

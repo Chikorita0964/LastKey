@@ -3,19 +3,38 @@ name = "lastkey"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.98"
-build = "build.rs"
-license = "GPL-3.0-only"
+license = "MIT"
+default-run = "lastkey"
+
+[features]
+default = []
+iced-ui = ["dep:iced"]
+
+[[bin]]
+name = "lastkey"
+path = "src/bin/lastkey.rs"
+
+[[bin]]
+name = "lastkey-settings"
+path = "src/bin/lastkey-settings.rs"
+required-features = ["iced-ui"]
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 toml = "0.9"
 
 [target.'cfg(windows)'.dependencies]
-slint = "1.17.1"
+iced = { git = "https://github.com/iced-rs/iced.git", rev = "f8127c84dddf0b9e32c5e7dbb822911652f72665", default-features = false, features = ["sipper", "thread-pool", "wgpu"], optional = true }
 tray-icon = "0.24.2"
 windows = { version = "0.62", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
     "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
     "Win32_System_LibraryLoader",
     "Win32_System_Threading",
     "Win32_UI_Input",
@@ -27,4 +46,4 @@ windows = { version = "0.62", features = [
 evdev = "0.13.2"
 
 [build-dependencies]
-slint-build = "1.17.1"
+winres = "0.1"

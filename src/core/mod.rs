@@ -5,7 +5,7 @@ mod recommendation;
 mod socd;
 mod timing;
 
-pub use delivery::{DeliveryState, EventDisposition, InputRouter, OutputEmitter};
+pub use delivery::{DeliveryState, EventDisposition, OutputEmitter};
 pub use key::{Axis, KeyAction, LogicalKey, PhysicalKey};
 pub use measurement::{MeasurementSession, MeasurementStatistics};
 pub use recommendation::{

@@ -147,6 +147,13 @@ impl MeasurementSession {
             }
             KeyAction::Up => {
                 self.held[key.index()] = false;
+                // The second-pressed key released first ends the overlap now.
+                // Without this, its start time lingers and the later release
+                // of the first key over-reports the overlap.
+                if let Some(pressed) = self.pressed_at[key.index()].take() {
+                    self.pressed_at[other.index()] = None;
+                    return Some(self.record(pressed, now, true));
+                }
                 if let Some(pressed) = self.pressed_at[other.index()].take() {
                     return Some(self.record(pressed, now, true));
                 }

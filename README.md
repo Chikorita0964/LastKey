@@ -48,12 +48,14 @@ Original physical events pass through only when safe, preventing simultaneous op
 ## Usage
 
 1. Download the signed MSIX from the Microsoft Store, or the ZIP release from GitHub Releases.
-2. Run the executable. A system tray icon will appear.
+2. Run `LastKey.exe`. The input filter starts immediately and a system tray icon appears; the settings renderer is not loaded until requested.
 3. Right-click the tray icon to open the menu:
-   - **Create desktop shortcut**: Creates a desktop shortcut.
+   - **Settings**: Opens the on-demand settings process.
    - **Exit**: Stops LastKey.
 
-If **UIPI** blocks `SendInput` to apps with higher privileges, **Exit** the current instance first, then use **Run as administrator** on the desktop shortcut.
+Opening **Settings** again focuses the existing settings window. Use the buttons inside the settings window to open the timing measurement view or restore defaults. Closing that window stops transient capture or measurement work without stopping the input filter.
+
+If **UIPI** blocks `SendInput` to apps with higher privileges, **Exit** the current instance first, then use **Run as administrator** on `LastKey.exe`.
 
 ## Compatibility and policies
 
@@ -80,10 +82,11 @@ The optional input-timing measurement mode observes only physical edges for the 
 Open a **Visual Studio developer command prompt** in the project directory.
 
 ```bat
-cargo build --locked --release --target x86_64-pc-windows-msvc
+cargo build --locked --release --target x86_64-pc-windows-msvc --bin lastkey
+cargo build --locked --release --target x86_64-pc-windows-msvc --no-default-features --features iced-ui --bin lastkey-settings
 ```
 
-Output: `target\x86_64-pc-windows-msvc\release\lastkey.exe`
+Outputs: `target\x86_64-pc-windows-msvc\release\lastkey.exe` and `target\x86_64-pc-windows-msvc\release\lastkey-settings.exe`. Keep both files together; packaged builds name the second file `LastKey.Settings.exe`.
 
 To create and validate an unsigned Store-submission MSIX, install the Windows SDK and run:
 
@@ -96,18 +99,20 @@ The Microsoft Store signs submitted packages. Local MSIX output is intentionally
 
 ## Customize
 
-Use the settings window to choose four unique physical keys, configure transition or overlap timing, and start an in-memory timing measurement session. The active settings are saved as `settings.toml` beside `lastkey.exe`; raw timing samples and typed text are never persisted.
+Use the settings window to choose four unique physical keys, configure transition or overlap timing, and start an in-memory timing measurement session. Installed builds save active settings in `%LOCALAPPDATA%\LastKey\settings.toml`. To use a self-contained ZIP as a portable installation, create an empty `lastkey.portable` marker beside `LastKey.exe`; settings will then be saved beside the executable. Existing executable-adjacent settings are still read as a migration fallback. Raw timing samples and typed text are never persisted.
 
 ## Tests
 
 ```bat
-cargo fmt --check
-cargo test
+cargo fmt --all -- --check
+cargo test --all-targets
 cargo clippy --all-targets -- -D warnings
+cargo test --no-default-features --features iced-ui --lib --bin lastkey-settings
+cargo clippy --no-default-features --features iced-ui --lib --bin lastkey-settings -- -D warnings
 ```
 
 ## Credits and license
 
-LastKey is distributed under the [GNU General Public License, version 3 only](LICENSE) (`GPL-3.0-only`), including its use of Slint under GPLv3. Portions are derived from [Hitboxer by Valentin Ignatev](https://github.com/valignatev/hitboxer); the original MIT copyright and license notice are preserved in [LICENSES/MIT.txt](LICENSES/MIT.txt). See [LICENSE.md](LICENSE.md) for the complete licensing overview.
+LastKey is distributed under the [MIT License](LICENSE) (`MIT`). Portions are derived from [Hitboxer by Valentin Ignatev](https://github.com/valignatev/hitboxer); the original MIT copyright and license notice are preserved in [LICENSES/MIT.txt](LICENSES/MIT.txt). See [LICENSE.md](LICENSE.md) for the complete licensing overview.
 
 The LastKey code and icon were created with Codex AI.

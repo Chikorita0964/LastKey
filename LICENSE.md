@@ -1,12 +1,12 @@
 # License
 
-LastKey is distributed under the GNU General Public License, version 3 only
-(GPL-3.0-only). The complete license text is available in [LICENSES/GPL-3.0-only.txt](LICENSES/GPL-3.0-only.txt).
+LastKey is distributed under the MIT License. The complete license text is
+available in [LICENSE](LICENSE).
 
 ## Project licensing
 
-LastKey uses Slint under GPLv3. Accordingly, the LastKey program and its
-distributed binaries are licensed under GPL-3.0-only.
+The LastKey program and its distributed binaries are licensed under MIT.
+Copyright © 2026 Chikorita0964.
 
 Portions of this project are derived from Hitboxer by Valentin Ignatev. Those
 upstream portions retain their original MIT copyright and license notice, which

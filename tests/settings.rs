@@ -189,3 +189,19 @@ fn timing_precision_below_one_tenth_millisecond_is_rejected() {
         Err(SettingsError::InvalidTimingPrecision)
     ));
 }
+
+#[test]
+fn explicit_zero_transition_survives_ipc_round_trip() {
+    let mut settings = Settings::default();
+    settings.timing.socd_transition_delay_enabled = false;
+    settings.timing.socd_transition_min_micros = 0;
+    settings.timing.socd_transition_max_micros = 0;
+    assert!(settings.validate().is_ok());
+
+    let json = serde_json::to_string(&settings).expect("settings serialize");
+    let restored: Settings = serde_json::from_str(&json).expect("settings deserialize");
+
+    assert_eq!(restored.timing.socd_transition_min_micros, 0);
+    assert_eq!(restored.timing.socd_transition_max_micros, 0);
+    assert!(!restored.timing.socd_transition_delay_enabled);
+}

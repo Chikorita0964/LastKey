@@ -1,7 +1,8 @@
-mod debug_input;
 mod input;
+pub mod ipc;
+mod ui_server;
 
-pub use debug_input::DebugInputSampler;
 pub use input::{
     CapturedKey, InputService, InputServiceError, MeasurementUpdate, physical_key_name,
 };
+pub use ui_server::UiServer;

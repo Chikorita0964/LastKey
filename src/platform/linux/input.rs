@@ -12,11 +12,12 @@ use std::{
 use evdev::{AttributeSet, Device, EventType, InputEvent, KeyCode, uinput::VirtualDevice};
 
 use crate::{
-    core::{KeyAction, LogicalKey, OutputEmitter, PhysicalKey, TimingController},
+    core::{EventDisposition, KeyAction, LogicalKey, OutputEmitter, PhysicalKey, TimingController},
     settings::Settings,
 };
 
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
+const VIRTUAL_KEYBOARD_NAME: &str = "LastKey virtual keyboard";
 
 #[derive(Debug)]
 pub enum InputServiceError {
@@ -120,7 +121,17 @@ fn run(
     let mut settings = settings;
     let mut timing = TimingController::new(settings.timing.clone());
     while !stop.load(Ordering::Acquire) {
-        match commands.recv_timeout(POLL_INTERVAL) {
+        // Wake early for pending timing deadlines but never sleep past the
+        // 5 ms input bound: std mpsc has no select(), so a deadline-only wait
+        // would starve commands or physical events on the other channel.
+        // Reader threads stay on non-blocking reads plus sleep so shutdown can
+        // join them without an extra wakeup fd; see read_device below.
+        let wait = timing
+            .next_deadline()
+            .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+            .unwrap_or(POLL_INTERVAL)
+            .min(POLL_INTERVAL);
+        match commands.recv_timeout(wait) {
             Ok(Command::Apply(next)) => {
                 let mut emitter = LinuxEmitter {
                     output: &mut output,
@@ -139,7 +150,15 @@ fn run(
                     output: &mut output,
                     settings: &settings,
                 };
-                let _ = timing.process(key, action, event.received_at, &mut emitter);
+                // Mirror the Windows CallNextHookEx semantics: a PassThrough
+                // disposition means the original event must still reach
+                // applications through the virtual device.
+                if timing.process(key, action, event.received_at, &mut emitter)
+                    == EventDisposition::PassThrough
+                {
+                    let _ =
+                        output.emit(&[InputEvent::new(EventType::KEY.0, event.key.0, event.value)]);
+                }
             } else {
                 let _ = output.emit(&[InputEvent::new(EventType::KEY.0, event.key.0, event.value)]);
             }
@@ -167,7 +186,7 @@ fn create_output() -> Result<VirtualDevice, InputServiceError> {
         keys.insert(KeyCode::new(code));
     }
     VirtualDevice::builder()
-        .and_then(|builder| builder.name(&"LastKey virtual keyboard").with_keys(&keys))
+        .and_then(|builder| builder.name(&VIRTUAL_KEYBOARD_NAME).with_keys(&keys))
         .and_then(|builder| builder.build())
         .map_err(|error| InputServiceError::Device(error.to_string()))
 }
@@ -196,6 +215,8 @@ fn start_readers(
 }
 
 fn read_device(mut device: Device, sender: Sender<CapturedEvent>, stop: Arc<AtomicBool>) {
+    // Non-blocking reads plus a short sleep keep shutdown joinable without an
+    // eventfd: a blocking fetch_events() would need an extra wakeup path.
     while !stop.load(Ordering::Acquire) {
         match device.fetch_events() {
             Ok(events) => {
@@ -222,13 +243,50 @@ fn read_device(mut device: Device, sender: Sender<CapturedEvent>, stop: Arc<Atom
     let _ = device.ungrab();
 }
 
+/// Windows scan-code bindings are shared with Linux through the same
+/// settings file, but evdev uses Linux keycodes and has no `extended` flag.
+/// Plain keys such as W/A/S/D coincide numerically, while extended keys do
+/// not (for example the up arrow is `0x48 + extended` on Windows but
+/// `KEY_UP = 103` on Linux). Bindings without a known Linux mapping return
+/// `None` so they are rejected loudly instead of resolving to the wrong key.
+fn linux_keycode(binding: PhysicalKey) -> Option<u16> {
+    match (binding.scan_code, binding.extended) {
+        (0x48, true) => Some(103),
+        (0x50, true) => Some(108),
+        (0x4B, true) => Some(105),
+        (0x4D, true) => Some(106),
+        (code, false) => Some(code),
+        _ => None,
+    }
+}
+
+fn physical_from_linux(code: u16) -> PhysicalKey {
+    match code {
+        103 => PhysicalKey::new(0x48, true),
+        108 => PhysicalKey::new(0x50, true),
+        105 => PhysicalKey::new(0x4B, true),
+        106 => PhysicalKey::new(0x4D, true),
+        _ => PhysicalKey::new(code, false),
+    }
+}
+
 fn is_keyboard_candidate(device: &Device, settings: &Settings) -> bool {
+    // Never grab our own virtual output: it exposes every key and would pass
+    // the candidate check below, blocking other programs from our output.
+    if device
+        .name()
+        .is_some_and(|name| name == VIRTUAL_KEYBOARD_NAME)
+    {
+        return false;
+    }
     device.supported_keys().is_some_and(|keys| {
-        LogicalKey::ALL
-            .into_iter()
-            .all(|key| keys.contains(KeyCode::new(settings.binding(key).scan_code)))
+        LogicalKey::ALL.into_iter().all(|key| {
+            linux_keycode(settings.binding(key))
+                .is_some_and(|code| keys.contains(KeyCode::new(code)))
+        })
     })
 }
+
 fn logical_event(
     settings: &Settings,
     code: KeyCode,
@@ -240,19 +298,23 @@ fn logical_event(
         _ => return None,
     };
     settings
-        .logical_key_for(PhysicalKey::new(code.0, false))
+        .logical_key_for(physical_from_linux(code.0))
         .map(|key| (key, action))
 }
+
 struct LinuxEmitter<'a> {
     output: &'a mut VirtualDevice,
     settings: &'a Settings,
 }
 impl OutputEmitter for LinuxEmitter<'_> {
     fn emit(&mut self, key: LogicalKey, action: KeyAction) -> bool {
+        let Some(code) = linux_keycode(self.settings.binding(key)) else {
+            return false;
+        };
         self.output
             .emit(&[InputEvent::new(
                 EventType::KEY.0,
-                self.settings.binding(key).scan_code,
+                code,
                 if action == KeyAction::Down { 1 } else { 0 },
             )])
             .is_ok()
@@ -273,5 +335,13 @@ mod tests {
             logical_event(&settings, KeyCode::new(0x11), 0),
             Some((LogicalKey::VerticalFirst, KeyAction::Up))
         );
+    }
+
+    #[test]
+    fn arrow_bindings_translate_between_scan_codes_and_evdev() {
+        assert_eq!(linux_keycode(PhysicalKey::new(0x48, true)), Some(103));
+        assert_eq!(physical_from_linux(103), PhysicalKey::new(0x48, true));
+        assert_eq!(linux_keycode(PhysicalKey::new(0x1E, false)), Some(0x1E));
+        assert_eq!(linux_keycode(PhysicalKey::new(0x1E, true)), None);
     }
 }

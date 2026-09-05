@@ -1,5 +1,9 @@
 fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
-        slint_build::compile("ui/main.slint").expect("failed to compile the Slint user interface");
+        let mut resource = winres::WindowsResource::new();
+        resource.set_icon("assets/source/lastkey-logo.ico");
+        resource
+            .compile()
+            .expect("failed to embed the LastKey application icon");
     }
 }

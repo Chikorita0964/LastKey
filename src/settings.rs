@@ -1,6 +1,8 @@
 use std::{
     collections::HashSet,
-    env, fmt, fs, io,
+    env, fmt, fs,
+    fs::OpenOptions,
+    io::{self, Write},
     path::{Path, PathBuf},
 };
 
@@ -108,24 +110,29 @@ impl<'de> Deserialize<'de> for TimingSettings {
             .socd_transition_min_ms
             .or(stored.transition_min_ms)
             .map(StoredMilliseconds::into_micros)
-            .transpose()?
-            .unwrap_or_default();
+            .transpose()?;
         let stored_transition_max_micros = stored
             .socd_transition_max_ms
             .or(stored.transition_max_ms)
             .map(StoredMilliseconds::into_micros)
-            .transpose()?
-            .unwrap_or_default();
+            .transpose()?;
         let socd_transition_delay_enabled = stored.socd_transition_delay_enabled.unwrap_or(
-            stored_transition_min_micros > 0
-                || stored_transition_max_micros > 0
+            stored_transition_min_micros.unwrap_or(0) > 0
+                || stored_transition_max_micros.unwrap_or(0) > 0
                 || preserve_overlap,
         );
         let (socd_transition_min_micros, socd_transition_max_micros) =
-            if stored_transition_min_micros == 0 && stored_transition_max_micros == 0 {
-                (2_000, 4_000)
-            } else {
-                (stored_transition_min_micros, stored_transition_max_micros)
+            match (stored_transition_min_micros, stored_transition_max_micros) {
+                // Missing fields mean a legacy file without timing: use defaults.
+                (None, None) => (2_000, 4_000),
+                // Previous defaults were stored as explicit 0-0 without an enabled
+                // flag; migrate those to the configured defaults. Current files
+                // and IPC always carry the enabled flag, so explicit 0-0 there is
+                // preserved.
+                (Some(0), Some(0)) if stored.socd_transition_delay_enabled.is_none() => {
+                    (2_000, 4_000)
+                }
+                (minimum, maximum) => (minimum.unwrap_or(0), maximum.unwrap_or(0)),
             };
 
         let mut preserved_overlap_min_micros = stored
@@ -336,46 +343,183 @@ impl Settings {
 }
 
 pub fn load() -> Result<Settings, SettingsError> {
-    let path = settings_path()?;
+    let paths = settings_paths()?;
+    match load_from(&paths.primary) {
+        Err(SettingsError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+            if paths.legacy != paths.primary {
+                match load_from(&paths.legacy) {
+                    Err(SettingsError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+                        Ok(Settings::default())
+                    }
+                    result => result,
+                }
+            } else {
+                Ok(Settings::default())
+            }
+        }
+        result => result,
+    }
+}
+
+fn load_from(path: &Path) -> Result<Settings, SettingsError> {
     match fs::read_to_string(path) {
         Ok(contents) => {
             let settings: Settings = toml::from_str(&contents).map_err(SettingsError::Parse)?;
             settings.validate()?;
             Ok(settings)
         }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Settings::default()),
         Err(error) => Err(SettingsError::Io(error)),
     }
 }
 
 pub fn save(settings: &Settings) -> Result<(), SettingsError> {
     settings.validate()?;
-    let path = settings_path()?;
+    let path = settings_paths()?.primary;
     let parent = path.parent().expect("settings path always has a parent");
     fs::create_dir_all(parent)?;
     let contents = toml::to_string_pretty(settings).map_err(SettingsError::Serialize)?;
-    fs::write(path, contents)?;
+    write_settings_file(&path, contents.as_bytes())?;
     Ok(())
 }
 
-fn settings_path() -> Result<PathBuf, SettingsError> {
-    Ok(settings_path_for(&env::current_exe()?))
+fn write_settings_file(path: &Path, contents: &[u8]) -> io::Result<()> {
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "settings path has no name"))?;
+    let mut temporary_name = file_name.to_os_string();
+    temporary_name.push(".tmp");
+    let temporary_path = path.with_file_name(temporary_name);
+
+    let result = (|| {
+        let mut temporary = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&temporary_path)?;
+        temporary.write_all(contents)?;
+        temporary.sync_all()?;
+        drop(temporary);
+        replace_file(&temporary_path, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary_path);
+    }
+    result
 }
 
-fn settings_path_for(executable: &Path) -> PathBuf {
-    executable.with_file_name("settings.toml")
+#[cfg(windows)]
+fn replace_file(source: &Path, destination: &Path) -> io::Result<()> {
+    use windows::{
+        Win32::Storage::FileSystem::{
+            MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+        },
+        core::HSTRING,
+    };
+
+    unsafe {
+        MoveFileExW(
+            &HSTRING::from(source.as_os_str()),
+            &HSTRING::from(destination.as_os_str()),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    }
+    .map_err(|error| io::Error::other(error.to_string()))
+}
+
+#[cfg(not(windows))]
+fn replace_file(source: &Path, destination: &Path) -> io::Result<()> {
+    fs::rename(source, destination)
+}
+
+struct SettingsPaths {
+    primary: PathBuf,
+    legacy: PathBuf,
+}
+
+fn settings_paths() -> Result<SettingsPaths, SettingsError> {
+    let executable = env::current_exe()?;
+    let local_app_data = env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    let portable = executable.with_file_name("lastkey.portable").is_file();
+    Ok(settings_paths_for(
+        &executable,
+        local_app_data.as_deref(),
+        portable,
+    ))
+}
+
+fn settings_paths_for(
+    executable: &Path,
+    local_app_data: Option<&Path>,
+    portable: bool,
+) -> SettingsPaths {
+    let legacy = executable.with_file_name("settings.toml");
+    let primary = if portable {
+        legacy.clone()
+    } else if let Some(local_app_data) = local_app_data {
+        local_app_data.join("LastKey").join("settings.toml")
+    } else {
+        legacy.clone()
+    };
+    SettingsPaths { primary, legacy }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::settings_path_for;
-    use std::path::Path;
+    use super::{settings_paths_for, write_settings_file};
+    use std::{fs, path::Path};
 
     #[test]
-    fn settings_are_stored_next_to_the_executable() {
-        assert_eq!(
-            settings_path_for(Path::new(r"C:\\apps\\LastKey\\lastkey.exe")),
-            Path::new(r"C:\\apps\\LastKey\\settings.toml")
+    fn installed_settings_use_per_user_local_application_data() {
+        let paths = settings_paths_for(
+            Path::new(r"C:\Program Files\WindowsApps\LastKey\LastKey.exe"),
+            Some(Path::new(r"C:\Users\player\AppData\Local")),
+            false,
         );
+        assert_eq!(
+            paths.primary,
+            Path::new(r"C:\Users\player\AppData\Local\LastKey\settings.toml")
+        );
+        assert_eq!(
+            paths.legacy,
+            Path::new(r"C:\Program Files\WindowsApps\LastKey\settings.toml")
+        );
+    }
+
+    #[test]
+    fn portable_settings_remain_next_to_the_executable() {
+        let paths = settings_paths_for(
+            Path::new(r"C:\apps\LastKey\LastKey.exe"),
+            Some(Path::new(r"C:\Users\player\AppData\Local")),
+            true,
+        );
+        assert_eq!(paths.primary, Path::new(r"C:\apps\LastKey\settings.toml"));
+        assert_eq!(paths.legacy, paths.primary);
+    }
+
+    #[test]
+    fn platforms_without_local_application_data_keep_the_legacy_location() {
+        let paths = settings_paths_for(Path::new("/opt/lastkey/lastkey"), None, false);
+        assert_eq!(paths.primary, Path::new("/opt/lastkey/settings.toml"));
+    }
+
+    #[test]
+    fn settings_file_replacement_does_not_leave_a_temporary_file() {
+        let directory = std::env::temp_dir().join(format!(
+            "lastkey-settings-save-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time is valid")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&directory).expect("test directory is created");
+        let path = directory.join("settings.toml");
+
+        write_settings_file(&path, b"first").expect("initial settings are written");
+        write_settings_file(&path, b"second").expect("settings are replaced");
+
+        assert_eq!(fs::read(&path).expect("settings are readable"), b"second");
+        assert!(!directory.join("settings.toml.tmp").exists());
+        fs::remove_dir_all(directory).expect("test directory is removed");
     }
 }

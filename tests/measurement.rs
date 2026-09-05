@@ -250,6 +250,39 @@ fn recommends_p10_to_median_after_ten_overlap_samples() {
 }
 
 #[test]
+fn second_pressed_release_ends_overlap_without_over_reporting() {
+    let start = Instant::now();
+    let mut session = MeasurementSession::new();
+    session.observe(LogicalKey::HorizontalFirst, KeyAction::Down, start);
+    session.observe(
+        LogicalKey::HorizontalSecond,
+        KeyAction::Down,
+        start + Duration::from_millis(10),
+    );
+    let statistics = session
+        .observe(
+            LogicalKey::HorizontalSecond,
+            KeyAction::Up,
+            start + Duration::from_millis(20),
+        )
+        .expect("overlap ends at first release");
+    assert_eq!(statistics.overlap_count(), 1);
+    assert_eq!(statistics.overlap_min_micros(), Some(10_000));
+    assert_eq!(statistics.overlap_max_micros(), Some(10_000));
+
+    assert_eq!(
+        session.observe(
+            LogicalKey::HorizontalFirst,
+            KeyAction::Up,
+            start + Duration::from_millis(500),
+        ),
+        None
+    );
+    assert_eq!(session.statistics().overlap_count(), 1);
+    assert_eq!(session.statistics().sample_count(), 1);
+}
+
+#[test]
 fn ignores_repeats_and_edges_outside_the_pairing_window() {
     let start = Instant::now();
     let mut session = MeasurementSession::new();
