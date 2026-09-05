@@ -107,6 +107,46 @@ try {
 
     Assert-True -Condition $failedAsExpected -Message "$($case.Name) quotes should be rejected."
   }
+
+  $crateScriptPath = Join-Path $PSScriptRoot 'Set-CrateVersion.ps1'
+  $cargoTomlPath = Join-Path $testDirectory 'Cargo.toml'
+  $cargoLockPath = Join-Path $testDirectory 'Cargo.lock'
+  [IO.File]::WriteAllText(
+    $cargoTomlPath,
+    '[package]' + $newline + 'name = "lastkey"' + $newline + 'version = "0.1.0"' + $newline +
+    $newline + '[dependencies]' + $newline + 'serde = { version = "1.0" }' + $newline
+  )
+  [IO.File]::WriteAllText(
+    $cargoLockPath,
+    '[[package]]' + $newline + 'name = "lastkey"' + $newline + 'version = "0.1.0"' + $newline
+  )
+
+  & $crateScriptPath -Version '1.0.3' -CargoTomlPath $cargoTomlPath -CargoLockPath $cargoLockPath
+  $updatedToml = [IO.File]::ReadAllText($cargoTomlPath)
+  $updatedLock = [IO.File]::ReadAllText($cargoLockPath)
+  Assert-True -Condition $updatedToml.Contains('version = "1.0.3"') -Message "Cargo.toml version was not updated."
+  Assert-True -Condition $updatedToml.Contains('serde = { version = "1.0" }') -Message "Cargo.toml dependency version must stay untouched."
+  Assert-True -Condition $updatedLock.Contains('version = "1.0.3"') -Message "Cargo.lock version was not updated."
+
+  $failedAsExpected = $false
+  try {
+    & $crateScriptPath -Version 'not-a-version' -CargoTomlPath $cargoTomlPath -CargoLockPath $cargoLockPath
+  }
+  catch {
+    $failedAsExpected = $true
+  }
+  Assert-True -Condition $failedAsExpected -Message "Invalid versions should be rejected."
+
+  # Mirror of the msix/validate-msix.ps1 executable check: exact four-part
+  # numeric equality, so prefix collisions fail. Keep in sync.
+  function Test-FixtureBinaryVersion([int[]]$Expected, [int[]]$Actual) {
+    ($Actual[0] -eq $Expected[0]) -and ($Actual[1] -eq $Expected[1]) -and
+    ($Actual[2] -eq $Expected[2]) -and ($Actual[3] -eq 0)
+  }
+
+  Assert-True -Condition (Test-FixtureBinaryVersion @(1, 0, 3) @(1, 0, 3, 0)) -Message "Matching versions should be accepted."
+  Assert-True -Condition (-not (Test-FixtureBinaryVersion @(1, 0, 3) @(1, 0, 30, 0))) -Message "1.0.30.0 must not match 1.0.3."
+  Assert-True -Condition (-not (Test-FixtureBinaryVersion @(1, 0, 3) @(1, 0, 31, 0))) -Message "1.0.31.0 must not match 1.0.3."
 }
 finally {
   Remove-Item -LiteralPath $testDirectory -Recurse -Force -ErrorAction SilentlyContinue

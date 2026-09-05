@@ -88,6 +88,8 @@ jobs:
           targets: x86_64-pc-windows-msvc
       - name: Package release
         run: |
+          # Stamp the executables with the release version before the --locked build.
+          .\.github\scripts\Set-CrateVersion.ps1 -Version $env:VERSION
           .\msix\package-msix.ps1 `
             -Version $env:VERSION `
             -OutputDirectory release
@@ -95,6 +97,11 @@ jobs:
             -Package "release/LastKey-$env:VERSION.msix" `
             -Version $env:VERSION
           Compress-Archive -Path release/stage/* -DestinationPath "release/LastKey-$env:VERSION.zip"
+          # The stamp above is only needed for the build; the later step rewrites it
+          # authoritatively, so restore both files and keep the next checkout safe
+          # even if the branch moved meanwhile.
+          git checkout -- Cargo.toml Cargo.lock
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Upload Store submission package
         uses: actions/upload-artifact@v7.0.1
         with:
@@ -126,12 +133,15 @@ jobs:
           Invoke-Git checkout -B release-version-update "origin/$env:RELEASE_BRANCH"
 
           $nextReleaseTag = .\.github\scripts\Update-ReleaseFormDefault.ps1 -ReleaseTag $env:RELEASE_TAG
+          # The tree always names a version that has not shipped, so development
+          # builds stay distinguishable from the release artifact just published.
+          .\.github\scripts\Set-CrateVersion.ps1 -Version $nextReleaseTag.Substring(1)
 
           Invoke-Git config user.name 'github-actions[bot]'
           Invoke-Git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          Invoke-Git add -- .github/workflows/release.yml
+          Invoke-Git add -- .github/workflows/release.yml Cargo.toml Cargo.lock
 
-          git diff --cached --quiet -- .github/workflows/release.yml
+          git diff --cached --quiet -- .github/workflows/release.yml Cargo.toml Cargo.lock
           $diffExitCode = $LASTEXITCODE
           if ($diffExitCode -eq 0) { exit 0 }
           if ($diffExitCode -ne 1) { exit $diffExitCode }

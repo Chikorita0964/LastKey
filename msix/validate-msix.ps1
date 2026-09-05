@@ -7,6 +7,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+$VersionParts = $Version.Split('.') | ForEach-Object { [int]$_ }
+
 if (-not $WorkingDirectory) {
     $WorkingDirectory = Join-Path $PSScriptRoot '..\release\validation'
 }
@@ -30,6 +32,15 @@ if ($LASTEXITCODE -ne 0) { throw "makeappx unpack failed with exit code $LASTEXI
 
 $manifest = [xml](Get-Content -LiteralPath (Join-Path $WorkingDirectory 'AppxManifest.xml') -Raw)
 if ($manifest.Package.Identity.Version -ne "$Version.0") { throw "Unexpected package version: $($manifest.Package.Identity.Version)" }
+foreach ($binary in @('LastKey.exe', 'LastKey.Settings.exe')) {
+    $binaryVersion = (Get-Item -LiteralPath (Join-Path $WorkingDirectory $binary)).VersionInfo
+    if ($binaryVersion.FileMajorPart -ne $VersionParts[0] -or
+        $binaryVersion.FileMinorPart -ne $VersionParts[1] -or
+        $binaryVersion.FileBuildPart -ne $VersionParts[2] -or
+        $binaryVersion.FilePrivatePart -ne 0) {
+        throw "Executable version $($binaryVersion.FileVersion) in $binary does not match package version $Version."
+    }
+}
 foreach ($path in @('LastKey.exe', 'LastKey.Settings.exe', 'resources.pri', 'Assets\Square44x44Logo.png', 'Assets\Square150x150Logo.png', 'LICENSE.txt', 'LICENSES\MIT.txt', 'NOTICE.txt')) {
     if (-not (Test-Path -LiteralPath (Join-Path $WorkingDirectory $path))) { throw "Required package file is missing: $path" }
 }

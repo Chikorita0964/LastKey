@@ -3,6 +3,7 @@
 out/
 build*/
 target/
+release/
 *.obj
 *.pdb
 *.res
