@@ -100,18 +100,26 @@ impl MeasurementSession {
                 // The second-pressed key released first ends the overlap now.
                 // Without this, its start time lingers and the later release
                 // of the first key over-reports the overlap.
+                //
+                // A consumed overlap candidate retires the pairing state
+                // whether its duration is accepted or discarded: a discarded
+                // long overlap must not leave a release candidate behind for
+                // a later neutral transition. Only a plain release with no
+                // overlap candidate starts a neutral interval.
                 if let Some(pressed) = self.pressed_at[key.index()].take() {
                     self.pressed_at[other.index()] = None;
                     let gap = now.saturating_duration_since(pressed);
                     if gap <= MAX_PAIR_GAP {
                         return Some(self.record(gap, true));
                     }
+                    return None;
                 }
                 if let Some(pressed) = self.pressed_at[other.index()].take() {
                     let gap = now.saturating_duration_since(pressed);
                     if gap <= MAX_PAIR_GAP {
                         return Some(self.record(gap, true));
                     }
+                    return None;
                 }
                 self.released_at[key.index()] = Some(now);
             }

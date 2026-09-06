@@ -400,3 +400,40 @@ fn overlap_at_exactly_the_pair_gap_is_still_recorded() {
     assert_eq!(statistics.sample_count, 1);
     assert_eq!(statistics.overlap.count, 1);
 }
+
+#[test]
+fn discarded_long_overlap_leaves_no_release_candidate_for_a_repress() {
+    let start = Instant::now();
+    let mut session = MeasurementSession::new();
+    for (key, action, milliseconds) in [
+        (LogicalKey::HorizontalFirst, KeyAction::Down, 0),
+        (LogicalKey::HorizontalSecond, KeyAction::Down, 10),
+        (LogicalKey::HorizontalFirst, KeyAction::Up, 2_020),
+        (LogicalKey::HorizontalSecond, KeyAction::Up, 2_030),
+        (LogicalKey::HorizontalSecond, KeyAction::Down, 2_040),
+    ] {
+        session.observe(key, action, start + Duration::from_millis(milliseconds));
+    }
+    let statistics = session.statistics();
+    assert_eq!(statistics.overlap.count, 0);
+    assert_eq!(
+        statistics.transition.count, 0,
+        "re-pressing the second key is not a neutral transition from the stale release"
+    );
+}
+
+#[test]
+fn discarded_long_overlap_is_retired_when_the_second_pressed_key_releases_first() {
+    let start = Instant::now();
+    let mut session = MeasurementSession::new();
+    for (key, action, milliseconds) in [
+        (LogicalKey::HorizontalFirst, KeyAction::Down, 0),
+        (LogicalKey::HorizontalSecond, KeyAction::Down, 10),
+        (LogicalKey::HorizontalSecond, KeyAction::Up, 2_020),
+        (LogicalKey::HorizontalFirst, KeyAction::Up, 2_030),
+        (LogicalKey::HorizontalFirst, KeyAction::Down, 2_040),
+    ] {
+        session.observe(key, action, start + Duration::from_millis(milliseconds));
+    }
+    assert_eq!(session.statistics().transition.count, 0);
+}
