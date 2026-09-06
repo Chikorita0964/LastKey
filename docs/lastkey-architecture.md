@@ -2,7 +2,7 @@
 
 The only document in `docs/`: the current architecture, the contracts the implementation must
 preserve, and the working rules for changes. Keep it limited to what is true of the current tree.
-Change records, review logs, and finished migrations do not belong here — they live in git history.
+Change records, review logs, and finished migrations belong in git history, not here.
 
 ## Process Architecture
 
@@ -18,15 +18,13 @@ display-only state                      InputService
                                      Linux backend (experimental)
 ```
 
-`LastKey.exe` owns the tray and single-instance enforcement, saved settings and their persistence,
-`AppController` with the capture and measurement lifecycles, the Windows hook, Raw Input, SOCD,
-delivery, timing and synthetic output, and the IPC server including launching and focusing the
-settings process.
-
-`LastKey.Settings.exe` owns the Iced application and window state, screen composition and editing
-widgets, and the IPC client. It never owns settings files, SOCD, hooks, `SendInput`, the scheduler,
-platform handles, or raw measurement. It does not run during normal gameplay: no Iced thread,
-allocation, wgpu device, or GPU context exists while only the runtime is running.
+`LastKey.exe` owns everything authoritative: tray and single-instance enforcement, settings
+persistence, `AppController` with the capture and measurement lifecycles, hook, Raw Input, SOCD,
+delivery, timing, synthetic output, and the IPC server that launches and focuses the settings
+process. `LastKey.Settings.exe` owns only the Iced application, screen composition, and the IPC
+client — never settings files, SOCD, hooks, `SendInput`, the scheduler, platform handles, or raw
+measurement. It does not run during normal gameplay: no Iced thread, allocation, wgpu device, or GPU
+context exists while only the runtime is running.
 
 | Path | Responsibility |
 | --- | --- |
@@ -46,9 +44,8 @@ Start a task by reading this file, then `src/bin/lastkey.rs`, `src/platform/wind
 1. Input correctness takes priority over UI convenience and architectural elegance.
 2. `WH_KEYBOARD_LL` stays the primary Windows SOCD capture mechanism.
 3. Raw Input is only a supporting path for mapping capture, measurement, and hook-health observation.
-4. Synthetic output stays tagged `SendInput`, and that output never re-enters physical processing —
-   on the hook path via `LLKHF_INJECTED` + `INJECTION_TAG`, on the raw path via the null-`hDevice`
-   filter (`is_injected`).
+4. Synthetic output stays tagged `SendInput` and never re-enters physical processing — on the hook
+   path via `LLKHF_INJECTED` + `INJECTION_TAG`, on the raw path via the null-`hDevice` filter.
 5. Low-level hook callbacks never sleep, busy-wait, perform file I/O or UI work, or wait on IPC.
 6. The direct low-latency path is preserved when timing is disabled.
 7. The SOCD core stays platform-neutral, with independent horizontal and vertical axes.
@@ -74,32 +71,29 @@ Iced widget state -> draft intent -> IPC -> AppController validation
 
 `AppController` holds saved and draft settings separately, plus capture and measurement generations.
 It keeps no mirror of the running configuration: the engine is authoritative, and
-`reconcile_apply_outcome` queries it through the `ActiveSettings` fence rather than trusting a local
-copy. Apply validates the draft, persists the candidate, activates the runtime synchronously, then
-publishes the snapshot. On activation failure the previous file is written back; if that rollback
-also fails, both errors are reported together. The UI never reports Apply success before the runtime
-confirms persistence and activation.
+`reconcile_apply_outcome` queries it through the `ActiveSettings` fence. Apply validates the draft,
+persists the candidate, activates the runtime synchronously, then publishes the snapshot. On
+activation failure the previous file is written back; if that rollback also fails, both errors are
+reported together. The UI never reports Apply success before the runtime confirms both steps.
 
 ### IPC
 
 - `src/protocol.rs` defines version 2 of a length-prefixed JSON protocol with a 1 MiB frame limit.
-  Version 2 dropped `UiSnapshot.active`, which always equalled `saved` and was never read. Both
-  binaries ship together, so the exact-match version check turns a mismatched pair into a clear
-  error instead of a deserialization failure.
-- Frame length and protocol version are validated before deserialization.
-- The named pipe rejects remote clients and carries a protected DACL allowing only the owning user
-  and `SYSTEM`.
-- Input service acknowledgements have a 5-second startup limit and a 2-second command limit. A failed
-  Apply is reconciled through an `ActiveSettings` fence queued behind it: engine runs the candidate,
-  adopt it; engine runs the old settings, roll back; fence unreachable, report `RuntimeUnconfirmed`
-  rather than claiming a rollback.
-- Accept failures back off for 100 ms; server shutdown uses `CancelSynchronousIo` with a 2-second
-  limit.
+  Frame length and version are validated before deserialization. Both binaries ship together, so an
+  exact-match version check turns a mismatched pair into a clear error, not a parse failure.
+- The named pipe rejects remote clients and carries a DACL allowing only the owning user and
+  `SYSTEM`; another local user could otherwise read snapshots or occupy the single instance.
+- Bounded everywhere, because an unbounded wait hangs the message loop or shutdown: 5 s for input
+  service startup, 2 s per command, 100 ms back-off on accept failure, and `CancelSynchronousIo`
+  with a 2 s limit on shutdown.
+- A failed Apply is reconciled through an `ActiveSettings` fence queued behind it: engine runs the
+  candidate, adopt it; engine runs the old settings, roll back; fence unreachable, report
+  `RuntimeUnconfirmed` rather than claiming a rollback.
 - Each session performs every pipe syscall from exactly one thread: wait on the outbound queue with a
-  timeout, drain outbound, `PeekNamedPipe` gated inbound read. Splitting one synchronous pipe across
+  timeout, drain outbound, `PeekNamedPipe`-gated inbound read. Splitting one synchronous pipe across
   a reader and a writer thread deadlocks, because a pending blocking read stalls writes on a
-  duplicate handle of the same file object. Server workers enqueue events for the pump thread rather
-  than writing directly.
+  duplicate handle of the same file object. Server workers enqueue events for the pump rather than
+  writing directly.
 - The pump waits on its outbound channel (`recv_timeout`), so queued messages leave immediately. Only
   inbound discovery is bounded by the poll interval: 2 ms while active, backing off to 50 ms after
   250 ms of silence. Polling exists only while a settings session is connected; latency-sensitive
@@ -107,44 +101,43 @@ confirms persistence and activation.
 
 ### Settings storage
 
-- Installed mode: `%LOCALAPPDATA%\LastKey\settings.toml`
-- Portable marker present: `settings.toml` beside the executable
-- Primary file absent: a legacy fallback reads the existing file beside the executable
-- Saving: write and `sync_all` a temporary file in the same directory, then replace the destination
-  with `MoveFileExW` (`MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH`); remove the temporary
-  file on failure
-
-The MSIX `WindowsApps` directory is not writable, and a direct `fs::write` could leave a truncated
-TOML file after an interrupted shutdown. The legacy file is never deleted automatically. The parser
-recognizes only current field names: no released build ever wrote a settings file, so there is
-nothing to migrate. A file that fails `validate()` — including one hand-edited past
-`MAX_TIMING_MICROS` — is rejected whole: the runtime shows one error dialog and starts from full
-defaults rather than clamping individual fields.
+- Installed mode: `%LOCALAPPDATA%\LastKey\settings.toml`; with a portable marker, `settings.toml`
+  beside the executable; if the primary file is absent, a legacy fallback reads the file beside the
+  executable, and that file is never deleted automatically.
+- Saving writes and `sync_all`s a temporary file in the same directory, then replaces the destination
+  with `MoveFileExW` (`MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH`), removing the temporary
+  file on failure. The MSIX `WindowsApps` directory is not writable, and a plain `fs::write` could
+  leave a truncated TOML file that loses every setting on the next launch.
+- The parser recognizes only current field names: no released build ever wrote a settings file, so
+  there is nothing to migrate. A file that fails `validate()` is rejected whole — one error dialog,
+  then full defaults — rather than clamping individual fields.
 
 ### Timing and measurement semantics
 
-- Timing policy applies only when physical opposing keys actually overlap; transitions that are
-  already neutral are left alone.
-- Full overlap is expressed as a preservation rate of 100%, not a separate control.
+- Timing policy applies only when physical opposing keys actually overlap; already-neutral
+  transitions are left alone. Full overlap is a preservation rate of 100%, not a separate control.
 - The UI works in 0.1 ms units; internally everything is integer microseconds, so scheduling never
   depends on floating point.
-- Recommendations use the P10 minimum and P50 maximum with P90 as an exclusive ceiling, which keeps
-  slow tails from widening the range.
+- Recommendations use the P10 minimum and P50 maximum with P90 as an exclusive ceiling, keeping slow
+  tails from widening the range.
 - Samples below 1 ms are classified separately as near-simultaneous, because keyboard scanning and OS
-  batching make ordering unreliable at that scale.
+  batching make ordering unreliable at that scale. They never enter `SampleStats`, so a recommended
+  minimum cannot fall under the 100 µs floor `validate()` enforces.
 - Overlap samples longer than `MAX_PAIR_GAP` (1 s) are discarded, symmetric with neutral transitions,
   so a long hold cannot skew the recommended durations.
-- Applied timing values share one ceiling, `MAX_TIMING_MICROS` (1000 ms), enforced by
-  `Settings::validate` for the slider, typed, and recommendation paths alike. The UI's
-  `MAX_TIMING_MILLIS` is derived from it; keep any future ceiling a round millisecond count so the
+- All applied timing shares one ceiling, `MAX_TIMING_MICROS` (1000 ms), enforced by
+  `Settings::validate` for the slider, typed, and recommendation paths alike. It equals `MAX_PAIR_GAP`
+  on purpose: rounding the largest acceptable sample lands exactly on the ceiling, so
+  `ApplyRecommendations` cannot produce a draft its own validator rejects. The UI's
+  `MAX_TIMING_MILLIS` derives from it; keep any future ceiling a round millisecond count so that
   `f32` derivation stays exact.
 - `SampleStats` owns one distribution (count, min/max/latest, P10/P50/P90) and `push` is its only
   writer. Its fields are public for the protocol mapping; if it ever gains an invariant, reintroduce
   accessors at the same time.
 
 The policy is fixed by the implementation and deterministic tests. The 1 ms threshold, the 10-sample
-requirement, and aggregation across both axes still need testing on real hardware. Do not redesign
-this policy as a side effect of unrelated work.
+requirement, and aggregation across both axes still need real-hardware testing. Do not redesign this
+policy as a side effect of unrelated work.
 
 ### Scheduling
 
@@ -162,31 +155,34 @@ emission for that event succeeded, so replaying the original cannot double-deliv
 2. A failed release of the event's own key-up
 3. A failed press of the original key-down
 
-Windows honors `PassThrough` by calling `CallNextHookEx`; Linux honors it by replaying the original
-event through the virtual device. The behavior table in `README.md` describes the user-visible result
-and must stay in sync with `reconcile_immediate`. The delayed (timing-enabled) path has no physical
-pass-through, because both keys are already held and the delayed release is still pending; that
-exception is noted in the code.
+Windows honors `PassThrough` by calling `CallNextHookEx`; Linux replays the original event through
+the virtual device. The behavior table in `README.md` describes the user-visible result and must stay
+in sync with `reconcile_immediate`. The delayed (timing-enabled) path has no physical pass-through,
+because both keys are already held and the delayed release is still pending; the code notes that.
 
 ### Settings UI
 
 Design source: the preview under `stitch_ui_redesign_and_enhancement/` (ignored, not part of the
 product). Everything on screen maps onto widgets and style structs the pinned Iced revision
-(`f8127c8`) already provides — system fonts, no icon font, no canvas, no new dependency.
-`src/ui/theme.rs` holds the palette, widget styles, and metrics; `src/ui/app.rs` holds the state
-machine and both views.
+(`f8127c8`) already provides — system fonts, no icon font, no canvas, no new runtime dependency
+(`png` is build-only and sits behind this same `iced-ui` feature, so a default build never compiles
+it). `src/ui/theme.rs` holds the palette, widget styles, and metrics; `src/ui/app.rs` holds the
+state machine and both views.
 
 - One window size (780×760) for both views, with fixed two-column layouts, so switching views never
-  resizes. A manually resized window keeps its size; there is no responsive reflow. Iced's
-  `responsive` widget would rebuild children inside a closure on every layout pass, which is not
-  worth obscuring `settings_view` for a case the default size never hits.
-- The page is `column![header, body]` plus a pinned action bar; there is no footer. The header holds
-  the status dot and status text on the left and the Settings/Measurement switch on the right;
-  connection state lives only there and in the disconnected body.
-- Error and success feedback is plain text inside the action bar, never a toggling banner. The page
-  is diffed positionally, so a banner appearing above the scrollable hands its state slot to another
-  widget and resets the scroll offset; swapping only text moves nothing. While disconnected, errors
-  surface in the waiting body instead, because the action bar needs a snapshot.
+  resizes; a manually resized window keeps its size. Iced's `responsive` widget would rebuild
+  children inside a closure on every layout pass, which is not worth obscuring `settings_view` for a
+  case the default size never hits.
+- The page is `column![header, body]` plus a pinned bottom bar; there is no footer. The header holds
+  the status dot and text on the left and the Settings/Measurement switch on the right; connection
+  state lives only there and in the disconnected body.
+- Feedback is plain text inside the bottom bar, never a toggling banner: the page is diffed
+  positionally, so a banner above the scrollable hands its state slot to another widget and resets
+  the scroll offset. The settings bar is always mounted because its buttons must not move. The
+  measurement bar mounts only on an error — safe because it is the last child, and appending or
+  removing the tail never disturbs the scrollable's slot, while an empty card would be a visible
+  bordered frame. While disconnected, errors surface in the waiting body instead, because the bar
+  needs a snapshot.
 - `TimingField` is the single axis of variation for the timing card: `is_editable` defines the
   enabled gate for both the widget tree and `update`, and `micros` / `micros_mut` / `pair_invalid` /
   `buffer` derive every row value from the field, so a row cannot display one field while acting on
@@ -196,35 +192,33 @@ machine and both views.
   already focused with its content selected, so no caret flashes. Later presses hit the real box and
   place the caret natively. `editing` flags rearm on any focus move and on window unfocus, so the
   next press selects all again, Explorer-style. `value_box` is shared by the millisecond rows and the
-  rate box so the two can never drift apart.
+  rate box so the two cannot drift apart.
 - Disabled timing groups stay on screen grayed out instead of collapsing, so toggling never moves the
   layout. The muted slider has no disabled widget state, so `update` additionally ignores its drags.
 - A timing minimum above its maximum blushes both value boxes live; unparseable text blushes its own
-  box. Only enabled groups highlight. A binding that duplicates another slot renders its row in
+  box; only enabled groups highlight. A binding duplicating another slot renders in
   `slot_error_style`.
 - `ApplyRecommendations` copies ranges into the local draft only and switches to Settings scrolled to
   the timing card. Nothing is committed silently.
 - Optical padding constants (`VALUE_BOX_PADDING`, `KBD_PADDING`, the inline value's top padding)
-  compensate for glyph ink sitting high in its line box. They were tuned against screenshots at the
-  current DPI; a different monospace face or scaling may need a pixel of adjustment. Each lives in
-  one named constant.
-- Two CSS properties have no Iced equivalent: `letter-spacing` (uppercase alone carries the axis
-  titles) and `border-bottom-width` (the keycap's thicker bottom edge is a one-pixel shadow).
-- winit registers its window class without icons and Iced exposes no icon API, so a throwaway thread
-  in `src/bin/lastkey-settings.rs` sends this process's `LastKey*` windows the exe's embedded icon
-  (`winres` id 1) as the small icon. It exits once the windows are found (10 s cap), never fails the
-  app, and matches by title prefix — a renamed window would silently keep the generic glyph.
+  compensate for glyph ink sitting high in its line box; they were tuned against screenshots at the
+  current DPI. Two CSS properties have no Iced equivalent: `letter-spacing` (uppercase alone carries
+  the axis titles) and `border-bottom-width` (the keycap's bottom edge is a one-pixel shadow).
+- The window icon is native: under `iced-ui`, `build.rs` unpacks the 32×32 PNG layer from
+  `assets/source/lastkey-logo.ico` and emits RGBA as a blob, which `ui::run` passes as
+  `window::Settings { icon }`. A corrupt asset fails the build loudly (the `winres` precedent); an
+  invalid pixel buffer degrades to `icon: None`. Iced's `.window()` replaces the whole settings struct
+  while `.window_size()` merges, which is why the 780×760 size lives in that same call.
 
 Known cosmetic limits, all harmless to behavior: the measurement view is shorter than 760 px so the
-shared window leaves whitespace below it; a narrow window crowds rather than reflowing (the status
-line ellipsizes); very large measurement counts could overflow the fixed 84 px stat tiles.
+window leaves whitespace below it; a narrow window crowds rather than reflowing (the status line
+ellipsizes); very large measurement counts could overflow the fixed 84 px stat tiles.
 
 ### Linux backend (experimental)
 
 - Devices exposing all four configured keys are grabbed exclusively; every other key event is
-  replayed through the uinput virtual device.
-- The virtual device is excluded from the candidate scan by name, so LastKey never grabs its own
-  output.
+  replayed through the uinput virtual device, which is excluded from the candidate scan by name so
+  LastKey never grabs its own output.
 - Windows scan codes and evdev keycodes coincide for plain keys but not extended ones, so
   `linux_keycode` / `physical_from_linux` translate the arrow keys explicitly and reject bindings
   with no known Linux mapping instead of resolving them to the wrong key.
@@ -244,17 +238,17 @@ fails against the old behavior.
 | Contract | Why it exists |
 | --- | --- |
 | Entering capture reconciles output, physical state, and pending work (`begin_capture`) | Otherwise a pre-held key's repeat is captured while its release is consumed, leaving output held with nothing down |
-| Modifiers are never captured (`is_capture_eligible`, both input paths) | A bound modifier would be swallowed globally; the UI guidance promises they stay available |
-| Capture consumes the next key-up for the captured key (`captured_key_awaiting_release`) | Capture already consumed the key-down; releasing only the key-up would deliver an unmatched event elsewhere |
+| Modifiers are never captured (`is_capture_eligible`, both paths) | A bound modifier would be swallowed globally; the UI guidance promises they stay available |
+| Capture consumes the next key-up for the captured key (`captured_key_awaiting_release`) | The key-down was already consumed; releasing only the key-up would deliver an unmatched event elsewhere |
 | While capture is pending, a key-up for a *different* key passes through | A key held before capture started has no consumed key-down, so its release must reach applications |
-| `process_hook` and `process_raw` share the same leading guards | Asymmetry lets auto-repeat of a captured key reach `observe_raw` as a false miss and trigger a spurious hook reinstall |
+| `process_hook` and `process_raw` share the same leading guards | Asymmetry lets auto-repeat of a captured key reach `observe_raw` as a false miss and trigger a spurious reinstall |
 | Hook-health records only configured keys, outside capture and measurement | Otherwise every keystroke system-wide does queue work inside the latency-critical hook callback |
 | Injected events are filtered by `LLKHF_INJECTED` + `INJECTION_TAG` before any borrow | Keeps LastKey's own output out of physical processing, and makes the common re-entry case allocation-free |
-| Raw input with a null device handle is dropped before the union read (`is_injected`) | Covers hook-health, capture, and measurement with one guard. On systems where legitimate keystrokes carry no handle (some RDP/remote stacks), measurement and raw-fallback capture degrade silently while SOCD itself is unaffected, because the hook path does not use `hDevice` |
+| Raw input with a null device handle is dropped before the union read (`is_injected`) | One guard covers hook-health, capture, and measurement. Where legitimate keystrokes carry no handle (some RDP/remote stacks) those three degrade silently while SOCD is unaffected, because the hook path never reads `hDevice` |
 | `try_borrow_mut` on the hook and timer paths | `SendInput` from the hook's own thread can re-enter the hook; a panic there would abort across the `extern "system"` boundary and leave a synthetic key stuck down. The command path may use a plain borrow; these two may not |
-| A lost hook releases output, then notifies once via thread message | With no hook, no release event will ever arrive to clear held output; notification fires on lost/recovered transitions only, after consecutive failures spaced by the reinstall cooldown, never on a timer |
+| A lost hook releases output, then notifies once via thread message | With no hook, no release event will ever arrive to clear held output. Notification fires on lost/recovered transitions only, after consecutive failures spaced by the reinstall cooldown, never on a timer |
 | A failed scheduled release releases the opposite key instead | Never leave both directions of one axis held together |
-| Delivery recovery is tested through `TimingController` | The retired `InputRouter` was a second copy of this policy that no shipping path executed |
+| Delivery recovery is tested through `TimingController`, not a parallel router | A second copy of this policy that no shipping path executes drifts from the real one |
 
 ### Lifecycle and IPC
 
@@ -265,15 +259,11 @@ fails against the old behavior.
 | Stopping measurement with no active session touches no timing state | `close_ui_session` stops unconditionally and also runs on a UI crash or disconnect; resetting there would release live output and interrupt SOCD (invariant 12) |
 | `TimingController::reset_state()` at measurement boundaries | `release_all` alone leaves `physically_held` set, so a key released during measurement is treated as a repeat afterwards |
 | The engine drops a measurement session whose consumer disconnected | Running on would bypass SOCD with no owner |
-| Capture completions validate on the pump (`ServerEvent::KeyCaptureDone`) | Validating in the worker races a Revert processed between acceptance and enqueue |
-| Measurement updates validate on the pump (`ServerEvent::MeasurementUpdated`) | A worker-validated update can otherwise surface inside the next session; the pump orders validation, application, and reply |
+| Capture completions and measurement updates validate on the pump, not in the worker | Worker validation races a Revert processed between acceptance and enqueue, and lets an update surface inside the *next* session; the pump orders validation, application, and reply |
 | `MeasurementUpdated` applies only while `measurement_active` | An update queued just before Stop is written after the stop reply; without this guard it revives the stopped session and overwrites the final statistics |
 | Repeat and duplicate key events produce no measurement update | `observe` discards them, so sending was pure duplication — roughly thirty identical messages per second per held key, each costing a lock, a serialization, a pipe write, and a re-render |
 | A re-pressed key retires its release candidate (`released_at`) | Otherwise the stale timestamp forms a phantom neutral-transition sample after an overlap |
-| Single-threaded IPC pump per session | A pending blocking read stalls writes on a duplicate handle of the same synchronous pipe |
-| Bounded input-service acknowledgements and IPC shutdown | An unbounded wait hangs the message loop or the runtime shutdown |
-| Owner/SYSTEM-only pipe DACL | Another local user could otherwise read snapshots or occupy the single instance |
-| Atomic settings replacement | A truncated TOML file loses all settings on the next launch |
+| A consumed overlap candidate returns immediately, accepted or discarded | Only a plain release with no candidate may seed `released_at`. Letting a discarded long overlap fall through leaves a stale release behind, and the next press fabricates a neutral transition that never happened |
 
 ### Settings UI
 
@@ -282,7 +272,8 @@ fails against the old behavior.
 | Timing is locally authoritative until Apply; resets apply locally at click time | Nothing correlates a reply with its request, so an older Snapshot must not undo a revert; every Snapshot merges local timing while bindings converge on the last reply |
 | Uncommitted text buffers count toward the dirty state | Typed text reaches the draft only on submit, so comparing drafts alone left Apply disabled — and the click dead — after typing into a clean window |
 | Apply passes `draft.validate()` locally before any IPC | Turns a round-trip `ValidationFailed` into immediate feedback while the server stays the authoritative gate |
-| A successful submit clears only the parse error it produced | The action bar is the only place a runtime failure is shown; clearing every error would hide a server message on an unrelated keystroke |
+| A successful submit clears only the parse error it produced | The bottom bar is the only place a runtime failure is shown; clearing every error would hide a server message on an unrelated keystroke |
+| The measurement bar renders errors only, never `notice` | `ApplyRecommendations` switches to Settings on the same frame, so the only notice able to reach that bar is `ApplySucceeded`'s — a settings message pinned under the statistics until the next snapshot. Clearing `notice` inside `show_view` is *not* the equivalent fix: `ApplyRecommendations` sets it before switching, and that guidance would be wiped before it renders |
 
 ## Non-Goals
 
@@ -299,8 +290,7 @@ fails against the old behavior.
 
 ### Evaluated and declined
 
-Reopening one of these is undoing a decision, not finding a defect. Each was measured against the
-current tree and rejected for the reason given.
+Reopening one of these is undoing a decision, not finding a defect.
 
 | Change | Why not |
 | --- | --- |
@@ -310,25 +300,30 @@ current tree and rejected for the reason given.
 | Embed `SampleStats` in `MeasurementSnapshot` | Roughly 25 UI call sites for no behavioral gain, and it couples the wire format to a core type |
 | Attribute-driven serde for `TimingSettings` | Saves ~50 lines but moves the stored-file contract out of one visible struct into scattered attributes |
 | `[String; 5]` for `TimingInputs` | Deletes two matches, costs the named access that `from_timing` and the tests read by |
-| A separate `DurationField` enum | Would remove one unreachable `expect` in `ms_field` at the cost of a second enum every reader must relate to the first. Revisit only if a third caller appears |
+| A separate `DurationField` enum | Removes one unreachable `expect` in `ms_field` at the cost of a second enum every reader must relate to the first. Revisit only if a third caller appears |
 | Incremental percentiles or a smarter sample structure | `O(n)` insert on a human-bounded sample count; a heap buys nothing measurable |
 | Split `src/platform/windows/input.rs` | Every part serves one thread and one `thread_local` engine; the file's comments carry that invariant continuously |
 | Split `src/ui/app.rs` | Repeated unification already flattened the dense parts; a split now would be motion, not improvement |
+| `[target.'cfg(windows)'.build-dependencies]` for `png` | Cargo resolves build-dependency `cfg` against the **host**, so this drops `png` from a Linux-hosted Windows cross-build and breaks `build.rs`. The feature axis is the correct one |
 
 ## Packaging and Release
 
 - Requirements: `Windows.Desktop` 10.0.19041 or later, x64 only, `runFullTrust`. Store submission
   packages are unsigned and rely on Store signing.
 - `Cargo.toml` always names a version that has **not** shipped. The release workflow stamps the tag
-  version before the `--locked` build, restores the files, then bumps the tree to the next version in
-  the post-release commit. `winres` derives `FileVersion` from `CARGO_PKG_VERSION`, so there is one
-  source of truth, and `validate-msix.ps1` compares all four numeric parts of both executables
+  version with `Set-CrateVersion.ps1` before the `--locked` build, restores the files, then bumps the
+  tree in the post-release commit. `winres` derives `FileVersion` from `CARGO_PKG_VERSION`, so there
+  is one source of truth, and `validate-msix.ps1` compares all four numeric parts of both executables
   against the package version.
+- `package-msix.ps1` stamps only the manifest and artifact names, so it fails fast when its
+  `-Version` differs from the crate version — before either expensive build, rather than producing a
+  package `validate-msix.ps1` will reject. Stamping stays owned by the workflow. Documentation of the
+  local sequence must derive the version (`cargo metadata --no-deps`) instead of naming a literal,
+  which would go stale at the next release and re-arm that failure.
 - Launching the installed settings UI from the tray requires a one-time user click check, because the
-  process is created from inside the package. This is expected for an executable that is not an
-  application entry point.
-- The first settings UI launch can take 10–20 seconds for framework initialization; later launches
-  connect in about a second.
+  process is created from inside the package; that is expected for an executable that is not an
+  application entry point. The first launch can take 10–20 seconds for framework initialization;
+  later launches connect in about a second.
 
 ## Verification
 
@@ -345,13 +340,13 @@ git diff --check
 ```
 
 - **The `iced-ui` run is not optional after a `src/ui/` change.** `src/lib.rs` gates `pub mod ui`
-  behind the feature, so the default-feature test run never compiles that module. Clippy with
-  `--all-features` type-checks its tests but does not execute them.
-- Both Clippy configurations use `--all-targets` so test code is linted too.
-- The default dependency tree must stay free of Iced and wgpu.
+  behind the feature, so the default run never compiles that module. Clippy with `--all-features`
+  type-checks its tests but does not execute them.
+- Both Clippy configurations use `--all-targets` so test code is linted too. The default dependency
+  tree must stay free of Iced and wgpu. Test counts are deliberately not recorded here.
 - Rebuilding fails with OS error 5 while the settings UI or the runtime holds `target\debug\*.exe`.
-  Close it first, or run the `--lib` and integration targets, which do not link the binaries.
-- Test counts are deliberately not recorded here; they change with every commit.
+  Close it, run the `--lib` and integration targets (which do not link the binaries), or pass a
+  separate `--target-dir`, which stays inside the `target/` ignore rule.
 
 Before builds that need MSVC linking:
 
@@ -362,6 +357,8 @@ call "C:\Program Files\Microsoft Visual Studio\18\Insiders\Common7\Tools\VsDevCm
 Manual Windows validation has passed for tray launch and focus restoration, navigation and DPI
 scaling, four-key capture and Apply, Revert and both restore scopes, measurement start/stop, normal
 and forced UI closure, runtime operation with no UI, and pipe rejection for a separate local user.
+Treat it as dated: it predates the settings-UI rebuild and does not substitute for a fresh pass
+after view changes.
 
 ## Remaining Work
 
@@ -372,6 +369,8 @@ and forced UI closure, runtime operation with no UI, and pipe rejection for a se
   cross-compilation only.
 - A live-fire check that injected input is what the null-`hDevice` filter drops; the rule rests on
   documented behavior plus a throwaway probe, not an in-tree end-to-end run.
+- Three view-only visual checks: the measurement view's empty state, the feedback bar on a real
+  Start/Stop failure, and the title-bar icon plus its DPI scaling.
 - End-to-end tests only if manual validation shows a regression risk, and without adding abstractions
   to production code to enable them: session cleanup when a client dies, runtime shutdown with no UI
   ever connected, `UiServer` shutdown while a UI stays connected, malformed JSON over a real
