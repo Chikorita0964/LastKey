@@ -29,8 +29,33 @@ pub fn run() -> iced::Result {
             default_text_size: theme::BODY_TEXT_SIZE.into(),
             ..iced::Settings::default()
         })
-        .window_size(WINDOW_SIZE)
+        // `window` replaces the whole window settings while `window_size`
+        // only merges, so the size lives here next to the icon: a later
+        // `window_size` call would be equally correct, but a single site
+        // keeps the one-size invariant obvious.
+        .window(iced::window::Settings {
+            size: WINDOW_SIZE,
+            icon: window_icon(),
+            ..iced::window::Settings::default()
+        })
         .run()
+}
+
+// RGBA pixels for the native window icon, unpacked from the application ICO
+// at build time (see build.rs). A missing or invalid asset degrades to no
+// icon rather than failing the settings app.
+#[cfg(windows)]
+include!(concat!(env!("OUT_DIR"), "/lastkey_icon.rs"));
+
+/// Builds the native window icon from the build-time RGBA pixels.
+#[cfg(windows)]
+fn window_icon() -> Option<iced::window::Icon> {
+    iced::window::icon::from_rgba(
+        WINDOW_ICON_RGBA.to_vec(),
+        WINDOW_ICON_WIDTH,
+        WINDOW_ICON_HEIGHT,
+    )
+    .ok()
 }
 
 /// The one window size shared by both views. View switches used to resize and
@@ -672,7 +697,7 @@ impl SettingsApp {
         };
         let actions: Option<Element<'_, Message>> = match self.current_view {
             UiView::Settings => self.settings_actions(),
-            UiView::Measurement => None,
+            UiView::Measurement => self.measurement_feedback_bar(),
         };
         // The connection state lives in the header status line, so no footer
         // strip is needed.
@@ -829,27 +854,7 @@ impl SettingsApp {
         // positionally, so a banner appearing or disappearing above the body
         // hands the scrollable state slot to another widget and resets the
         // scroll offset. Swapping only this text never moves any widget.
-        let feedback: Element<'_, Message> = match (&self.error, &self.notice) {
-            (Some(error), _) => text(error)
-                .size(theme::BODY_TEXT_SIZE)
-                .font(theme::UI_FONT_BOLD)
-                .color(theme::ERROR_TEXT)
-                .width(Fill)
-                .align_x(Alignment::Right)
-                .wrapping(Wrapping::None)
-                .ellipsis(Ellipsis::End)
-                .into(),
-            (None, Some(notice)) => text(notice)
-                .size(theme::BODY_TEXT_SIZE)
-                .font(theme::UI_FONT_BOLD)
-                .color(theme::OK_TEXT)
-                .width(Fill)
-                .align_x(Alignment::Right)
-                .wrapping(Wrapping::None)
-                .ellipsis(Ellipsis::End)
-                .into(),
-            (None, None) => space::horizontal().into(),
-        };
+        let feedback = self.feedback_element();
         let actions = container(
             row![
                 button("Restore all defaults")
@@ -870,6 +875,53 @@ impl SettingsApp {
         .style(|_theme| theme::card_style());
 
         Some(actions.into())
+    }
+
+    /// Error and notice feedback shared by both views. Rendered as plain text
+    /// with a blank placeholder when empty, so its presence never moves any
+    /// widget (see `settings_actions`).
+    fn feedback_element(&self) -> Element<'_, Message> {
+        match (&self.error, &self.notice) {
+            (Some(error), _) => text(error)
+                .size(theme::BODY_TEXT_SIZE)
+                .font(theme::UI_FONT_BOLD)
+                .color(theme::ERROR_TEXT)
+                .width(Fill)
+                .align_x(Alignment::Right)
+                .wrapping(Wrapping::None)
+                .ellipsis(Ellipsis::End)
+                .into(),
+            (None, Some(notice)) => text(notice)
+                .size(theme::BODY_TEXT_SIZE)
+                .font(theme::UI_FONT_BOLD)
+                .color(theme::OK_TEXT)
+                .width(Fill)
+                .align_x(Alignment::Right)
+                .wrapping(Wrapping::None)
+                .ellipsis(Ellipsis::End)
+                .into(),
+            (None, None) => space::horizontal().into(),
+        }
+    }
+
+    /// Error feedback for the measurement view, mounted below the scrollable
+    /// body like the settings action bar. The settings buttons stay on their
+    /// own view: this bar carries only the shared feedback text. Unlike a
+    /// banner above the body, this bar is the last child, so mounting it only
+    /// when needed leaves the scrollable's state slot untouched.
+    fn measurement_feedback_bar(&self) -> Option<Element<'_, Message>> {
+        self.snapshot.as_ref()?;
+        // Errors only: the sole notice reachable from this view
+        // (`ApplyRecommendations`) switches to Settings before the next
+        // frame, so a notice arriving here is always about the other view.
+        self.error.as_ref()?;
+        Some(
+            container(row![self.feedback_element()])
+                .padding(theme::CARD_PADDING)
+                .width(Fill)
+                .style(|_theme| theme::card_style())
+                .into(),
+        )
     }
 
     fn measurement_view(&self) -> Element<'_, Message> {
@@ -1349,7 +1401,8 @@ fn stat_inline(label: &'static str, value: String, color: Color) -> Element<'sta
                 text(value)
                     .font(theme::MONO_FONT)
                     .size(STAT_VALUE_SIZE)
-                    .color(color),
+                    .color(color)
+                    .align_x(Alignment::Right),
             )
             .padding(Padding {
                 top: 2.0,
@@ -1658,7 +1711,10 @@ fn duration(micros: Option<u64>) -> String {
 
 fn timing_range(range: Option<crate::protocol::TimingRange>) -> String {
     range.map_or_else(
-        || format!("Collect at least {MIN_RECOMMENDATION_SAMPLES} samples"),
+        // Two lines by construction: the tile is too narrow for the full
+        // sentence, and an explicit break stays put across DPIs where
+        // automatic wrapping would not.
+        || format!("Collect at least\n{MIN_RECOMMENDATION_SAMPLES} samples"),
         |range| {
             format!(
                 "{:.1} - {:.1} ms",
@@ -2027,6 +2083,51 @@ mod tests {
         assert_eq!(draft.timing.socd_transition_min_micros, 2_100);
         assert_eq!(draft.timing.socd_transition_max_micros, 3_000);
         assert!(app.notice.is_some());
+    }
+
+    #[test]
+    fn measurement_errors_stay_visible_on_the_measurement_view() {
+        use crate::protocol::{ErrorView, UiEvent, UiView};
+        let mut app = test_app();
+        app.current_view = UiView::Measurement;
+        // Silent when quiet: no snapshot-missing placeholder is needed here,
+        // and an empty card would be a visible bordered frame. Without a
+        // snapshot the disconnected placeholder already shows the error.
+        assert!(app.measurement_feedback_bar().is_none());
+        let _ = app.handle_event(UiEvent::RuntimeError(ErrorView {
+            code: "measurement-start-failed".into(),
+            message: "raw input registration failed".into(),
+            recoverable: true,
+        }));
+        // The bar renders the same shared feedback element as the settings
+        // bar, so a stored error here is a visible error there.
+        assert_eq!(app.error.as_deref(), Some("raw input registration failed"));
+        assert!(app.measurement_feedback_bar().is_some());
+    }
+
+    #[test]
+    fn settings_notices_do_not_mount_the_measurement_bar() {
+        use crate::protocol::{MeasurementSnapshot, UiEvent, UiView};
+        let mut app = test_app();
+        app.current_view = UiView::Measurement;
+        // "Settings applied." arrives via ApplySucceeded on the other view;
+        // switching to Measurement must not pin it under the statistics.
+        let mut snapshot = baseline_snapshot();
+        snapshot.measurement = Some(MeasurementSnapshot::default());
+        let _ = app.handle_event(UiEvent::ApplySucceeded(snapshot));
+        assert_eq!(app.error, None);
+        assert!(app.notice.is_some());
+        assert!(app.measurement_feedback_bar().is_none());
+        let _ = app.handle_event(UiEvent::MeasurementUpdated(MeasurementSnapshot::default()));
+        assert!(app.measurement_feedback_bar().is_none());
+    }
+
+    #[test]
+    fn window_icon_pixels_build_a_native_icon() {
+        // The build-time RGBA blob must satisfy `from_rgba` (length matches
+        // dimensions); a broken asset degrades to no icon at runtime.
+        let icon = super::window_icon().expect("checked-in icon asset builds");
+        let _ = icon;
     }
 
     #[test]
