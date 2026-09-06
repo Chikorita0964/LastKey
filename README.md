@@ -91,8 +91,9 @@ Outputs: `target\x86_64-pc-windows-msvc\release\lastkey.exe` and `target\x86_64-
 To create and validate an unsigned Store-submission MSIX, install the Windows SDK and run:
 
 ```powershell
-.\msix\package-msix.ps1 -Version 1.0.0 -OutputDirectory release
-.\msix\validate-msix.ps1 -Package .\release\LastKey-1.0.0.msix -Version 1.0.0
+$version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
+.\msix\package-msix.ps1 -Version $version -OutputDirectory release
+.\msix\validate-msix.ps1 -Package ".\release\LastKey-$version.msix" -Version $version
 ```
 
 The Microsoft Store signs submitted packages. Local MSIX output is intentionally unsigned.

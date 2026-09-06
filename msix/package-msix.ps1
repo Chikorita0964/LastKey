@@ -44,6 +44,18 @@ $outputPath = [System.IO.Path]::GetFullPath((Join-Path $projectRoot $OutputDirec
 $stagePath = Join-Path $outputPath 'stage'
 $packagePath = Join-Path $outputPath "LastKey-$Version.msix"
 
+# The Cargo builds below embed the version from Cargo.toml, while -Version
+# only stamps the manifest and artifact names. Fail fast on a mismatch so an
+# invalid package is never built; version stamping stays owned by the release
+# workflow (.github/scripts/Set-CrateVersion.ps1).
+$crateVersion = ([regex]'(?m)^version\s*=\s*"(\d+\.\d+\.\d+)"').Match(
+    [System.IO.File]::ReadAllText((Join-Path $projectRoot 'Cargo.toml'))
+).Groups[1].Value
+if (-not $crateVersion) { throw "Could not determine the crate version from Cargo.toml." }
+if ($crateVersion -ne $Version) {
+    throw "Requested package version $Version does not match the crate version $crateVersion. Run .github/scripts/Set-CrateVersion.ps1 -Version $Version first, or request -Version $crateVersion."
+}
+
 Push-Location $projectRoot
 try {
     & $cargo.Source build --locked --release --target $Target --bin lastkey
