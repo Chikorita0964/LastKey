@@ -10,4 +10,10 @@ release/
 
 # Local agent session state and design scratch material
 .claude/
-stitch_ui_redesign_and_enhancement/
+
+# Personal local agent routing, untracked by design. AGENTS.md stays at the root
+# because agents look for it there by convention; everything else is a directory
+# rather than a per-file list, so a new routing doc cannot be committed by
+# accident. See .agent/WORKBOARD.md Doc List.
+/AGENTS.md
+.agent/
