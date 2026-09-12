@@ -21,14 +21,18 @@ Key repeat does not change priority or generate additional output transitions.
 
 ## Physical overlap handling
 
-When opposing physical keys overlap, LastKey normally resolves them into a neutral SOCD
-transition. Enabling **SOCD Transition Delay** applies the configured randomized neutral gap used
-for that resolution. Natural neutral transitions are left unchanged. **Preserve Overlap** becomes
-available only while SOCD Transition Delay is enabled and can retain
-a configured percentage of detected physical overlaps for a randomized **Preserved Overlap
-Duration**; the remaining overlaps still use the SOCD Transition Delay. With preservation
-disabled, LastKey retains its immediate Last Input Priority path while preserving the configured
-timing values for later use.
+The input timing card provides four independent modes:
+
+| Mode | What happens during a physical overlap |
+| --- | --- |
+| **Immediate** | Release the old direction and press the new one immediately. |
+| **Press Delay** | Release the old direction now and press the new one after a randomized neutral gap. |
+| **Release Delay** | Press the new direction now and release the old one after a randomized overlap. |
+| **Random Mix** | Choose press delay or release delay for each overlap using the configured share. |
+
+Natural neutral transitions are unchanged. Switching modes preserves the configured ranges; unused
+controls stay muted. Range handles cover 0–20 ms, and numeric editors accept durations up to 1000 ms
+in 0.1 ms steps. Release delay has a 0.1 ms minimum.
 
 ## If `SendInput` fails
 
@@ -51,9 +55,26 @@ Original physical events pass through only when safe, preventing simultaneous op
 2. Run `LastKey.exe`. The input filter starts immediately and a system tray icon appears; the settings renderer is not loaded until requested.
 3. Right-click the tray icon to open the menu:
    - **Settings**: Opens the on-demand settings process.
+   - **Disable / Enable**: Toggles the filter for this runtime session.
    - **Exit**: Stops LastKey.
 
-Opening **Settings** again focuses the existing settings window. Use the buttons inside the settings window to open the timing measurement view or restore defaults. Closing that window stops transient capture or measurement work without stopping the input filter.
+Opening **Settings** again focuses the existing settings window. Key mappings and input timing appear side by side, with measurement and results below on the same scrollable page. **Restore all defaults**, **Revert**, and **Apply** stay at the bottom of the window while you scroll. Measurement starts only when you select **Start measurement**. Closing that window stops transient capture, measurement, and timeline work without stopping the input filter.
+
+The header on/off button controls the same engine state as the tray. State changes appear after the
+engine confirms them; restarting LastKey starts with filtering enabled.
+
+The language button switches the settings window between English, Chinese, and Spanish for the
+current window session. Key names, profile names, and runtime diagnostics retain their original text.
+
+**Profiles** offers four saved slots. **Load** immediately saves and activates the selected slot;
+unapplied edits require a discard confirmation. **Apply** saves edits to the active slot, and
+**Rename** changes a slot name without activating other edits. Existing settings become slot 1 on
+the first profile operation.
+
+**Start timeline** explicitly enables a one-second view of the four mapped keys. It displays engine
+outputs while filtering, or physical input while disabled or measuring. Delay badges come from the
+engine. Stop, Apply, profile load, disconnect, and window close discard its memory-only history.
+**Reset session** clears measurement results or starts a fresh session when measurement is running.
 
 If **UIPI** blocks `SendInput` to apps with higher privileges, **Exit** the current instance first, then use **Run as administrator** on `LastKey.exe`.
 
@@ -73,9 +94,9 @@ service restart.
 
 ## Privacy
 
-LastKey operates entirely offline and never sends your data to the developer or third parties. Configured directional inputs are processed solely in memory and are never logged or stored. For more details, see the [Privacy Policy](PRIVACY.md).
+LastKey operates entirely offline and never sends your data to the developer or third parties. Configured directional inputs are processed solely in memory and are never written to disk. For more details, see the [Privacy Policy](PRIVACY.md).
 
-The optional input-timing measurement mode observes only physical edges for the four configured pair keys while it is active. Timing samples exist only in memory for the active session and are used to calculate transition and overlap distributions. LastKey does not write timing samples, key history, or typed text to disk.
+The optional input-timing measurement mode observes only physical edges for the four configured pair keys while it is active. Timing samples exist only in memory for the active session and are used to calculate transition and overlap distributions. The separate opt-in timeline retains at most 512 completed four-key intervals plus current holds in memory. LastKey does not write timing samples, key history, or typed text to disk.
 
 ## Build and package
 
@@ -116,4 +137,4 @@ cargo clippy --no-default-features --features iced-ui --lib --bin lastkey-settin
 
 LastKey is distributed under the [MIT License](LICENSE) (`MIT`). Portions are derived from [Hitboxer by Valentin Ignatev](https://github.com/valignatev/hitboxer); the original MIT copyright and license notice are preserved in [LICENSES/MIT.txt](LICENSES/MIT.txt). See [LICENSE.md](LICENSE.md) for the complete licensing overview.
 
-The LastKey code and icon were created with Codex AI.
+The LastKey code and icon were created with AI.

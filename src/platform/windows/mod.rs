@@ -6,4 +6,4 @@ pub use input::{
     CapturedKey, HOOK_STATUS_MESSAGE, InputService, InputServiceError, MeasurementUpdate,
     physical_key_name,
 };
-pub use ui_server::UiServer;
+pub use ui_server::{FILTER_STATUS_MESSAGE, UiServer};

@@ -8,7 +8,7 @@ use crate::{
     settings::Settings,
 };
 
-pub const PROTOCOL_VERSION: u16 = 2;
+pub const PROTOCOL_VERSION: u16 = 4;
 pub const MAX_FRAME_SIZE: usize = 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -50,6 +50,13 @@ impl From<LogicalKey> for KeySlot {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum UiCommand {
     RequestSnapshot,
+    SetFilterEnabled(bool),
+    StartMonitor,
+    StopMonitor,
+    CancelKeyCapture,
+    ResetMeasurement,
+    LoadProfile(u8),
+    RenameProfile { slot: u8, name: String },
     BeginKeyCapture(KeySlot),
     UpdateDraft(Settings),
     Apply,
@@ -64,6 +71,10 @@ pub enum UiCommand {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum UiEvent {
     Snapshot(UiSnapshot),
+    FilterChanged(bool),
+    MonitorStateChanged(bool),
+    MonitorUpdated(MonitorSnapshot),
+    ProfileLoaded(UiSnapshot),
     KeyCaptured { slot: KeySlot, key: DisplayKey },
     MeasurementUpdated(MeasurementSnapshot),
     ValidationFailed(ErrorView),
@@ -87,6 +98,7 @@ pub struct DisplayKey {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct UiSnapshot {
+    pub filter_enabled: bool,
     pub saved: Settings,
     pub draft: Settings,
     pub keys: [DisplayKey; 4],
@@ -96,18 +108,74 @@ pub struct UiSnapshot {
 }
 
 impl UiSnapshot {
-    pub fn from_app(snapshot: AppSnapshot, key_names: [String; 4]) -> Self {
+    pub fn from_app(snapshot: AppSnapshot, key_names: [String; 4], filter_enabled: bool) -> Self {
         let keys = std::array::from_fn(|index| DisplayKey {
             physical: snapshot.draft.bindings[index],
             name: key_names[index].clone(),
         });
         Self {
+            filter_enabled,
             saved: snapshot.saved,
             draft: snapshot.draft,
             keys,
             capture_slot: snapshot.capture_slot.map(Into::into),
             measurement_active: snapshot.measurement_active,
             measurement: snapshot.measurement.map(Into::into),
+        }
+    }
+}
+
+/// Wire DTOs map the engine event without reconstructing its timing decisions.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct MonitorEdge {
+    pub key: KeySlot,
+    pub pressed: bool,
+    pub synthetic: bool,
+}
+
+impl From<crate::core::MonitorEdge> for MonitorEdge {
+    fn from(edge: crate::core::MonitorEdge) -> Self {
+        Self {
+            key: edge.key.into(),
+            pressed: edge.action == crate::core::KeyAction::Down,
+            synthetic: edge.synthetic,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum MonitorDecision {
+    Immediate,
+    PressDelayed { delay_micros: u32 },
+    ReleaseDelayed { delay_micros: u32 },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct MonitorSnapshot {
+    pub elapsed_micros: u64,
+    pub filter_enabled: bool,
+    pub physical: Option<MonitorEdge>,
+    pub outputs: Vec<MonitorEdge>,
+    pub decision: MonitorDecision,
+}
+
+impl From<crate::core::MonitorEvent> for MonitorSnapshot {
+    fn from(event: crate::core::MonitorEvent) -> Self {
+        let decision = match event.decision {
+            crate::core::MonitorDecision::Immediate => MonitorDecision::Immediate,
+            crate::core::MonitorDecision::PressDelayed { delay_micros } => {
+                MonitorDecision::PressDelayed { delay_micros }
+            }
+            crate::core::MonitorDecision::ReleaseDelayed { delay_micros } => {
+                MonitorDecision::ReleaseDelayed { delay_micros }
+            }
+        };
+        Self {
+            elapsed_micros: event.elapsed_micros,
+            filter_enabled: event.filter_enabled,
+            physical: event.physical.map(Into::into),
+            outputs: event.outputs.into_iter().map(Into::into).collect(),
+            decision,
         }
     }
 }

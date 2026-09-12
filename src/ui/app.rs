@@ -1,9 +1,10 @@
 use iced::{
     Center, Color, Element, Fill, Length, Padding, Size, Subscription, Task, Theme,
     widget::{
-        Id, button, column, container, operation, row, rule, scrollable, slider, space, text,
+        Id, button, column, container, opaque, operation, row, rule, scrollable, slider, space,
+        stack, text,
         text::{Alignment, Ellipsis, Wrapping},
-        text_input, toggler,
+        text_input,
     },
     window,
 };
@@ -11,12 +12,16 @@ use iced::{
 use crate::{
     core::MIN_RECOMMENDATION_SAMPLES,
     protocol::{KeySlot, MeasurementSnapshot, UiCommand, UiEvent, UiSnapshot, UiView},
-    settings::{Settings, TimingSettings},
+    settings::{Settings, SocdMode, TimingSettings},
 };
 
 use super::{
+    icons::{self, Name as Icon},
     ipc_client::{self, Connection, Event},
+    language::Language,
     theme,
+    timeline::{self, MonitorState, Timeline},
+    widgets,
 };
 
 pub fn run() -> iced::Result {
@@ -35,6 +40,7 @@ pub fn run() -> iced::Result {
         // keeps the one-size invariant obvious.
         .window(iced::window::Settings {
             size: WINDOW_SIZE,
+            min_size: Some(Size::new(960.0, 600.0)),
             icon: window_icon(),
             ..iced::window::Settings::default()
         })
@@ -58,13 +64,11 @@ fn window_icon() -> Option<iced::window::Icon> {
     .ok()
 }
 
-/// The one window size shared by both views. View switches used to resize and
-/// read as a lag hitch, so the size is deliberately unified; `show_view`
-/// therefore never resizes.
-const WINDOW_SIZE: Size = Size::new(780.0, 760.0);
+/// The single page starts wide enough for the two settings cards.
+/// Section navigation preserves any size chosen by the user.
+const WINDOW_SIZE: Size = Size::new(1040.0, 800.0);
 
-/// Stable id of the settings scrollable, giving the recommendations flow a
-/// snap target at the bottom of the timing card.
+/// Stable id shared by settings and measurement in the single page.
 const SETTINGS_BODY_ID: &str = "settings-body";
 
 /// Value-box padding. Iced only aligns line boxes, not glyph ink: with these
@@ -79,21 +83,17 @@ const VALUE_BOX_PADDING: Padding = Padding {
     left: 5.0,
 };
 
-/// Key-badge padding. Same optical correction as `VALUE_BOX_PADDING`: the
-/// badge glyphs render a pixel high, so one pixel moves from bottom to top.
-const KBD_PADDING: Padding = Padding {
-    top: 5.0,
-    right: 4.0,
-    bottom: 3.0,
-    left: 4.0,
-};
-
 struct SettingsApp {
     connection: Option<Connection>,
+    monitor: MonitorState,
+    pending_filter: Option<bool>,
+    profiles: ProfileDialog,
+    language: Language,
     snapshot: Option<UiSnapshot>,
     draft: Option<Settings>,
     inputs: TimingInputs,
-    current_view: UiView,
+    /// Defer launch/focus navigation until the first snapshot mounts the body.
+    pending_section: Option<UiView>,
     /// Whether each value box shows the live input (`true`) or its
     /// press-to-edit facade (`false`). The facade swaps in the real box
     /// already focused and selected, so the first press never flashes a
@@ -181,13 +181,16 @@ impl TimingField {
 
     /// The one definition of "this row is live". The view grays the row with
     /// it and `update` drops slider drags with it, so the two cannot disagree.
+    /// Each mode uses exactly the values it acts on: Random Mix is the only
+    /// mode that uses all three groups, and Immediate uses none.
     const fn is_editable(self, timing: &TimingSettings) -> bool {
         match self {
             Self::TransitionMinimum | Self::TransitionMaximum => {
-                timing.socd_transition_delay_enabled
+                matches!(timing.mode, SocdMode::PressDelay | SocdMode::RandomMix)
             }
-            Self::PreservationRate | Self::PreservedMinimum | Self::PreservedMaximum => {
-                timing.socd_transition_delay_enabled && timing.preserve_overlap
+            Self::PreservationRate => matches!(timing.mode, SocdMode::RandomMix),
+            Self::PreservedMinimum | Self::PreservedMaximum => {
+                matches!(timing.mode, SocdMode::ReleaseDelay | SocdMode::RandomMix)
             }
         }
     }
@@ -238,16 +241,42 @@ impl TimingField {
 /// itself, leaving server errors on screen until the next snapshot.
 const INVALID_TIMING_TEXT: &str = "Invalid timing value; reverted to the current draft.";
 
+#[derive(Default)]
+enum ProfileDialog {
+    #[default]
+    Closed,
+    List,
+    Languages,
+    Confirm(u8),
+    Rename {
+        slot: u8,
+        name: String,
+    },
+    Loading,
+    Renaming,
+}
+
 #[derive(Clone, Debug)]
 enum Message {
     Ipc(Event),
     RequestSnapshot,
-    ShowSettings,
-    ShowMeasurement,
+    ToggleFilter,
+    OpenProfiles,
+    OpenLanguages,
+    SelectLanguage(Language),
+    CloseProfiles,
+    LoadProfile(u8),
+    ConfirmProfile(u8),
+    EditProfileName(u8),
+    ProfileNameChanged(String),
+    SaveProfileName,
+    ToggleMonitor,
+    CancelCapture,
+    ResetMeasurement,
     Capture(KeySlot),
-    TransitionDelayToggled(bool),
+    ModeSelected(SocdMode),
+    MixChanged(f32),
     TimingSliderChanged(TimingField, f32),
-    PreserveOverlapToggled(bool),
     TimingTextChanged(TimingField, String),
     TimingTextSubmitted(TimingField),
     ValueBoxActivated(TimingField),
@@ -263,13 +292,16 @@ enum Message {
 
 impl SettingsApp {
     fn new() -> Self {
-        let current_view = requested_view();
         Self {
             connection: None,
+            monitor: MonitorState::Stopped,
+            pending_filter: None,
+            profiles: ProfileDialog::Closed,
+            language: Language::default(),
             snapshot: None,
             draft: None,
             inputs: TimingInputs::default(),
-            current_view,
+            pending_section: Some(requested_view()),
             editing: [false; 5],
             status: "Connecting to the LastKey runtime...".into(),
             notice: None,
@@ -278,10 +310,7 @@ impl SettingsApp {
     }
 
     fn title(&self) -> String {
-        match self.current_view {
-            UiView::Settings => "LastKey Settings".into(),
-            UiView::Measurement => "LastKey Input Timing Results".into(),
-        }
+        "LastKey Settings".into()
     }
 
     fn theme(&self) -> Theme {
@@ -296,6 +325,24 @@ impl SettingsApp {
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
+        if !matches!(self.profiles, ProfileDialog::Closed)
+            && !matches!(
+                &message,
+                Message::Ipc(_)
+                    | Message::OpenLanguages
+                    | Message::SelectLanguage(_)
+                    | Message::OpenProfiles
+                    | Message::CloseProfiles
+                    | Message::LoadProfile(_)
+                    | Message::ConfirmProfile(_)
+                    | Message::EditProfileName(_)
+                    | Message::ProfileNameChanged(_)
+                    | Message::SaveProfileName
+                    | Message::WindowUnfocused
+            )
+        {
+            return Task::none();
+        }
         self.track_box_focus(&message);
         match message {
             Message::Ipc(Event::Connected(connection)) => {
@@ -307,22 +354,123 @@ impl SettingsApp {
             Message::Ipc(Event::Message(event)) => return self.handle_event(*event),
             Message::Ipc(Event::Disconnected(error)) => {
                 self.connection = None;
+                self.monitor = MonitorState::Stopped;
+                self.pending_filter = None;
+                self.profiles = ProfileDialog::Closed;
                 self.status = "The LastKey runtime is disconnected.".into();
                 self.error = Some(error);
+            }
+            Message::OpenLanguages => {
+                self.profiles = ProfileDialog::Languages;
+            }
+            Message::SelectLanguage(language) => {
+                self.language = language;
+                self.profiles = ProfileDialog::Closed;
+            }
+            Message::OpenProfiles => {
+                self.profiles = ProfileDialog::List;
+            }
+            Message::CloseProfiles => {
+                if !matches!(
+                    self.profiles,
+                    ProfileDialog::Loading | ProfileDialog::Renaming
+                ) {
+                    self.profiles = ProfileDialog::Closed;
+                }
+            }
+            Message::LoadProfile(slot) => {
+                if self.is_dirty() {
+                    self.profiles = ProfileDialog::Confirm(slot);
+                } else {
+                    self.load_profile(slot);
+                }
+            }
+            Message::ConfirmProfile(slot) => self.load_profile(slot),
+            Message::EditProfileName(slot) => {
+                if let Some(snapshot) = &self.snapshot {
+                    let bank = snapshot.saved.profile_bank();
+                    if let Some(profile) = bank.slots.get(usize::from(slot)) {
+                        self.profiles = ProfileDialog::Rename {
+                            slot,
+                            name: profile.name.clone(),
+                        };
+                    }
+                }
+            }
+            Message::ProfileNameChanged(value) => {
+                if let ProfileDialog::Rename { name, .. } = &mut self.profiles {
+                    *name = value;
+                }
+            }
+            Message::SaveProfileName => {
+                if let ProfileDialog::Rename { slot, name } = &self.profiles {
+                    let command = UiCommand::RenameProfile {
+                        slot: *slot,
+                        name: name.clone(),
+                    };
+                    self.profiles = ProfileDialog::Renaming;
+                    self.send(command);
+                }
+            }
+            Message::ToggleFilter => {
+                if let Some(snapshot) = &self.snapshot
+                    && self.pending_filter.is_none()
+                    && self.connection.is_some()
+                {
+                    let enabled = !snapshot.filter_enabled;
+                    self.pending_filter = Some(enabled);
+                    self.send(UiCommand::SetFilterEnabled(enabled));
+                }
+            }
+            Message::ToggleMonitor => {
+                if self.connection.is_none() {
+                    return Task::none();
+                }
+                self.monitor = match std::mem::take(&mut self.monitor) {
+                    MonitorState::Stopped => {
+                        self.send(UiCommand::StartMonitor);
+                        MonitorState::Starting
+                    }
+                    MonitorState::Recording(timeline) => {
+                        self.send(UiCommand::StopMonitor);
+                        MonitorState::Stopping(timeline)
+                    }
+                    pending => pending,
+                };
+            }
+            Message::CancelCapture => {
+                if self
+                    .snapshot
+                    .as_ref()
+                    .is_some_and(|snapshot| snapshot.capture_slot.is_some())
+                {
+                    self.send(UiCommand::CancelKeyCapture);
+                }
+            }
+            Message::ResetMeasurement => {
+                self.send(UiCommand::ResetMeasurement);
             }
             Message::RequestSnapshot => {
                 self.send(UiCommand::RequestSnapshot);
             }
-            Message::ShowSettings => return self.show_view(UiView::Settings, false),
-            Message::ShowMeasurement => return self.show_view(UiView::Measurement, false),
             Message::Capture(slot) => {
                 // Timing stays local until Apply; the answering Snapshot
                 // merges instead of replacing it (see set_snapshot).
                 self.send(UiCommand::BeginKeyCapture(slot));
             }
-            Message::TransitionDelayToggled(enabled) => {
+            Message::MixChanged(press_share) => {
+                if let Some(draft) = self.draft.as_mut()
+                    && draft.timing.mode == SocdMode::RandomMix
+                {
+                    draft.timing.overlap_preservation_rate =
+                        100 - press_share.round().clamp(1.0, 99.0) as u8;
+                    self.inputs.preservation_rate =
+                        format_rate(draft.timing.overlap_preservation_rate);
+                }
+            }
+            Message::ModeSelected(mode) => {
                 if let Some(draft) = self.draft.as_mut() {
-                    draft.timing.socd_transition_delay_enabled = enabled;
+                    draft.timing.mode = mode;
                 }
             }
             Message::TimingSliderChanged(field, milliseconds) => {
@@ -335,11 +483,6 @@ impl SettingsApp {
                     let micros = millis_to_micros(milliseconds);
                     *slot = micros;
                     self.inputs.set_field(field, format_ms(micros));
-                }
-            }
-            Message::PreserveOverlapToggled(enabled) => {
-                if let Some(draft) = self.draft.as_mut() {
-                    draft.timing.preserve_overlap = enabled;
                 }
             }
             Message::TimingTextChanged(field, value) => {
@@ -412,7 +555,10 @@ impl SettingsApp {
                 }
             }
             Message::RestoreAllDefaults => {
-                let defaults = Settings::default();
+                let defaults = Settings {
+                    profiles: self.draft.as_ref().and_then(|draft| draft.profiles.clone()),
+                    ..Settings::default()
+                };
                 self.inputs = TimingInputs::from_timing(&defaults.timing);
                 self.draft = Some(defaults);
                 self.send(UiCommand::RestoreAllDefaults);
@@ -460,30 +606,16 @@ impl SettingsApp {
             return true;
         };
         if field == TimingField::PreservationRate {
-            // Typing 0 means "off": it disables overlap preservation
-            // instead of clamping to 1%. The stored rate is kept, so
-            // re-enabling restores the previous share.
-            let timing = &mut draft.timing;
-            let inputs = &mut self.inputs;
-            let disables = inputs
-                .preservation_rate
-                .trim()
-                .parse::<f32>()
-                .is_ok_and(|value| value.is_finite() && value.round() == 0.0);
-            if disables {
-                timing.preserve_overlap = false;
-                inputs.preservation_rate = format_rate(timing.overlap_preservation_rate);
-                return true;
-            }
+            // The rate is a percentage, not a duration, so it keeps its own
+            // parse and format. "Off" is a mode, not a rate of zero.
             return commit_text(
-                &mut inputs.preservation_rate,
-                &mut timing.overlap_preservation_rate,
+                &mut self.inputs.preservation_rate,
+                &mut draft.timing.overlap_preservation_rate,
                 parse_rate_text,
                 format_rate,
             );
         }
-        // All duration fields share one path; the rate above is genuinely
-        // special because of the "0 disables" rule.
+        // All duration fields share one path.
         let Some(slot) = field.micros_mut(&mut draft.timing) else {
             return true;
         };
@@ -542,21 +674,55 @@ impl SettingsApp {
         // below with "synchronized with the runtime", which reads as already
         // active. Apply and the capture/measurement paths push on their own.
         self.notice = Some("Recommendations written to the draft. Select Apply when ready.".into());
-        // The state flips to Settings synchronously, so the snap below lands
-        // on the freshly built settings scrollable, scrolled to the timing
-        // card at the bottom of the page.
-        Task::batch([
-            self.show_view(UiView::Settings, false),
-            operation::snap_to_end(SETTINGS_BODY_ID),
-        ])
+        self.show_section(UiView::Settings, false)
     }
 
     fn handle_event(&mut self, event: UiEvent) -> Task<Message> {
         match event {
+            UiEvent::ProfileLoaded(snapshot) => {
+                self.draft = None;
+                self.set_snapshot(snapshot);
+                self.profiles = ProfileDialog::Closed;
+                self.notice = Some("Profile loaded and activated.".into());
+                self.error = None;
+            }
+            UiEvent::FilterChanged(enabled) => {
+                if let Some(snapshot) = self.snapshot.as_mut() {
+                    snapshot.filter_enabled = enabled;
+                }
+                self.pending_filter = None;
+                self.monitor.resynchronize();
+            }
+            UiEvent::MonitorStateChanged(active) => {
+                self.monitor = if active {
+                    MonitorState::Recording(Timeline::default())
+                } else {
+                    MonitorState::Stopped
+                };
+            }
+            UiEvent::MonitorUpdated(event) => {
+                if let MonitorState::Recording(timeline) = &mut self.monitor
+                    && let Some(snapshot) = &self.snapshot
+                    && event.filter_enabled == snapshot.filter_enabled
+                {
+                    timeline.accept(
+                        event,
+                        snapshot.measurement_active,
+                        std::time::Instant::now(),
+                    );
+                }
+            }
             UiEvent::Snapshot(snapshot) => {
                 self.set_snapshot(snapshot);
+                if matches!(self.profiles, ProfileDialog::Renaming) {
+                    self.profiles = ProfileDialog::List;
+                    self.notice = Some("Profile renamed.".into());
+                }
                 self.status = "Settings are synchronized with the runtime.".into();
                 self.error = None;
+                if let Some(section) = self.pending_section.take() {
+                    return self.show_section(section, false);
+                }
             }
             UiEvent::ApplySucceeded(snapshot) => {
                 self.set_snapshot(snapshot);
@@ -585,10 +751,35 @@ impl SettingsApp {
                 }
             }
             UiEvent::ValidationFailed(error) | UiEvent::RuntimeError(error) => {
+                match error.code.as_str() {
+                    "filter-failed" => {
+                        self.pending_filter = None;
+                        self.send(UiCommand::RequestSnapshot);
+                    }
+                    "filter-state-failed" => {
+                        self.pending_filter = None;
+                    }
+                    "profile-load-failed" | "profile-rename-failed" => {
+                        self.profiles = ProfileDialog::List;
+                    }
+                    "monitor-start-failed" => {
+                        self.monitor = MonitorState::Stopped;
+                        self.send(UiCommand::StopMonitor);
+                    }
+                    "monitor-stop-failed" => {
+                        if let MonitorState::Stopping(mut timeline) =
+                            std::mem::take(&mut self.monitor)
+                        {
+                            timeline.clear();
+                            self.monitor = MonitorState::Recording(timeline);
+                        }
+                    }
+                    _ => {}
+                }
                 self.error = Some(error.message);
             }
             UiEvent::FocusRequested(view) => {
-                return self.show_view(view, true);
+                return self.show_section(view, true);
             }
             UiEvent::RuntimeShuttingDown => {
                 self.connection = None;
@@ -606,6 +797,8 @@ impl SettingsApp {
         // first snapshot (no local draft yet) replaces wholesale.
         // `ApplySucceeded` flows through the same rule, so mid-apply edits
         // stay dirty instead of vanishing.
+        self.monitor.resynchronize();
+        self.pending_filter = None;
         let mut snapshot = snapshot;
         self.notice = None;
         if self.draft.is_none() {
@@ -617,17 +810,27 @@ impl SettingsApp {
         self.snapshot = Some(snapshot);
     }
 
-    fn show_view(&mut self, view: UiView, focus: bool) -> Task<Message> {
-        self.current_view = view;
+    fn show_section(&mut self, view: UiView, focus: bool) -> Task<Message> {
+        let scroll = if self.snapshot.is_some() {
+            match view {
+                UiView::Settings => {
+                    operation::snap_to(SETTINGS_BODY_ID, operation::RelativeOffset::START)
+                }
+                UiView::Measurement => operation::snap_to_end(SETTINGS_BODY_ID),
+            }
+        } else {
+            self.pending_section = Some(view);
+            Task::none()
+        };
         if !focus {
-            return Task::none();
+            return scroll;
         }
-        window::latest().and_then(move |id| {
+        scroll.chain(window::latest().and_then(move |id| {
             Task::batch([
                 window::set_mode(id, window::Mode::Windowed),
                 window::gain_focus(id),
             ])
-        })
+        }))
     }
 
     fn send(&mut self, command: UiCommand) {
@@ -642,20 +845,6 @@ impl SettingsApp {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        let settings_switch = if matches!(self.current_view, UiView::Settings) {
-            button("Settings").style(theme::tab_selected)
-        } else {
-            button("Settings")
-                .style(theme::tab_unselected)
-                .on_press(Message::ShowSettings)
-        };
-        let measurement_switch = if matches!(self.current_view, UiView::Measurement) {
-            button("Measurement").style(theme::tab_selected)
-        } else {
-            button("Measurement")
-                .style(theme::tab_unselected)
-                .on_press(Message::ShowMeasurement)
-        };
         let connected = self.connection.is_some();
         let state_color = if connected {
             theme::OK_TEXT
@@ -664,9 +853,13 @@ impl SettingsApp {
         };
         let header = container(
             row![
+                widgets::logo(WINDOW_ICON_RGBA, WINDOW_ICON_WIDTH),
+                text(self.language.text("LastKey"))
+                    .size(theme::HEADING_SIZE)
+                    .font(theme::UI_FONT_BOLD),
                 row![
                     dot(state_color),
-                    text(&self.status)
+                    text(self.language.text(&self.status))
                         .size(theme::BODY_TEXT_SIZE)
                         .font(theme::UI_FONT_BOLD)
                         .color(theme::MUTED_TEXT)
@@ -677,9 +870,56 @@ impl SettingsApp {
                 .spacing(14)
                 .align_y(Center)
                 .width(Fill),
-                container(row![settings_switch, measurement_switch].spacing(6))
-                    .padding(4)
-                    .style(|_theme| theme::switch_style()),
+                button(
+                    row![
+                        icons::icon(Icon::Layers, 14.0, None),
+                        text(self.active_profile_name())
+                            .size(12)
+                            .wrapping(Wrapping::None)
+                            .ellipsis(Ellipsis::End)
+                    ]
+                    .spacing(6)
+                    .align_y(Center)
+                )
+                .width(240)
+                .style(theme::secondary_button)
+                .padding([10, 14])
+                .on_press_maybe(
+                    (connected && self.snapshot.is_some()).then_some(Message::OpenProfiles)
+                ),
+                button(icons::icon(Icon::Languages, 16.0, None))
+                    .padding(10)
+                    .style(theme::secondary_button)
+                    .on_press_maybe(self.snapshot.is_some().then_some(Message::OpenLanguages)),
+                button(
+                    row![
+                        icons::icon(Icon::Power, 14.0, None),
+                        text(
+                            self.language.text(if self.pending_filter.is_some() {
+                                "Updating…"
+                            } else if self
+                                .snapshot
+                                .as_ref()
+                                .is_some_and(|snapshot| snapshot.filter_enabled)
+                            {
+                                "ON"
+                            } else {
+                                "OFF"
+                            })
+                        )
+                        .font(theme::UI_FONT_BOLD)
+                    ]
+                    .spacing(6)
+                    .align_y(Center)
+                )
+                .padding([8, 14])
+                .style(theme::secondary_button)
+                .on_press_maybe(
+                    (self.connection.is_some()
+                        && self.snapshot.is_some()
+                        && self.pending_filter.is_none())
+                    .then_some(Message::ToggleFilter)
+                ),
             ]
             .spacing(theme::SECTION_GAP)
             .align_y(Center),
@@ -691,14 +931,8 @@ impl SettingsApp {
         .width(Fill)
         .style(|_theme| theme::card_style());
 
-        let body: Element<_> = match self.current_view {
-            UiView::Settings => self.settings_view(),
-            UiView::Measurement => self.measurement_view(),
-        };
-        let actions: Option<Element<'_, Message>> = match self.current_view {
-            UiView::Settings => self.settings_actions(),
-            UiView::Measurement => self.measurement_feedback_bar(),
-        };
+        let body = self.settings_view();
+        let actions = self.settings_actions();
         // The connection state lives in the header status line, so no footer
         // strip is needed.
         let mut page = column![header, body]
@@ -708,146 +942,354 @@ impl SettingsApp {
         if let Some(actions) = actions {
             page = page.push(actions);
         }
-        container(page)
+        let page: Element<'_, Message> = container(page)
             .height(Fill)
             .width(Fill)
             .style(|_theme| theme::canvas_style())
-            .into()
+            .into();
+        // Keep the page at the same stack index, preserving scroll and editor state.
+        let overlay = self.profile_dialog();
+        stack![page, overlay].into()
+    }
+
+    fn is_dirty(&self) -> bool {
+        self.snapshot
+            .as_ref()
+            .zip(self.draft.as_ref())
+            .is_some_and(|(snapshot, draft)| {
+                draft != &snapshot.saved || self.inputs != TimingInputs::from_timing(&draft.timing)
+            })
+    }
+
+    fn load_profile(&mut self, slot: u8) {
+        self.error = None;
+        self.profiles = ProfileDialog::Loading;
+        self.send(UiCommand::LoadProfile(slot));
+    }
+
+    fn active_profile_name(&self) -> String {
+        self.snapshot.as_ref().map_or_else(
+            || self.language.text("Profiles").into(),
+            |snapshot| {
+                let bank = snapshot.saved.profile_bank();
+                format!(
+                    "{} {}  ·  {}",
+                    self.language.text("Profile"),
+                    bank.active + 1,
+                    bank.slots[usize::from(bank.active)].name
+                )
+            },
+        )
+    }
+
+    fn profile_dialog(&self) -> Element<'_, Message> {
+        let Some(snapshot) = &self.snapshot else {
+            return space::horizontal().width(0).into();
+        };
+        if matches!(self.profiles, ProfileDialog::Closed) {
+            return space::horizontal().width(0).into();
+        }
+        let bank = snapshot.saved.profile_bank();
+        let mut body = column![
+            text(
+                self.language
+                    .text(if matches!(self.profiles, ProfileDialog::Languages) {
+                        "Language"
+                    } else {
+                        "Profiles"
+                    })
+            )
+            .size(22)
+            .font(theme::UI_FONT_BOLD)
+        ]
+        .spacing(16);
+        match &self.profiles {
+            ProfileDialog::Languages => {
+                for language in Language::ALL {
+                    body = body.push(
+                        button(icon_label(
+                            if self.language == language {
+                                Icon::Check
+                            } else {
+                                Icon::Languages
+                            },
+                            language.name(),
+                            self.language,
+                        ))
+                        .style(theme::secondary_button)
+                        .on_press(Message::SelectLanguage(language)),
+                    );
+                }
+            }
+            ProfileDialog::List => {
+                body = body.push(text(self.language.text("Load a slot to activate it immediately. Apply saves edits to the active slot.")).size(12).color(theme::MUTED_TEXT));
+                for (index, profile) in bank.slots.iter().enumerate() {
+                    let slot = index as u8;
+                    body = body.push(
+                        container(
+                            row![
+                                column![
+                                    text(format!(
+                                        "{}  ·  {}{}",
+                                        index + 1,
+                                        profile.name,
+                                        if bank.active == slot {
+                                            "  — Active"
+                                        } else {
+                                            ""
+                                        }
+                                    ))
+                                    .font(theme::UI_FONT_BOLD),
+                                    text(mode_label(profile.timing.mode, self.language))
+                                        .size(12)
+                                        .color(theme::MUTED_TEXT),
+                                ]
+                                .spacing(4)
+                                .width(Fill),
+                                button(icon_label(Icon::Edit, "Rename", self.language))
+                                    .style(theme::secondary_button)
+                                    .on_press(Message::EditProfileName(slot)),
+                                button(icon_label(Icon::Layers, "Load", self.language))
+                                    .style(theme::primary_button)
+                                    .on_press(Message::LoadProfile(slot)),
+                            ]
+                            .spacing(10)
+                            .align_y(Center),
+                        )
+                        .padding(14)
+                        .style(|_| theme::group_style()),
+                    );
+                }
+            }
+            ProfileDialog::Confirm(slot) => {
+                body = body
+                    .push(text(format!(
+                        "Load profile {} and discard unapplied changes?",
+                        slot + 1
+                    )))
+                    .push(
+                        text(
+                            self.language
+                                .text("The saved slot will become active immediately."),
+                        )
+                        .size(12)
+                        .color(theme::MUTED_TEXT),
+                    )
+                    .push(
+                        button(icon_label(
+                            Icon::Layers,
+                            "Discard edits and load",
+                            self.language,
+                        ))
+                        .style(theme::primary_button)
+                        .on_press(Message::ConfirmProfile(*slot)),
+                    );
+            }
+            ProfileDialog::Rename { name, .. } => {
+                body = body
+                    .push(text(self.language.text("Profile name · 1–64 characters")).size(12))
+                    .push(
+                        text_input("Profile name", name)
+                            .on_input(Message::ProfileNameChanged)
+                            .on_submit(Message::SaveProfileName),
+                    )
+                    .push(
+                        button(icon_label(Icon::Check, "Save name", self.language))
+                            .style(theme::primary_button)
+                            .on_press(Message::SaveProfileName),
+                    );
+            }
+            ProfileDialog::Loading => {
+                body = body.push(text(self.language.text("Loading and activating profile…")));
+            }
+            ProfileDialog::Renaming => {
+                body = body.push(text(self.language.text("Saving profile name…")));
+            }
+            ProfileDialog::Closed => {}
+        }
+        if let Some(error) = &self.error {
+            body = body.push(
+                text(self.language.text(error))
+                    .size(12)
+                    .color(theme::ERROR_TEXT),
+            );
+        }
+        if !matches!(
+            self.profiles,
+            ProfileDialog::Loading | ProfileDialog::Renaming
+        ) {
+            body = body.push(
+                button(icon_label(Icon::Close, "Close", self.language))
+                    .style(theme::secondary_button)
+                    .on_press(Message::CloseProfiles),
+            );
+        }
+        opaque(
+            container(
+                container(body)
+                    .width(600)
+                    .padding(24)
+                    .style(|_| theme::card_style()),
+            )
+            .center_x(Fill)
+            .center_y(Fill)
+            .padding(20)
+            .style(|_| container::Style {
+                background: Some(
+                    Color {
+                        a: 0.35,
+                        ..Color::BLACK
+                    }
+                    .into(),
+                ),
+                ..Default::default()
+            }),
+        )
     }
 
     fn settings_view(&self) -> Element<'_, Message> {
         let (Some(snapshot), Some(draft)) = (&self.snapshot, &self.draft) else {
-            return disconnected_view(self.error.as_ref());
+            return disconnected_view(self.error.as_ref(), self.language);
         };
         let timing = &draft.timing;
-        let transition_rows_live = TimingField::TransitionMinimum.is_editable(timing);
-        let overlap_rows_live = TimingField::PreservedMinimum.is_editable(timing);
 
         let mappings = container(
             column![
                 row![
-                    text("Key mappings").size(theme::HEADING_SIZE).width(Fill),
-                    button("Restore mapping defaults")
+                    section_title(Icon::Keyboard, "Key mappings", self.language).width(Fill),
+                    button(icon_label(Icon::Restore, "Restore defaults", self.language))
                         .style(theme::secondary_button)
                         .on_press(Message::RestoreMappingDefaults),
                 ]
                 .align_y(Center),
-                text("Hardware scan-code assignment for the SOCD filter. Select Rebind, then press a key.")
-                    .size(12)
-                    .color(theme::MUTED_TEXT),
-                row![
-                    axis_panel(
-                        "Vertical axis",
-                        [
-                            (KeySlot::VerticalFirst, "Vertical Primary (Up)"),
-                            (KeySlot::VerticalSecond, "Vertical Secondary (Down)"),
-                        ],
-                        snapshot,
-                    ),
-                    axis_panel(
-                        "Horizontal axis",
-                        [
-                            (KeySlot::HorizontalFirst, "Horizontal Primary (Left)"),
-                            (KeySlot::HorizontalSecond, "Horizontal Secondary (Right)"),
-                        ],
-                        snapshot,
-                    ),
-                ]
-                .spacing(theme::SECTION_GAP),
-                row![
-                    space::horizontal(),
-                    text("Modifiers like Shift, Ctrl, and Alt are not captured.")
-                        .size(12)
-                        .color(theme::MUTED_TEXT),
-                ],
+                text(
+                    self.language
+                        .text("Hardware scan codes the SOCD filter uses.")
+                )
+                .size(12)
+                .color(theme::MUTED_TEXT),
+                mapping_pad(snapshot, self.monitor.timeline(), self.language),
+                icon_label(
+                    Icon::Edit,
+                    "Click a keycap to rebind; click again to cancel.",
+                    self.language
+                ),
+                text(
+                    self.language
+                        .text("Modifiers like Shift, Ctrl, and Alt are not captured.")
+                )
+                .size(12)
+                .color(theme::MUTED_TEXT),
             ]
             .spacing(theme::SECTION_GAP),
         )
         .padding(theme::CARD_PADDING)
         .width(Fill)
-        .style(|_theme| theme::card_style());
+        .style(|_| theme::card_style());
 
         let timing_card = container(
             column![
                 row![
-                    text("Input timing").size(theme::HEADING_SIZE).width(Fill),
-                    button("Restore timing defaults")
+                    section_title(Icon::Timer, "Input timings", self.language).width(Fill),
+                    button(icon_label(Icon::Restore, "Restore defaults", self.language))
                         .style(theme::secondary_button)
                         .on_press(Message::RestoreTimingDefaults),
                 ]
                 .align_y(Center),
-                text("Edits stay in the local draft until Apply. Sliders cover 0.0-20.0 ms in 0.1 ms steps; every value box is directly editable and stays in sync with its slider.")
-                    .size(12)
-                    .color(theme::MUTED_TEXT),
-                row![
-                    text("Enable SOCD transition delay").width(Fill),
-                    toggler(timing.socd_transition_delay_enabled)
-                        .style(theme::accent_toggler)
-                        .on_toggle(Message::TransitionDelayToggled),
-                ]
-                .align_y(Center),
-                transition_group(timing, &self.inputs, &self.editing),
-                row![
-                    text("Preserve physical overlap").width(Fill),
-                    row![
-                        text("PROBABILITY").size(11),
-                        rate_box(
-                            &self.inputs.preservation_rate,
-                            overlap_rows_live,
-                            self.editing[TimingField::PreservationRate.index()],
+                text(
+                    self.language
+                        .text("How opposite-direction overlaps resolve.")
+                )
+                .size(12)
+                .color(theme::MUTED_TEXT),
+                container(
+                    column![
+                        mode_selector(timing.mode, self.language),
+                        rate_group(timing, &self.inputs, &self.editing, self.language),
+                        duration_range(
+                            TimingField::TransitionMinimum,
+                            TimingField::TransitionMaximum,
+                            self.language.text("New Key Press Delay"),
+                            timing,
+                            &self.inputs,
+                            &self.editing,
+                            theme::PRIMARY_TEXT
                         ),
-                        text("%").size(12).color(theme::MUTED_TEXT),
+                        duration_range(
+                            TimingField::PreservedMinimum,
+                            TimingField::PreservedMaximum,
+                            self.language.text("Previous Key Release Delay"),
+                            timing,
+                            &self.inputs,
+                            &self.editing,
+                            theme::RELEASE_TEXT
+                        ),
+                        container(
+                            column![
+                                text(self.language.text("How it works"))
+                                    .size(12)
+                                    .font(theme::UI_FONT_BOLD),
+                                text(mode_description(timing.mode, self.language))
+                                    .size(12)
+                                    .color(theme::MUTED_TEXT),
+                            ]
+                            .spacing(8)
+                        )
+                        .padding(12)
+                        .width(Fill)
+                        .style(|_| theme::slot_style()),
                     ]
-                    .spacing(6)
-                    .align_y(Center),
-                    toggler(timing.preserve_overlap)
-                        .style(theme::accent_toggler)
-                        .on_toggle_maybe(
-                            transition_rows_live.then_some(Message::PreserveOverlapToggled),
-                        ),
-                ]
-                .spacing(theme::ROW_GAP)
-                .align_y(Center),
-                overlap_group(timing, &self.inputs, &self.editing),
+                    .spacing(12)
+                )
+                .padding(theme::GROUP_PADDING)
+                .width(Fill)
+                .style(|_| theme::group_style()),
             ]
             .spacing(theme::SECTION_GAP),
         )
         .padding(theme::CARD_PADDING)
         .width(Fill)
-        .style(|_theme| theme::card_style());
+        .style(|_| theme::card_style());
 
-        // The snapshot already carries saved settings, so a dirty indicator
-        // is free: Apply and Revert rest disabled while there is nothing to
-        // do. The restore actions stay enabled; they define new drafts.
-        // Typing alone must count as dirty: buffers commit only on submit,
-        // so comparing drafts would leave a typed-then-Apply click dead.
-        // The bar stays outside the scrollable body so Apply never requires
-        // scrolling; it sits directly above the status footer.
-        scrollable(column![mappings, timing_card].spacing(theme::SECTION_GAP))
-            .id(SETTINGS_BODY_ID)
-            .height(Fill)
-            .into()
+        // One scroll owner keeps measurement below the settings cards.
+        // The action bar stays outside it, including when results grow.
+        scrollable(
+            column![
+                row![mappings, timing_card].spacing(theme::SECTION_GAP),
+                self.timeline_section(),
+                self.measurement_section(),
+            ]
+            .spacing(theme::SECTION_GAP)
+            .padding(Padding {
+                right: 12.0,
+                ..Padding::ZERO
+            }),
+        )
+        .id(SETTINGS_BODY_ID)
+        .height(Fill)
+        .into()
     }
 
     fn settings_actions(&self) -> Option<Element<'_, Message>> {
         let (Some(snapshot), Some(draft)) = (&self.snapshot, &self.draft) else {
             return None;
         };
-        let uncommitted_text = self.inputs != TimingInputs::from_timing(&draft.timing);
-        let dirty = self.draft.as_ref() != Some(&snapshot.saved) || uncommitted_text;
+        let _ = (snapshot, draft);
+        let dirty = self.is_dirty();
         let revert = if dirty {
-            button("Revert")
+            button(icon_label(Icon::Revert, "Revert", self.language))
                 .style(theme::secondary_button)
                 .on_press(Message::Revert)
         } else {
-            button("Revert").style(theme::secondary_button)
+            button(icon_label(Icon::Revert, "Revert", self.language)).style(theme::secondary_button)
         };
         let apply = if dirty {
-            button("Apply")
+            button(icon_label(Icon::ArrowRight, "Apply", self.language))
                 .style(theme::primary_button)
                 .on_press(Message::Apply)
         } else {
-            button("Apply").style(theme::primary_button)
+            button(icon_label(Icon::ArrowRight, "Apply", self.language))
+                .style(theme::primary_button)
         };
         // Error and notice feedback lives in this bar as plain text rather
         // than as toggling banners above the scrollable: the page is diffed
@@ -857,9 +1299,13 @@ impl SettingsApp {
         let feedback = self.feedback_element();
         let actions = container(
             row![
-                button("Restore all defaults")
-                    .style(theme::secondary_button)
-                    .on_press(Message::RestoreAllDefaults),
+                button(icon_label(
+                    Icon::Restore,
+                    "Restore all defaults",
+                    self.language
+                ))
+                .style(theme::secondary_button)
+                .on_press(Message::RestoreAllDefaults),
                 feedback,
                 // Extra breathing room before Revert, mirroring the widened
                 // dot-to-status gap in the header.
@@ -877,21 +1323,31 @@ impl SettingsApp {
         Some(actions.into())
     }
 
-    /// Error and notice feedback shared by both views. Rendered as plain text
+    /// Error and notice feedback shared by the whole page. Rendered as plain text
     /// with a blank placeholder when empty, so its presence never moves any
     /// widget (see `settings_actions`).
     fn feedback_element(&self) -> Element<'_, Message> {
         match (&self.error, &self.notice) {
-            (Some(error), _) => text(error)
-                .size(theme::BODY_TEXT_SIZE)
-                .font(theme::UI_FONT_BOLD)
-                .color(theme::ERROR_TEXT)
-                .width(Fill)
-                .align_x(Alignment::Right)
-                .wrapping(Wrapping::None)
-                .ellipsis(Ellipsis::End)
-                .into(),
-            (None, Some(notice)) => text(notice)
+            (Some(error), _) => iced::widget::tooltip(
+                row![
+                    icons::icon(Icon::Warning, 14.0, Some(theme::ERROR_TEXT)),
+                    text(self.language.text(error))
+                        .size(theme::BODY_TEXT_SIZE)
+                        .font(theme::UI_FONT_BOLD)
+                        .color(theme::ERROR_TEXT)
+                        .width(Fill)
+                        .align_x(Alignment::Right)
+                        .wrapping(Wrapping::None)
+                        .ellipsis(Ellipsis::End)
+                ]
+                .spacing(6)
+                .align_y(Center)
+                .width(Fill),
+                text(self.language.text(error)),
+                iced::widget::tooltip::Position::Top,
+            )
+            .into(),
+            (None, Some(notice)) => text(self.language.text(notice))
                 .size(theme::BODY_TEXT_SIZE)
                 .font(theme::UI_FONT_BOLD)
                 .color(theme::OK_TEXT)
@@ -900,33 +1356,127 @@ impl SettingsApp {
                 .wrapping(Wrapping::None)
                 .ellipsis(Ellipsis::End)
                 .into(),
-            (None, None) => space::horizontal().into(),
+            (None, None) => container(icon_label(
+                if self.is_dirty() {
+                    Icon::Edit
+                } else {
+                    Icon::Check
+                },
+                if self.is_dirty() {
+                    "Unsaved draft changes"
+                } else {
+                    "Synchronized"
+                },
+                self.language,
+            ))
+            .width(Fill)
+            .align_right(Fill)
+            .into(),
         }
     }
 
-    /// Error feedback for the measurement view, mounted below the scrollable
-    /// body like the settings action bar. The settings buttons stay on their
-    /// own view: this bar carries only the shared feedback text. Unlike a
-    /// banner above the body, this bar is the last child, so mounting it only
-    /// when needed leaves the scrollable's state slot untouched.
-    fn measurement_feedback_bar(&self) -> Option<Element<'_, Message>> {
-        self.snapshot.as_ref()?;
-        // Errors only: the sole notice reachable from this view
-        // (`ApplyRecommendations`) switches to Settings before the next
-        // frame, so a notice arriving here is always about the other view.
-        self.error.as_ref()?;
-        Some(
-            container(row![self.feedback_element()])
-                .padding(theme::CARD_PADDING)
-                .width(Fill)
-                .style(|_theme| theme::card_style())
-                .into(),
+    fn timeline_section(&self) -> Element<'_, Message> {
+        let Some(snapshot) = &self.snapshot else {
+            return space::horizontal().into();
+        };
+        let timeline = self.monitor.timeline();
+        let label = match &self.monitor {
+            MonitorState::Stopped => "Start timeline",
+            MonitorState::Starting => "Starting…",
+            MonitorState::Recording(_) => "Stop timeline",
+            MonitorState::Stopping(_) => "Stopping…",
+        };
+        let ready = matches!(
+            self.monitor,
+            MonitorState::Stopped | MonitorState::Recording(_)
+        );
+        let source = if snapshot.measurement_active || !snapshot.filter_enabled {
+            "Physical input"
+        } else {
+            "Filter output"
+        };
+        let decision = timeline.map_or_else(
+            || self.language.text("No input yet").into(),
+            |timeline| match timeline.decision {
+                crate::protocol::MonitorDecision::Immediate => {
+                    self.language.text("Immediate").into()
+                }
+                crate::protocol::MonitorDecision::PressDelayed { delay_micros } => {
+                    format!(
+                        "{} · {} ms",
+                        self.language.text("Press delay"),
+                        format_ms(delay_micros)
+                    )
+                }
+                crate::protocol::MonitorDecision::ReleaseDelayed { delay_micros } => {
+                    format!(
+                        "{} · {} ms",
+                        self.language.text("Release delay"),
+                        format_ms(delay_micros)
+                    )
+                }
+            },
+        );
+        let labels = column(snapshot.keys.iter().map(|key| {
+            container(text(&key.name).size(12).font(theme::UI_FONT_BOLD))
+                .height(36)
+                .center_y(30)
+                .into()
+        }))
+        .width(60);
+        container(
+            column![
+                row![
+                    column![
+                        section_title(Icon::Target, "Key Input Timeline", self.language),
+                        text(self.language.text(
+                            "Last 1 second · mapped keys only · memory cleared when stopped"
+                        ))
+                        .size(12)
+                        .color(theme::MUTED_TEXT)
+                    ]
+                    .spacing(4)
+                    .width(Fill),
+                    button(icon_label(
+                        if matches!(self.monitor, MonitorState::Recording(_)) {
+                            Icon::Stop
+                        } else {
+                            Icon::Play
+                        },
+                        label,
+                        self.language
+                    ))
+                    .style(theme::secondary_button)
+                    .on_press_maybe(ready.then_some(Message::ToggleMonitor))
+                ]
+                .align_y(Center),
+                row![
+                    text(self.language.text(source))
+                        .size(12)
+                        .font(theme::UI_FONT_BOLD)
+                        .width(Fill),
+                    text(decision).size(12).color(theme::PRIMARY_TEXT)
+                ],
+                row![labels, timeline::graph(timeline)].spacing(12),
+                row![
+                    text(self.language.text("−1000 ms")).size(11),
+                    space::horizontal(),
+                    text(self.language.text("−500 ms")).size(11),
+                    space::horizontal(),
+                    text(self.language.text("Now")).size(11)
+                ],
+            ]
+            .spacing(12),
         )
+        .padding(theme::CARD_PADDING)
+        .width(Fill)
+        .style(|_| theme::card_style())
+        .into()
     }
 
-    fn measurement_view(&self) -> Element<'_, Message> {
+    fn measurement_section(&self) -> Element<'_, Message> {
         let Some(snapshot) = &self.snapshot else {
-            return disconnected_view(self.error.as_ref());
+            return disconnected_view(self.error.as_ref(), self.language);
         };
         let button_label = if snapshot.measurement_active {
             "Stop measurement"
@@ -937,29 +1487,43 @@ impl SettingsApp {
             column![
                 row![
                     column![
-                        text("Input timing measurement").size(theme::HEADING_SIZE),
-                        text("Measurement observes configured physical key pairs and excludes LastKey output.")
-                            .size(12)
-                            .color(theme::MUTED_TEXT),
+                        section_title(Icon::Chart, "Input timing measurement", self.language),
+                        text(
+                            self.language
+                                .text("Records your mapped key-pair timing for this session.")
+                        )
+                        .size(12)
+                        .color(theme::MUTED_TEXT),
                     ]
                     .width(Fill)
                     .spacing(4),
-                    button(button_label)
-                        .style(theme::primary_button)
-                        .on_press(Message::ToggleMeasurement),
+                    button(icon_label(Icon::Restore, "Reset session", self.language))
+                        .style(theme::secondary_button)
+                        .on_press(Message::ResetMeasurement),
+                    button(icon_label(
+                        if snapshot.measurement_active {
+                            Icon::Stop
+                        } else {
+                            Icon::Play
+                        },
+                        button_label,
+                        self.language
+                    ))
+                    .style(theme::primary_button)
+                    .on_press(Message::ToggleMeasurement),
                 ]
                 .align_y(Center),
                 {
                     let stats: Element<_> = match snapshot.measurement {
                         Some(measurement) => row![
                             stat_box(
-                                "Physical key edges",
+                                self.language.text("Physical key edges"),
                                 measurement.observed_event_count.to_string(),
                                 None,
                                 None,
                             ),
                             stat_box(
-                                "Valid paired samples",
+                                self.language.text("Valid paired samples"),
                                 measurement.sample_count.to_string(),
                                 Some(theme::PRIMARY_TEXT),
                                 None,
@@ -974,7 +1538,7 @@ impl SettingsApp {
                                 (measurement.sample_count != 0).then_some("%"),
                             ),
                             stat_box(
-                                "Near-simultaneous share",
+                                self.language.text("Indistinguishable share"),
                                 percentage_value(
                                     measurement.near_simultaneous_count,
                                     measurement.sample_count,
@@ -985,7 +1549,7 @@ impl SettingsApp {
                         ]
                         .spacing(theme::ROW_GAP)
                         .into(),
-                        None => text("No measurement results yet.").into(),
+                        None => text(self.language.text("No measurement results yet.")).into(),
                     };
                     stats
                 },
@@ -998,10 +1562,10 @@ impl SettingsApp {
 
         let mut content = column![summary].spacing(theme::SECTION_GAP);
         if let Some(measurement) = snapshot.measurement {
-            content = content.push(latencies_card(measurement));
-            content = content.push(recommendations_card(measurement));
+            content = content.push(latencies_card(measurement, self.language));
+            content = content.push(recommendations_card(measurement, self.language));
         }
-        scrollable(content).height(Fill).into()
+        content.into()
     }
 }
 
@@ -1013,6 +1577,35 @@ impl Drop for SettingsApp {
     }
 }
 
+fn icon_label(
+    name: Icon,
+    label: impl Into<String>,
+    language: Language,
+) -> Element<'static, Message> {
+    row![
+        icons::icon(name, 14.0, None),
+        text(language.text(&label.into()).to_owned()).size(12)
+    ]
+    .spacing(6)
+    .align_y(Center)
+    .into()
+}
+
+fn section_title(
+    name: Icon,
+    label: impl Into<String>,
+    language: Language,
+) -> iced::widget::Row<'static, Message> {
+    row![
+        icons::icon(name, 16.0, Some(theme::PRIMARY_TEXT)),
+        text(language.text(&label.into()).to_owned())
+            .size(theme::HEADING_SIZE)
+            .font(theme::UI_FONT_BOLD)
+    ]
+    .spacing(8)
+    .align_y(Center)
+}
+
 /// Small status or legend mark.
 fn dot(color: Color) -> Element<'static, Message> {
     container(space::horizontal())
@@ -1022,225 +1615,366 @@ fn dot(color: Color) -> Element<'static, Message> {
         .into()
 }
 
-fn axis_panel<'a>(
-    title: &'static str,
-    slots: [(KeySlot, &'static str); 2],
+fn mapping_pad<'a>(
     snapshot: &'a UiSnapshot,
+    timeline: Option<&Timeline>,
+    language: Language,
 ) -> Element<'a, Message> {
     let duplicates = duplicate_slots(&snapshot.draft.bindings);
+    let up = keycap(
+        "UP",
+        Icon::ArrowUp,
+        KeySlot::VerticalFirst,
+        snapshot,
+        duplicates[0],
+        timeline.is_some_and(|timeline| timeline.held(KeySlot::VerticalFirst)),
+        language,
+    );
+    let down = keycap(
+        "DOWN",
+        Icon::ArrowDown,
+        KeySlot::VerticalSecond,
+        snapshot,
+        duplicates[1],
+        timeline.is_some_and(|timeline| timeline.held(KeySlot::VerticalSecond)),
+        language,
+    );
+    let left = keycap(
+        "LEFT",
+        Icon::ArrowLeft,
+        KeySlot::HorizontalFirst,
+        snapshot,
+        duplicates[2],
+        timeline.is_some_and(|timeline| timeline.held(KeySlot::HorizontalFirst)),
+        language,
+    );
+    let right = keycap(
+        "RIGHT",
+        Icon::ArrowRight,
+        KeySlot::HorizontalSecond,
+        snapshot,
+        duplicates[3],
+        timeline.is_some_and(|timeline| timeline.held(KeySlot::HorizontalSecond)),
+        language,
+    );
+    let hint = if snapshot.capture_slot.is_some() {
+        "Press a key to assign it"
+    } else {
+        "Click a keycap to rebind"
+    };
     container(
         column![
-            text(title.to_uppercase()).size(11).color(theme::MUTED_TEXT),
-            key_row(
-                slots[0].1,
-                slots[0].0,
-                snapshot,
-                duplicates[key_slot_index(slots[0].0)],
+            text(language.text(hint)).size(12).color(theme::MUTED_TEXT),
+            container(up).center_x(Fill),
+            row![
+                left,
+                container(text(language.text("+")).size(40).color(theme::MUTED_TEXT))
+                    .width(80)
+                    .height(80)
+                    .center_x(80)
+                    .center_y(80),
+                right
+            ]
+            .spacing(12)
+            .align_y(Center),
+            container(down).center_x(Fill),
+            row![
+                icons::icon(
+                    if duplicates.contains(&true) {
+                        Icon::Warning
+                    } else {
+                        Icon::Check
+                    },
+                    14.0,
+                    Some(if duplicates.contains(&true) {
+                        theme::ERROR_TEXT
+                    } else {
+                        theme::OK_TEXT
+                    })
+                ),
+                text(language.text(if duplicates.contains(&true) {
+                    "Duplicate key bindings detected."
+                } else {
+                    "All keys uniquely assigned."
+                }))
+                .size(12)
+                .color(if duplicates.contains(&true) {
+                    theme::ERROR_TEXT
+                } else {
+                    theme::OK_TEXT
+                })
+            ]
+            .spacing(6)
+            .align_y(Center),
+        ]
+        .spacing(12)
+        .align_x(Center),
+    )
+    .padding(theme::GROUP_PADDING)
+    .width(Fill)
+    .style(|_| theme::group_style())
+    .into()
+}
+
+fn keycap<'a>(
+    label: &'static str,
+    arrow: Icon,
+    slot: KeySlot,
+    snapshot: &'a UiSnapshot,
+    duplicate: bool,
+    pressed: bool,
+    language: Language,
+) -> Element<'a, Message> {
+    let key = &snapshot.keys[key_slot_index(slot)];
+    let selected = snapshot.capture_slot == Some(slot);
+    let accent = if matches!(slot, KeySlot::VerticalFirst | KeySlot::VerticalSecond) {
+        Color::from_rgb8(37, 99, 235)
+    } else {
+        theme::PRIMARY_TEXT
+    };
+    let name = if selected { "…" } else { &key.name };
+    iced::widget::tooltip(
+        button(
+            column![
+                row![
+                    text(language.text(label)).size(10).width(Fill),
+                    icons::icon(arrow, 12.0, None)
+                ],
+                container(
+                    text(name)
+                        .size(if name.chars().count() > 4 { 13 } else { 24 })
+                        .font(theme::UI_FONT_BOLD)
+                        .wrapping(Wrapping::None)
+                        .ellipsis(Ellipsis::End)
+                )
+                .center_x(Fill)
+                .center_y(Fill),
+            ]
+            .spacing(4),
+        )
+        .width(80)
+        .height(80)
+        .padding(10)
+        .style(move |_, state| theme::keycap(state, selected || pressed, duplicate, accent))
+        .on_press(if selected {
+            Message::CancelCapture
+        } else {
+            Message::Capture(slot)
+        }),
+        text(&key.name),
+        iced::widget::tooltip::Position::Top,
+    )
+    .into()
+}
+
+/// A shared pair of numeric editors and a two-handle native range rail.
+fn duration_range<'a>(
+    minimum: TimingField,
+    maximum: TimingField,
+    label: &'static str,
+    timing: &TimingSettings,
+    inputs: &'a TimingInputs,
+    editing: &[bool; 5],
+    accent: Color,
+) -> Element<'a, Message> {
+    let enabled = minimum.is_editable(timing);
+    let min = minimum.micros(timing).expect("duration field") as f32 / 1000.0;
+    let max = maximum.micros(timing).expect("duration field") as f32 / 1000.0;
+    let invalid = minimum.pair_invalid(timing);
+    let editor = |field: TimingField| {
+        value_box(
+            field,
+            inputs.buffer(field),
+            enabled,
+            editing[field.index()],
+            enabled && (invalid || parse_ms_text(inputs.buffer(field)).is_none()),
+            56.0,
+        )
+    };
+    container(
+        column![
+            text(label)
+                .size(12)
+                .font(theme::UI_FONT_BOLD)
+                .color(if enabled { accent } else { theme::MUTED_TEXT }),
+            row![
+                editor(minimum),
+                text("–").color(theme::MUTED_TEXT),
+                editor(maximum),
+                text("ms").size(12).color(theme::MUTED_TEXT)
+            ]
+            .spacing(6)
+            .align_y(Center),
+            widgets::range_slider(
+                min,
+                max,
+                if minimum == TimingField::PreservedMinimum {
+                    0.1
+                } else {
+                    0.0
+                },
+                enabled,
+                accent,
+                move |is_min, value| {
+                    Message::TimingSliderChanged(if is_min { minimum } else { maximum }, value)
+                }
             ),
-            key_row(
-                slots[1].1,
-                slots[1].0,
-                snapshot,
-                duplicates[key_slot_index(slots[1].0)],
-            ),
+        ]
+        .spacing(6),
+    )
+    .padding(12)
+    .width(Fill)
+    .style(|_| theme::slot_style())
+    .into()
+}
+
+/// Mode picker for the timing card. The four modes are mutually exclusive and
+/// each is selectable directly, so no ordering between switches can leave the
+/// card in a state the engine treats as a fifth behavior.
+fn mode_selector(selected: SocdMode, language: Language) -> Element<'static, Message> {
+    let mut segments = row![].spacing(4);
+    for mode in SocdMode::ALL {
+        let segment = button(
+            text(mode_label(mode, language))
+                .size(11)
+                .width(Fill)
+                .align_x(Alignment::Center),
+        )
+        .width(Fill)
+        .padding(theme::ROW_GAP)
+        .on_press(Message::ModeSelected(mode));
+        segments = segments.push(segment.style(move |_, status| {
+            theme::mode_button(status, mode == selected, mode_color(mode))
+        }));
+    }
+    let current = SocdMode::ALL
+        .iter()
+        .position(|mode| *mode == selected)
+        .expect("all modes are listed");
+    container(
+        column![
+            segments,
+            row![
+                button(icons::icon(Icon::ChevronLeft, 14.0, None))
+                    .style(theme::secondary_button)
+                    .on_press(Message::ModeSelected(SocdMode::ALL[(current + 3) % 4])),
+                space::horizontal(),
+                text(mode_label(selected, language))
+                    .size(12)
+                    .color(mode_color(selected)),
+                space::horizontal(),
+                button(icons::icon(Icon::ChevronRight, 14.0, None))
+                    .style(theme::secondary_button)
+                    .on_press(Message::ModeSelected(SocdMode::ALL[(current + 1) % 4])),
+            ]
+            .spacing(4)
+            .align_y(Center),
+        ]
+        .spacing(8),
+    )
+    .padding(4)
+    .width(Fill)
+    .style(|_theme| theme::group_style())
+    .into()
+}
+
+/// Split between the two delays for Random Mix. The stored rate is the
+/// release-delay share, so the press-delay share is shown as its mirror
+/// rather than stored twice.
+fn rate_group<'a>(
+    timing: &TimingSettings,
+    inputs: &'a TimingInputs,
+    editing: &[bool; 5],
+    language: Language,
+) -> Element<'a, Message> {
+    let enabled = TimingField::PreservationRate.is_editable(timing);
+    let press_share = 100u8.saturating_sub(timing.overlap_preservation_rate);
+    let title = text(language.text("Delay Mix Ratio"))
+        .size(12)
+        .font(theme::UI_FONT_BOLD);
+    let title = if enabled {
+        title
+    } else {
+        title.color(theme::MUTED_TEXT)
+    };
+    container(
+        column![
+            title,
+            row![
+                text(format!("{} {press_share} %", language.text("Press delay")))
+                    .size(12)
+                    .color(theme::MUTED_TEXT),
+                space::horizontal(),
+                text(language.text("Release delay")).size(12),
+                rate_box(
+                    &inputs.preservation_rate,
+                    enabled,
+                    editing[TimingField::PreservationRate.index()],
+                ),
+                text(language.text("%")).size(12).color(theme::MUTED_TEXT),
+            ]
+            .spacing(6)
+            .align_y(Center),
+            slider(1.0..=99.0, press_share as f32, Message::MixChanged)
+                .step(1.0)
+                .style(if enabled {
+                    theme::mixer_slider
+                } else {
+                    theme::muted_slider
+                }),
         ]
         .spacing(theme::ROW_GAP),
     )
     .padding(theme::GROUP_PADDING)
     .width(Fill)
-    .style(|_theme| theme::group_style())
+    .style(|_theme| theme::slot_style())
     .into()
 }
 
-fn key_row<'a>(
-    label: &'a str,
-    slot: KeySlot,
-    snapshot: &'a UiSnapshot,
-    duplicate: bool,
-) -> Element<'a, Message> {
-    let key = &snapshot.keys[key_slot_index(slot)];
-    let capture_label = if snapshot.capture_slot == Some(slot) {
-        "Press a key…"
-    } else {
-        "Rebind"
-    };
-    container(
-        row![
-            text(label)
-                .width(Fill)
-                .wrapping(Wrapping::None)
-                .ellipsis(Ellipsis::End),
-            container(
-                text(&key.name)
-                    .size(12)
-                    .font(theme::MONO_FONT)
-                    .width(Fill)
-                    .align_x(Alignment::Center),
-            )
-            .padding(KBD_PADDING)
-            .width(Length::Fixed(72.0))
-            .style(|_theme| theme::kbd_style()),
-            button(capture_label)
-                .style(theme::secondary_button)
-                .on_press(Message::Capture(slot)),
-        ]
-        .spacing(theme::ROW_GAP)
-        .align_y(Center)
-        .width(Fill),
-    )
-    .padding(6)
-    .width(Fill)
-    .style(move |_theme| {
-        if duplicate {
-            theme::slot_error_style()
-        } else {
-            theme::slot_style()
+const fn mode_color(mode: SocdMode) -> Color {
+    match mode {
+        SocdMode::Immediate => Color::from_rgb(0.227, 0.333, 0.91),
+        SocdMode::PressDelay => theme::PRIMARY_TEXT,
+        SocdMode::ReleaseDelay => theme::RELEASE_TEXT,
+        SocdMode::RandomMix => theme::MIX_TEXT,
+    }
+}
+
+fn mode_label(mode: SocdMode, language: Language) -> &'static str {
+    language.text(match mode {
+        SocdMode::Immediate => "Immediate",
+        SocdMode::PressDelay => "Press Delay",
+        SocdMode::RandomMix => "Random Mix",
+        SocdMode::ReleaseDelay => "Release Delay",
+    })
+}
+
+fn mode_description(mode: SocdMode, language: Language) -> &'static str {
+    language.text(match mode {
+        SocdMode::Immediate => {
+            "On each opposing-key overlap, drop the previous direction and send the new one \
+             with no added delay."
+        }
+        SocdMode::PressDelay => {
+            "On each opposing-key overlap, release the previous direction immediately and \
+             press the new one after the configured delay."
+        }
+        SocdMode::RandomMix => {
+            "On each opposing-key overlap, randomly select press delay or release delay \
+             using the configured ratio."
+        }
+        SocdMode::ReleaseDelay => {
+            "On each opposing-key overlap, press the new direction immediately and release \
+             the previous one after the configured delay."
         }
     })
-    .into()
-}
-
-/// Millisecond slider with a directly editable value box. Values outside the
-/// 0–20 ms slider window stay valid backend values; the slider then pins at
-/// the nearest end while the box shows the true draft value. A disabled group
-/// keeps its controls on screen in a muted style instead of collapsing, so
-/// toggling an option never moves the layout.
-///
-/// The first press never touches a live input: an untouched box renders as a
-/// lookalike button, and pressing it swaps in the real box already focused
-/// with its content selected — no caret ever flashes. Later presses hit the
-/// real box, so caret placement works natively.
-fn transition_group<'a>(
-    timing: &TimingSettings,
-    inputs: &'a TimingInputs,
-    editing: &[bool; 5],
-) -> Element<'a, Message> {
-    container(
-        row![
-            ms_field(
-                "Transition minimum",
-                TimingField::TransitionMinimum,
-                timing,
-                inputs,
-                editing,
-            ),
-            ms_field(
-                "Transition maximum",
-                TimingField::TransitionMaximum,
-                timing,
-                inputs,
-                editing,
-            ),
-        ]
-        .spacing(theme::SECTION_GAP),
-    )
-    .padding(theme::GROUP_PADDING)
-    .width(Fill)
-    .style(|_theme| theme::group_style())
-    .into()
-}
-
-fn overlap_group<'a>(
-    timing: &TimingSettings,
-    inputs: &'a TimingInputs,
-    editing: &[bool; 5],
-) -> Element<'a, Message> {
-    container(
-        row![
-            ms_field(
-                "Preserved overlap minimum",
-                TimingField::PreservedMinimum,
-                timing,
-                inputs,
-                editing,
-            ),
-            ms_field(
-                "Preserved overlap maximum",
-                TimingField::PreservedMaximum,
-                timing,
-                inputs,
-                editing,
-            ),
-        ]
-        .spacing(theme::SECTION_GAP),
-    )
-    .padding(theme::GROUP_PADDING)
-    .width(Fill)
-    .style(|_theme| theme::group_style())
-    .into()
 }
 
 /// One millisecond slider row. Every value in the row is derived from `field`,
 /// so a row cannot display one field while acting on another.
-fn ms_field<'a>(
-    label: &'static str,
-    field: TimingField,
-    timing: &TimingSettings,
-    inputs: &'a TimingInputs,
-    editing: &[bool; 5],
-) -> Element<'a, Message> {
-    let micros = field
-        .micros(timing)
-        .expect("ms_field builds duration rows only");
-    let buffer = inputs.buffer(field);
-    let enabled = field.is_editable(timing);
-    let editing = editing[field.index()];
-    let pair_invalid = field.pair_invalid(timing);
-    // A text box without handlers renders disabled; the slider widget has no
-    // disabled state, so it keeps emitting drags that `update` ignores while
-    // the group is off (see the `TimingSliderChanged` arm). Red marks an
-    // unparseable box or a minimum above its maximum, but only while the
-    // group is editable: a disabled group stays gray whatever it holds.
-    let invalid = enabled && (pair_invalid || parse_ms_text(buffer).is_none());
-    let value_box = value_box(field, buffer, enabled, editing, invalid, 64.0);
-    let rail = slider(
-        0.0..=20.0,
-        (micros as f32 / 1_000.0).min(20.0),
-        move |value| Message::TimingSliderChanged(field, value),
-    )
-    .step(0.1);
-    let rail = if enabled {
-        rail.style(theme::accent_slider)
-    } else {
-        rail.style(theme::muted_slider)
-    };
-    let label_text = if enabled {
-        text(label)
-    } else {
-        text(label).color(theme::MUTED_TEXT)
-    };
-    column![
-        row![
-            label_text.width(Fill),
-            row![value_box, text("ms").size(12).color(theme::MUTED_TEXT),]
-                .spacing(4)
-                .align_y(Center),
-        ]
-        .align_y(Center),
-        rail,
-        row![
-            scale_mark("0.0 ms"),
-            space::horizontal(),
-            scale_mark("10.0 ms"),
-            space::horizontal(),
-            scale_mark("20.0 ms"),
-        ],
-    ]
-    .spacing(4)
-    .into()
-}
-
-fn scale_mark(label: &'static str) -> Element<'static, Message> {
-    text(label)
-        .size(11)
-        .font(theme::MONO_FONT)
-        .color(theme::MUTED_TEXT)
-        .into()
-}
-
 fn rate_box<'a>(buffer: &'a str, enabled: bool, editing: bool) -> Element<'a, Message> {
-    // A "0" buffer disables overlap preservation on commit instead of
-    // failing, so only genuinely unparseable text counts as invalid here.
+    // Out-of-range numbers clamp into 1-100 on commit, so only genuinely
+    // unparseable text counts as invalid here.
     let invalid = enabled && parse_rate_text(buffer).is_none();
     value_box(
         TimingField::PreservationRate,
@@ -1418,27 +2152,37 @@ fn stat_inline(label: &'static str, value: String, color: Color) -> Element<'sta
     .into()
 }
 
-fn latencies_card(measurement: MeasurementSnapshot) -> Element<'static, Message> {
+fn latencies_card(
+    measurement: MeasurementSnapshot,
+    language: Language,
+) -> Element<'static, Message> {
     container(
         column![
-            text("Measured Axis Latencies").size(theme::HEADING_SIZE),
-            text("Counts and P10 / median / P90 from the current snapshot. Near-simultaneous samples (<1 ms) carry no distribution.")
-                .size(12)
-                .color(theme::MUTED_TEXT),
+            section_title(Icon::Measurement, "Measured Input Transitions", language),
+            text(
+                language
+                    .text("Live counts from this session, values freeze when measurement stops.")
+            )
+            .size(12)
+            .color(theme::MUTED_TEXT),
             container(
                 column![
                     table_row([
-                        heading("INPUT PATTERN", Length::Fixed(PATTERN_COLUMN), Alignment::Left),
-                        heading("SAMPLES", Fill, Alignment::Right),
-                        heading("MEDIAN", Fill, Alignment::Right),
-                        heading("P10", Fill, Alignment::Right),
-                        heading("P90", Fill, Alignment::Right),
-                        heading("MIN", Fill, Alignment::Right),
-                        heading("MAX", Fill, Alignment::Right),
+                        heading(
+                            language.text("INPUT PATTERN"),
+                            Length::Fixed(PATTERN_COLUMN),
+                            Alignment::Left
+                        ),
+                        heading(language.text("SAMPLES"), Fill, Alignment::Right),
+                        heading(language.text("MEDIAN"), Fill, Alignment::Right),
+                        heading(language.text("P10"), Fill, Alignment::Right),
+                        heading(language.text("P90"), Fill, Alignment::Right),
+                        heading(language.text("MIN"), Fill, Alignment::Right),
+                        heading(language.text("MAX"), Fill, Alignment::Right),
                     ]),
                     table_hrule(),
                     table_row(pattern_figures(
-                        "Neutral transition",
+                        language.text("Neutral transition"),
                         theme::PRIMARY_TEXT,
                         measurement.transition_count,
                         [
@@ -1451,7 +2195,7 @@ fn latencies_card(measurement: MeasurementSnapshot) -> Element<'static, Message>
                     )),
                     table_hrule(),
                     table_row(pattern_figures(
-                        "Physical overlap",
+                        language.text("Physical overlap"),
                         theme::WARN_TEXT,
                         measurement.overlap_count,
                         [
@@ -1464,7 +2208,7 @@ fn latencies_card(measurement: MeasurementSnapshot) -> Element<'static, Message>
                     )),
                     table_hrule(),
                     table_row(pattern_figures(
-                        "Near-simultaneous",
+                        language.text("Indistinguishable"),
                         theme::ERROR_TEXT,
                         measurement.near_simultaneous_count,
                         [
@@ -1490,31 +2234,40 @@ fn latencies_card(measurement: MeasurementSnapshot) -> Element<'static, Message>
     .into()
 }
 
-fn recommendations_card(measurement: MeasurementSnapshot) -> Element<'static, Message> {
+fn recommendations_card(
+    measurement: MeasurementSnapshot,
+    language: Language,
+) -> Element<'static, Message> {
     container(
         column![
             row![
                 column![
-                    text("Suggested SOCD settings").size(theme::HEADING_SIZE),
-                    text("Suggestions use P10 through P50 after excluding near-simultaneous samples. Both configured axes and directions are combined.")
-                        .size(12)
-                        .color(theme::MUTED_TEXT),
+                    section_title(Icon::Star, "Suggested delays", language),
+                    text(language.text(
+                        "Based on P10-P50 input timings, excluding indistinguishable inputs."
+                    ))
+                    .size(12)
+                    .color(theme::MUTED_TEXT),
                 ]
                 .width(Fill)
                 .spacing(4),
-                button("Apply Recommendations to Settings")
-                    .style(theme::primary_button)
-                    .on_press(Message::ApplyRecommendations),
+                button(icon_label(
+                    Icon::ArrowForward,
+                    "Apply suggestions",
+                    language
+                ))
+                .style(theme::primary_button)
+                .on_press(Message::ApplyRecommendations),
             ]
             .align_y(Center),
             row![
                 stat_inline(
-                    "SOCD Transition Delay",
+                    language.text("SOCD Transition Delay"),
                     timing_range(measurement.recommended_transition),
                     theme::OK_TEXT,
                 ),
                 stat_inline(
-                    "Preserved Overlap Duration",
+                    language.text("Preserved Overlap Duration"),
                     timing_range(measurement.recommended_overlap),
                     theme::OK_TEXT,
                 ),
@@ -1591,9 +2344,9 @@ fn figure(value: String, color: Option<Color>) -> Element<'static, Message> {
         .into()
 }
 
-fn disconnected_view(error: Option<&String>) -> Element<'_, Message> {
+fn disconnected_view(error: Option<&String>, language: Language) -> Element<'_, Message> {
     let mut content = column![
-        text("The settings UI is waiting for LastKey.exe."),
+        text(language.text("The settings UI is waiting for LastKey.exe.")),
         button("Request snapshot")
             .style(theme::secondary_button)
             .on_press(Message::RequestSnapshot),
@@ -1629,6 +2382,10 @@ fn window_unfocused(
 ) -> Option<Message> {
     match event {
         iced::Event::Window(iced::window::Event::Unfocused) => Some(Message::WindowUnfocused),
+        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+            key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+            ..
+        }) => Some(Message::CancelCapture),
         _ => None,
     }
 }
@@ -1737,7 +2494,7 @@ fn percentage_value(count: u32, total: u32) -> String {
 mod tests {
     use crate::{
         protocol::UiView,
-        settings::{Settings, TimingSettings},
+        settings::{Settings, SocdMode, TimingSettings},
     };
 
     use super::{
@@ -1860,6 +2617,7 @@ mod tests {
             name: "W".into(),
         });
         UiSnapshot {
+            filter_enabled: true,
             saved: Settings::default(),
             draft: Settings::default(),
             keys,
@@ -1875,7 +2633,7 @@ mod tests {
         // update arms must drop them so a gray control stays inert.
         let mut app = super::SettingsApp::new();
         app.set_snapshot(baseline_snapshot());
-        let _ = app.update(super::Message::TransitionDelayToggled(true));
+        let _ = app.update(super::Message::ModeSelected(SocdMode::PressDelay));
         let _ = app.update(super::Message::TimingSliderChanged(
             super::TimingField::TransitionMinimum,
             9.0,
@@ -1889,7 +2647,7 @@ mod tests {
             9_000
         );
 
-        let _ = app.update(super::Message::TransitionDelayToggled(false));
+        let _ = app.update(super::Message::ModeSelected(SocdMode::Immediate));
         let _ = app.update(super::Message::TimingSliderChanged(
             super::TimingField::TransitionMinimum,
             3.0,
@@ -1907,14 +2665,11 @@ mod tests {
         app.set_snapshot(old.clone());
         // A syncing request went out with the baseline values; before its
         // reply arrives, the user flips a timing control.
-        let _ = app.update(super::Message::TransitionDelayToggled(true));
+        let _ = app.update(super::Message::ModeSelected(SocdMode::PressDelay));
         let _ = app.handle_event(UiEvent::Snapshot(old));
-        assert!(
-            app.draft
-                .as_ref()
-                .expect("draft is kept")
-                .timing
-                .socd_transition_delay_enabled
+        assert_eq!(
+            app.draft.as_ref().expect("draft is kept").timing.mode,
+            SocdMode::PressDelay
         );
     }
 
@@ -1922,12 +2677,12 @@ mod tests {
     fn revert_resets_the_draft_and_buffers_at_click_time() {
         let mut app = super::SettingsApp::new();
         app.set_snapshot(baseline_snapshot());
-        let _ = app.update(super::Message::TransitionDelayToggled(true));
+        let _ = app.update(super::Message::ModeSelected(SocdMode::PressDelay));
 
         let _ = app.update(super::Message::Revert);
 
         let draft = app.draft.as_ref().expect("draft is kept");
-        assert!(!draft.timing.socd_transition_delay_enabled);
+        assert_eq!(draft.timing.mode, SocdMode::Immediate);
         assert_eq!(app.inputs, super::TimingInputs::from_timing(&draft.timing));
     }
 
@@ -1936,18 +2691,15 @@ mod tests {
         use crate::protocol::UiEvent;
         let mut app = super::SettingsApp::new();
         app.set_snapshot(baseline_snapshot());
-        let _ = app.update(super::Message::TransitionDelayToggled(true));
+        let _ = app.update(super::Message::ModeSelected(SocdMode::PressDelay));
         let _ = app.update(super::Message::Revert);
         // A stale reply to an earlier request arrives after the revert.
         let mut stale = baseline_snapshot();
-        stale.draft.timing.socd_transition_delay_enabled = true;
+        stale.draft.timing.mode = SocdMode::PressDelay;
         let _ = app.handle_event(UiEvent::Snapshot(stale));
-        assert!(
-            !app.draft
-                .as_ref()
-                .expect("draft is kept")
-                .timing
-                .socd_transition_delay_enabled
+        assert_eq!(
+            app.draft.as_ref().expect("draft is kept").timing.mode,
+            SocdMode::Immediate
         );
     }
 
@@ -2000,9 +2752,14 @@ mod tests {
     }
 
     #[test]
-    fn window_size_is_unified_for_both_views() {
-        assert_eq!(super::WINDOW_SIZE.width, 780.0);
-        assert_eq!(super::WINDOW_SIZE.height, 760.0);
+    fn section_navigation_keeps_the_single_page_title() {
+        let mut app = test_app();
+        let title = app.title();
+        let _ = app.show_section(UiView::Measurement, false);
+        assert_eq!(app.title(), title);
+        assert!(app.settings_actions().is_some());
+        let _ = app.show_section(UiView::Settings, false);
+        assert_eq!(app.title(), title);
     }
 
     #[test]
@@ -2027,7 +2784,7 @@ mod tests {
         let mut app = test_app();
         {
             let draft = app.draft.as_mut().expect("draft is kept");
-            draft.timing.socd_transition_delay_enabled = true;
+            draft.timing.mode = SocdMode::PressDelay;
         }
         let _ = app.update(super::Message::TimingSliderChanged(
             super::TimingField::TransitionMinimum,
@@ -2048,27 +2805,29 @@ mod tests {
     }
 
     #[test]
-    fn zero_preservation_rate_disables_overlap_on_apply() {
+    fn an_out_of_range_mix_ratio_clamps_without_leaving_the_mode() {
+        // "Off" is a mode of its own now, so a zero in the ratio box no
+        // longer flips a hidden switch: it clamps to the lowest usable share
+        // and Random Mix stays selected.
         let mut app = test_app();
         {
             let draft = app.draft.as_mut().expect("draft is kept");
-            draft.timing.socd_transition_delay_enabled = true;
-            draft.timing.preserve_overlap = true;
+            draft.timing.mode = SocdMode::RandomMix;
         }
         app.inputs.preservation_rate = "0".into();
         let _ = app.update(super::Message::Apply);
 
         let draft = app.draft.as_ref().expect("draft is kept");
-        assert!(!draft.timing.preserve_overlap);
-        // The stored share is kept for the next enable; only the toggle flips.
-        assert_eq!(app.inputs.preservation_rate, "50");
+        assert_eq!(draft.timing.mode, SocdMode::RandomMix);
+        assert_eq!(draft.timing.overlap_preservation_rate, 1);
+        assert_eq!(app.inputs.preservation_rate, "1");
     }
 
     #[test]
     fn recommendations_open_settings_with_results_in_the_draft() {
         use crate::protocol::{MeasurementSnapshot, TimingRange, UiView};
         let mut app = test_app();
-        app.current_view = UiView::Measurement;
+        let _ = app.show_section(UiView::Measurement, false);
         app.snapshot.as_mut().expect("snapshot is kept").measurement = Some(MeasurementSnapshot {
             recommended_transition: Some(TimingRange {
                 min_micros: 2_100,
@@ -2078,7 +2837,6 @@ mod tests {
         });
         let _ = app.update(super::Message::ApplyRecommendations);
 
-        assert_eq!(app.current_view, UiView::Settings);
         let draft = app.draft.as_ref().expect("draft is kept");
         assert_eq!(draft.timing.socd_transition_min_micros, 2_100);
         assert_eq!(draft.timing.socd_transition_max_micros, 3_000);
@@ -2086,40 +2844,33 @@ mod tests {
     }
 
     #[test]
-    fn measurement_errors_stay_visible_on_the_measurement_view() {
-        use crate::protocol::{ErrorView, UiEvent, UiView};
+    fn measurement_errors_use_the_pinned_action_bar() {
+        use crate::protocol::{ErrorView, UiEvent};
         let mut app = test_app();
-        app.current_view = UiView::Measurement;
-        // Silent when quiet: no snapshot-missing placeholder is needed here,
-        // and an empty card would be a visible bordered frame. Without a
-        // snapshot the disconnected placeholder already shows the error.
-        assert!(app.measurement_feedback_bar().is_none());
+        assert!(app.settings_actions().is_some());
         let _ = app.handle_event(UiEvent::RuntimeError(ErrorView {
             code: "measurement-start-failed".into(),
             message: "raw input registration failed".into(),
             recoverable: true,
         }));
-        // The bar renders the same shared feedback element as the settings
-        // bar, so a stored error here is a visible error there.
         assert_eq!(app.error.as_deref(), Some("raw input registration failed"));
-        assert!(app.measurement_feedback_bar().is_some());
+        assert!(app.settings_actions().is_some());
     }
 
     #[test]
-    fn settings_notices_do_not_mount_the_measurement_bar() {
-        use crate::protocol::{MeasurementSnapshot, UiEvent, UiView};
+    fn measurement_updates_keep_apply_feedback_in_the_shared_bar() {
+        use crate::protocol::{MeasurementSnapshot, UiEvent};
         let mut app = test_app();
-        app.current_view = UiView::Measurement;
-        // "Settings applied." arrives via ApplySucceeded on the other view;
-        // switching to Measurement must not pin it under the statistics.
         let mut snapshot = baseline_snapshot();
+        snapshot.measurement_active = true;
         snapshot.measurement = Some(MeasurementSnapshot::default());
         let _ = app.handle_event(UiEvent::ApplySucceeded(snapshot));
         assert_eq!(app.error, None);
         assert!(app.notice.is_some());
-        assert!(app.measurement_feedback_bar().is_none());
+        assert!(app.settings_actions().is_some());
         let _ = app.handle_event(UiEvent::MeasurementUpdated(MeasurementSnapshot::default()));
-        assert!(app.measurement_feedback_bar().is_none());
+        assert_eq!(app.notice.as_deref(), Some("Settings applied."));
+        assert!(app.settings_actions().is_some());
     }
 
     #[test]
@@ -2207,7 +2958,7 @@ mod tests {
 
         // Pressing another control moves focus away: the next press on any
         // box selects all again.
-        let _ = app.update(super::Message::TransitionDelayToggled(true));
+        let _ = app.update(super::Message::ModeSelected(SocdMode::PressDelay));
         assert!(!app.editing[TimingField::TransitionMinimum.index()]);
 
         // Losing the window rearms as well.
@@ -2226,5 +2977,62 @@ mod tests {
             "9.9".into(),
         ));
         assert!(app.editing[TimingField::TransitionMinimum.index()]);
+    }
+
+    #[test]
+    fn explicit_profile_load_replaces_local_edits_only_on_confirmed_success() {
+        let mut app = super::SettingsApp::new();
+        let initial = baseline_snapshot();
+        app.set_snapshot(initial.clone());
+        let _ = app.update(super::Message::ModeSelected(SocdMode::PressDelay));
+        let _ = app.update(super::Message::LoadProfile(2));
+        assert_eq!(app.snapshot.as_ref().unwrap().saved, initial.saved);
+        assert_eq!(
+            app.draft.as_ref().unwrap().timing.mode,
+            SocdMode::PressDelay
+        );
+        let mut loaded = initial;
+        loaded.saved = loaded.saved.select_profile(2).unwrap();
+        loaded.draft = loaded.saved.clone();
+        let expected = loaded.saved.clone();
+        let _ = app.handle_event(crate::protocol::UiEvent::ProfileLoaded(loaded));
+        assert_eq!(app.draft.as_ref(), Some(&expected));
+        assert!(!app.is_dirty());
+    }
+
+    #[test]
+    fn stopped_timeline_rejects_late_updates_and_filter_ack_clears_held_keys() {
+        use crate::protocol::{KeySlot, MonitorDecision, MonitorEdge, MonitorSnapshot, UiEvent};
+        let mut app = super::SettingsApp::new();
+        app.set_snapshot(baseline_snapshot());
+        let event = MonitorSnapshot {
+            elapsed_micros: 0,
+            filter_enabled: true,
+            physical: None,
+            outputs: vec![MonitorEdge {
+                key: KeySlot::HorizontalFirst,
+                pressed: true,
+                synthetic: true,
+            }],
+            decision: MonitorDecision::Immediate,
+        };
+        let _ = app.handle_event(UiEvent::MonitorStateChanged(true));
+        let _ = app.handle_event(UiEvent::MonitorUpdated(event.clone()));
+        assert!(
+            app.monitor
+                .timeline()
+                .unwrap()
+                .held(KeySlot::HorizontalFirst)
+        );
+        let _ = app.handle_event(UiEvent::FilterChanged(false));
+        assert!(
+            !app.monitor
+                .timeline()
+                .unwrap()
+                .held(KeySlot::HorizontalFirst)
+        );
+        let _ = app.handle_event(UiEvent::MonitorStateChanged(false));
+        let _ = app.handle_event(UiEvent::MonitorUpdated(event));
+        assert!(app.monitor.timeline().is_none());
     }
 }

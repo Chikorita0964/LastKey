@@ -12,10 +12,16 @@ use std::{
 
 use crate::{
     app::{AppController, AppControllerError, CapturedKey, FileSettingsStore, MeasurementUpdate},
-    core::LogicalKey,
+    core::{LogicalKey, MonitorEvent},
     protocol::{DisplayKey, ErrorView, KeySlot, UiCommand, UiEvent, UiSnapshot},
 };
-use windows::Win32::{Foundation::HANDLE, System::IO::CancelSynchronousIo};
+use windows::Win32::{
+    Foundation::{HANDLE, LPARAM, WPARAM},
+    System::{IO::CancelSynchronousIo, Threading::GetCurrentThreadId},
+    UI::WindowsAndMessaging::{PostThreadMessageW, WM_APP},
+};
+
+pub const FILTER_STATUS_MESSAGE: u32 = WM_APP + 3;
 
 use super::{
     InputService,
@@ -38,6 +44,11 @@ fn locked(
 /// outbound replies so the pump validates, applies, and answers them in one
 /// defined sequence instead of racing a later Revert.
 enum ServerEvent {
+    FilterChanged,
+    MonitorUpdated {
+        generation: u64,
+        event: Box<MonitorEvent>,
+    },
     Out(Box<UiEvent>),
     KeyCaptureDone {
         generation: u64,
@@ -61,13 +72,23 @@ pub struct UiServer {
 impl UiServer {
     pub fn start(controller: Controller) -> io::Result<Self> {
         let server = NamedPipeServer::new(SETTINGS_PIPE_NAME)?;
+        // The runtime creates this server on its tray message-loop thread.
+        let main_thread = unsafe { GetCurrentThreadId() };
         let stopping = Arc::new(AtomicBool::new(false));
         let stopping_for_thread = Arc::clone(&stopping);
         let client = Arc::new(Mutex::new(None));
         let client_for_thread = Arc::clone(&client);
         let thread = thread::Builder::new()
             .name("lastkey-ui-server".into())
-            .spawn(move || run(server, controller, stopping_for_thread, client_for_thread))?;
+            .spawn(move || {
+                run(
+                    server,
+                    controller,
+                    stopping_for_thread,
+                    client_for_thread,
+                    main_thread,
+                )
+            })?;
         Ok(Self {
             stopping,
             client,
@@ -77,6 +98,14 @@ impl UiServer {
 
     pub fn request_focus(&self, view: crate::protocol::UiView) -> bool {
         self.send_event(UiEvent::FocusRequested(view))
+    }
+
+    pub fn notify_filter_changed(&self) -> bool {
+        self.client
+            .lock()
+            .expect("settings IPC client mutex is not poisoned")
+            .as_ref()
+            .is_some_and(|queue| queue.send(ServerEvent::FilterChanged).is_ok())
     }
 
     pub fn notify_shutdown(&self) -> bool {
@@ -125,6 +154,7 @@ fn run(
     controller: Controller,
     stopping: Arc<AtomicBool>,
     client: SharedQueue,
+    main_thread: u32,
 ) {
     while !stopping.load(Ordering::Acquire) {
         let Ok(connection) = server.accept() else {
@@ -136,7 +166,7 @@ fn run(
         if stopping.load(Ordering::Acquire) {
             break;
         }
-        serve_connection(connection, &controller, &client, &stopping);
+        serve_connection(connection, &controller, &client, &stopping, main_thread);
         *client
             .lock()
             .expect("settings IPC client mutex is not poisoned") = None;
@@ -149,6 +179,7 @@ fn serve_connection(
     controller: &Controller,
     client: &SharedQueue,
     stopping: &Arc<AtomicBool>,
+    main_thread: u32,
 ) {
     // Every pipe syscall for this session runs on this thread. A pending
     // blocking read on one handle stalls writes on a duplicate handle of
@@ -178,6 +209,27 @@ fn serve_connection(
         while let Some(event) = pending {
             last_activity = Instant::now();
             match event {
+                ServerEvent::FilterChanged => {
+                    // Query at dispatch, so queued tray notifications cannot revert a newer UI toggle.
+                    let result = locked(controller).filter_enabled();
+                    let event = match result {
+                        Ok(enabled) => UiEvent::FilterChanged(enabled),
+                        Err(error) => {
+                            UiEvent::RuntimeError(error_view("filter-state-failed", error))
+                        }
+                    };
+                    if !send_reply(&mut connection, &event) {
+                        return;
+                    }
+                }
+                ServerEvent::MonitorUpdated { generation, event } => {
+                    let accepted = locked(controller).is_current_monitor(generation);
+                    if accepted
+                        && !send_reply(&mut connection, &UiEvent::MonitorUpdated((*event).into()))
+                    {
+                        return;
+                    }
+                }
                 ServerEvent::Out(event) => {
                     if !send_reply(&mut connection, &event) {
                         return;
@@ -215,7 +267,13 @@ fn serve_connection(
             Ok(true) => match connection.receive::<UiCommand>() {
                 Ok(command) => {
                     last_activity = Instant::now();
-                    if !dispatch(command, controller, &mut connection, &event_sender) {
+                    if !dispatch(
+                        command,
+                        controller,
+                        &mut connection,
+                        &event_sender,
+                        main_thread,
+                    ) {
                         return;
                     }
                 }
@@ -231,23 +289,132 @@ fn dispatch(
     controller: &Controller,
     connection: &mut PipeConnection,
     events: &EventQueue,
+    main_thread: u32,
 ) -> bool {
     match command {
         UiCommand::RequestSnapshot => send_snapshot(controller, connection),
+        UiCommand::LoadProfile(index) => {
+            if let Err(error) = locked(controller).stop_monitor() {
+                return send_reply(
+                    connection,
+                    &UiEvent::RuntimeError(error_view("profile-load-failed", error)),
+                );
+            }
+            if !send_reply(connection, &UiEvent::MonitorStateChanged(false)) {
+                return false;
+            }
+            let result = locked(controller).load_profile(index);
+            match result {
+                Ok(snapshot) => {
+                    let enabled = match locked(controller).filter_enabled() {
+                        Ok(enabled) => enabled,
+                        Err(error) => {
+                            return send_reply(
+                                connection,
+                                &UiEvent::RuntimeError(error_view("profile-load-failed", error)),
+                            );
+                        }
+                    };
+                    let names = snapshot.draft.bindings.map(physical_key_name);
+                    send_reply(
+                        connection,
+                        &UiEvent::ProfileLoaded(UiSnapshot::from_app(snapshot, names, enabled)),
+                    )
+                }
+                Err(error) => send_reply(
+                    connection,
+                    &UiEvent::RuntimeError(error_view("profile-load-failed", error)),
+                ),
+            }
+        }
+        UiCommand::RenameProfile { slot, name } => {
+            let result = locked(controller).rename_profile(slot, name);
+            match result {
+                Ok(snapshot) => send_app_snapshot(controller, connection, snapshot, false),
+                Err(error) => send_reply(
+                    connection,
+                    &UiEvent::RuntimeError(error_view("profile-rename-failed", error)),
+                ),
+            }
+        }
+        UiCommand::SetFilterEnabled(enabled) => {
+            let result = {
+                let mut controller = locked(controller);
+                controller
+                    .set_filter_enabled(enabled)
+                    .and_then(|()| controller.filter_enabled())
+            };
+            match result {
+                Ok(confirmed) => {
+                    // SAFETY: scalar thread-message payload, no borrowed pointers cross threads.
+                    let posted = unsafe {
+                        PostThreadMessageW(main_thread, FILTER_STATUS_MESSAGE, WPARAM(0), LPARAM(0))
+                    };
+                    if let Err(error) = posted {
+                        return send_reply(
+                            connection,
+                            &UiEvent::RuntimeError(ErrorView {
+                                code: "filter-failed".into(),
+                                message: format!(
+                                    "Filter changed, but the tray could not be notified: {error}"
+                                ),
+                                recoverable: true,
+                            }),
+                        );
+                    }
+                    send_reply(connection, &UiEvent::FilterChanged(confirmed))
+                }
+                Err(error) => send_reply(
+                    connection,
+                    &UiEvent::RuntimeError(error_view("filter-failed", error)),
+                ),
+            }
+        }
+        UiCommand::StartMonitor => start_monitor(controller, connection, events),
+        UiCommand::StopMonitor => match locked(controller).stop_monitor() {
+            Ok(()) => send_reply(connection, &UiEvent::MonitorStateChanged(false)),
+            Err(error) => send_reply(
+                connection,
+                &UiEvent::RuntimeError(error_view("monitor-stop-failed", error)),
+            ),
+        },
+        UiCommand::CancelKeyCapture => {
+            controller_snapshot_command(controller, connection, |controller| {
+                controller.cancel_key_capture()?;
+                Ok(controller.snapshot())
+            })
+        }
+        UiCommand::ResetMeasurement => {
+            let active = locked(controller).snapshot().measurement_active;
+            if active {
+                start_measurement(controller, connection, events)
+            } else {
+                controller_snapshot_command(controller, connection, |controller| {
+                    controller.clear_measurement()
+                })
+            }
+        }
         UiCommand::UpdateDraft(draft) => {
             let snapshot = {
                 let mut controller = locked(controller);
                 controller.replace_draft(draft);
                 controller.snapshot()
             };
-            send_reply(connection, &UiEvent::Snapshot(ui_snapshot(snapshot)))
+            send_app_snapshot(controller, connection, snapshot, false)
         }
         UiCommand::Apply => {
+            if let Err(error) = locked(controller).stop_monitor() {
+                return send_reply(
+                    connection,
+                    &UiEvent::RuntimeError(error_view("apply-failed", error)),
+                );
+            }
             let result = locked(controller).apply();
+            if !send_reply(connection, &UiEvent::MonitorStateChanged(false)) {
+                return false;
+            }
             match result {
-                Ok(snapshot) => {
-                    send_reply(connection, &UiEvent::ApplySucceeded(ui_snapshot(snapshot)))
-                }
+                Ok(snapshot) => send_app_snapshot(controller, connection, snapshot, true),
                 Err(error @ AppControllerError::InvalidSettings(_)) => send_reply(
                     connection,
                     &UiEvent::ValidationFailed(error_view("invalid-settings", error)),
@@ -439,7 +606,7 @@ fn controller_snapshot_command(
 ) -> bool {
     let result = command(&mut locked(controller));
     match result {
-        Ok(snapshot) => send_reply(connection, &UiEvent::Snapshot(ui_snapshot(snapshot))),
+        Ok(snapshot) => send_app_snapshot(controller, connection, snapshot, false),
         Err(error) => send_reply(
             connection,
             &UiEvent::RuntimeError(error_view("runtime-command-failed", error)),
@@ -449,12 +616,79 @@ fn controller_snapshot_command(
 
 fn send_snapshot(controller: &Controller, connection: &mut PipeConnection) -> bool {
     let snapshot = locked(controller).snapshot();
-    send_reply(connection, &UiEvent::Snapshot(ui_snapshot(snapshot)))
+    send_app_snapshot(controller, connection, snapshot, false)
 }
 
-fn ui_snapshot(snapshot: crate::app::AppSnapshot) -> UiSnapshot {
+fn send_app_snapshot(
+    controller: &Controller,
+    connection: &mut PipeConnection,
+    snapshot: crate::app::AppSnapshot,
+    applied: bool,
+) -> bool {
+    let enabled = match locked(controller).filter_enabled() {
+        Ok(enabled) => enabled,
+        Err(error) => {
+            return send_reply(
+                connection,
+                &UiEvent::RuntimeError(error_view("filter-state-failed", error)),
+            );
+        }
+    };
     let names = snapshot.draft.bindings.map(physical_key_name);
-    UiSnapshot::from_app(snapshot, names)
+    let snapshot = UiSnapshot::from_app(snapshot, names, enabled);
+    send_reply(
+        connection,
+        &if applied {
+            UiEvent::ApplySucceeded(snapshot)
+        } else {
+            UiEvent::Snapshot(snapshot)
+        },
+    )
+}
+
+fn start_monitor(
+    controller: &Controller,
+    connection: &mut PipeConnection,
+    events: &EventQueue,
+) -> bool {
+    let result = locked(controller).start_monitor();
+    match result {
+        Ok((generation, receiver)) => {
+            let events = events.clone();
+            if thread::Builder::new()
+                .name("lastkey-ipc-monitor".into())
+                .spawn(move || {
+                    while let Ok(event) = receiver.recv() {
+                        if events
+                            .send(ServerEvent::MonitorUpdated {
+                                generation,
+                                event: Box::new(event),
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                })
+                .is_err()
+            {
+                let _ = locked(controller).stop_monitor();
+                return send_reply(
+                    connection,
+                    &UiEvent::RuntimeError(ErrorView {
+                        code: "monitor-start-failed".into(),
+                        message: "The monitor worker could not start.".into(),
+                        recoverable: true,
+                    }),
+                );
+            }
+            send_reply(connection, &UiEvent::MonitorStateChanged(true))
+        }
+        Err(error) => send_reply(
+            connection,
+            &UiEvent::RuntimeError(error_view("monitor-start-failed", error)),
+        ),
+    }
 }
 
 fn error_view(code: &str, error: AppControllerError) -> ErrorView {

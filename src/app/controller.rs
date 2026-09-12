@@ -1,6 +1,9 @@
 use std::sync::mpsc::Receiver;
 
-use crate::{core::LogicalKey, settings::Settings};
+use crate::{
+    core::{LogicalKey, MonitorEvent},
+    settings::Settings,
+};
 
 use super::{
     AppControllerError, AppSnapshot, CapturedKey, MeasurementUpdate, RuntimeService, SettingsStore,
@@ -34,6 +37,48 @@ where
         self.state.draft = draft;
     }
 
+    /// Loading is an explicit activation transaction, independent of an unapplied draft.
+    pub fn load_profile(&mut self, index: u8) -> Result<AppSnapshot, AppControllerError> {
+        let next = self
+            .state
+            .saved
+            .select_profile(index)
+            .map_err(AppControllerError::InvalidSettings)?;
+        self.stop_monitor()?;
+        let previous_draft = std::mem::replace(&mut self.state.draft, next);
+        let result = self.apply();
+        if result.is_err() {
+            self.state.draft = previous_draft;
+        }
+        result
+    }
+
+    /// Profile names are metadata: persist them without activating an unrelated draft.
+    pub fn rename_profile(
+        &mut self,
+        index: u8,
+        name: String,
+    ) -> Result<AppSnapshot, AppControllerError> {
+        let mut next = self.state.saved.clone();
+        let mut bank = next.profile_bank();
+        let slot =
+            bank.slots
+                .get_mut(usize::from(index))
+                .ok_or(AppControllerError::InvalidSettings(
+                    crate::settings::SettingsError::InvalidProfile,
+                ))?;
+        slot.name = name.trim().into();
+        next.profiles = Some(Box::new(bank));
+        next.validate()
+            .map_err(AppControllerError::InvalidSettings)?;
+        self.store
+            .save(&next)
+            .map_err(AppControllerError::Persistence)?;
+        self.state.draft.profiles = next.profiles.clone();
+        self.state.saved = next;
+        Ok(self.snapshot())
+    }
+
     pub fn revert(&mut self) -> Result<AppSnapshot, AppControllerError> {
         self.runtime
             .cancel_key_capture()
@@ -48,7 +93,10 @@ where
             .cancel_key_capture()
             .map_err(AppControllerError::Runtime)?;
         self.state.invalidate_capture();
-        self.state.draft = Settings::default();
+        self.state.draft = Settings {
+            profiles: self.state.draft.profiles.clone(),
+            ..Settings::default()
+        };
         Ok(self.snapshot())
     }
 
@@ -62,7 +110,9 @@ where
     }
 
     pub fn apply(&mut self) -> Result<AppSnapshot, AppControllerError> {
-        let next = self.state.draft.clone();
+        let mut next = self.state.draft.clone();
+        next.sync_active_profile()
+            .map_err(AppControllerError::InvalidSettings)?;
         next.validate()
             .map_err(AppControllerError::InvalidSettings)?;
 
@@ -194,17 +244,66 @@ where
         Ok(self.snapshot())
     }
 
+    /// Clears a stopped session. Restarting a live session uses start_measurement.
+    pub fn clear_measurement(&mut self) -> Result<AppSnapshot, AppControllerError> {
+        self.stop_measurement()?;
+        self.state.measurement = None;
+        Ok(self.snapshot())
+    }
+
+    pub fn set_filter_enabled(&mut self, enabled: bool) -> Result<(), AppControllerError> {
+        self.runtime
+            .set_filter_enabled(enabled)
+            .map_err(AppControllerError::Runtime)
+    }
+
+    pub fn filter_enabled(&self) -> Result<bool, AppControllerError> {
+        self.runtime
+            .filter_enabled()
+            .map_err(AppControllerError::Runtime)
+    }
+
+    pub fn start_monitor(&mut self) -> Result<(u64, Receiver<MonitorEvent>), AppControllerError> {
+        let receiver = self
+            .runtime
+            .start_monitor()
+            .map_err(AppControllerError::Runtime)?;
+        self.state.monitor_generation = self.state.monitor_generation.wrapping_add(1);
+        self.state.monitor_active = true;
+        Ok((self.state.monitor_generation, receiver))
+    }
+
+    /// Unlike `update_measurement`, the monitor retains nothing: events stream
+    /// straight to the consumer, so the pump only asks whether the session it
+    /// received them for is still the current one.
+    pub fn is_current_monitor(&self, generation: u64) -> bool {
+        self.state.monitor_active && self.state.monitor_generation == generation
+    }
+
+    pub fn stop_monitor(&mut self) -> Result<(), AppControllerError> {
+        self.runtime
+            .stop_monitor()
+            .map_err(AppControllerError::Runtime)?;
+        self.state.invalidate_monitor();
+        Ok(())
+    }
+
     pub fn close_ui_session(&mut self) -> Result<(), AppControllerError> {
         let capture_result = self.runtime.cancel_key_capture();
         // Stop unconditionally: a start whose acknowledgement timed out may
         // still have armed the engine afterwards, leaving measurement_active
         // false here. Stopping an inactive session is a no-op.
         let measurement_result = self.runtime.stop_measurement().map(|_| ());
+        // Same rule for the monitor: an orphaned tap would stream into a
+        // session that no longer exists.
+        let monitor_result = self.runtime.stop_monitor();
         self.state.invalidate_capture();
         self.state.invalidate_measurement();
+        self.state.invalidate_monitor();
 
         capture_result
             .and(measurement_result)
+            .and(monitor_result)
             .map_err(AppControllerError::Runtime)
     }
 }
@@ -220,8 +319,8 @@ mod tests {
 
     use crate::{
         app::{CapturedKey, MeasurementUpdate, RuntimeService, SettingsStore},
-        core::{LogicalKey, PhysicalKey},
-        settings::Settings,
+        core::{LogicalKey, MonitorEvent, PhysicalKey},
+        settings::{Settings, SocdMode},
     };
 
     use super::{AppController, AppControllerError};
@@ -250,6 +349,9 @@ mod tests {
         final_measurement: Rc<RefCell<Option<MeasurementUpdate>>>,
         capture_cancellations: Rc<Cell<u32>>,
         measurement_stops: Rc<Cell<u32>>,
+        filter: Rc<Cell<bool>>,
+        monitor_sender: Rc<RefCell<Option<Sender<MonitorEvent>>>>,
+        monitor_stops: Rc<Cell<u32>>,
     }
 
     impl RuntimeService for MockRuntime {
@@ -297,6 +399,27 @@ mod tests {
             self.measurement_sender.borrow_mut().take();
             Ok(self.final_measurement.borrow_mut().take())
         }
+
+        fn set_filter_enabled(&self, enabled: bool) -> Result<(), String> {
+            self.filter.set(enabled);
+            Ok(())
+        }
+
+        fn filter_enabled(&self) -> Result<bool, String> {
+            Ok(self.filter.get())
+        }
+
+        fn start_monitor(&self) -> Result<Receiver<MonitorEvent>, String> {
+            let (sender, receiver) = mpsc::channel();
+            *self.monitor_sender.borrow_mut() = Some(sender);
+            Ok(receiver)
+        }
+
+        fn stop_monitor(&self) -> Result<(), String> {
+            self.monitor_stops.set(self.monitor_stops.get() + 1);
+            self.monitor_sender.borrow_mut().take();
+            Ok(())
+        }
     }
 
     fn controller() -> (
@@ -306,6 +429,8 @@ mod tests {
     ) {
         let store = MockStore::default();
         let runtime = MockRuntime::default();
+        // Mirror the engine default: the filter starts on.
+        runtime.filter.set(true);
         (
             AppController::new(Settings::default(), store.clone(), runtime.clone()),
             store,
@@ -315,7 +440,7 @@ mod tests {
 
     fn changed_settings() -> Settings {
         let mut settings = Settings::default();
-        settings.timing.socd_transition_delay_enabled = true;
+        settings.timing.mode = SocdMode::PressDelay;
         settings
     }
 
@@ -547,6 +672,33 @@ mod tests {
     }
 
     #[test]
+    fn filter_toggle_round_trips_through_the_runtime() {
+        let (mut controller, _store, runtime) = controller();
+        assert!(controller.filter_enabled().expect("filter reads"));
+
+        controller
+            .set_filter_enabled(false)
+            .expect("filter disables");
+        assert!(!controller.filter_enabled().expect("filter reads"));
+        assert!(!runtime.filter.get());
+
+        controller.set_filter_enabled(true).expect("filter enables");
+        assert!(controller.filter_enabled().expect("filter reads"));
+    }
+
+    #[test]
+    fn stopped_monitor_generation_is_no_longer_current() {
+        let (mut controller, _store, runtime) = controller();
+        let (generation, _receiver) = controller.start_monitor().expect("monitor starts");
+        assert!(controller.is_current_monitor(generation));
+        assert!(runtime.monitor_sender.borrow().is_some());
+
+        controller.stop_monitor().expect("monitor stops");
+        assert!(!controller.is_current_monitor(generation));
+        assert_eq!(runtime.monitor_stops.get(), 1);
+    }
+
+    #[test]
     fn closing_the_ui_session_cancels_transient_runtime_work_only() {
         let (mut controller, _store, runtime) = controller();
         controller
@@ -561,6 +713,7 @@ mod tests {
         assert!(!snapshot.measurement_active);
         assert_eq!(runtime.capture_cancellations.get(), 1);
         assert_eq!(runtime.measurement_stops.get(), 1);
+        assert_eq!(runtime.monitor_stops.get(), 1);
     }
 
     #[test]
@@ -573,5 +726,48 @@ mod tests {
         // engine afterwards; the flag cannot be trusted here.
         assert_eq!(runtime.measurement_stops.get(), 1);
         assert!(!controller.snapshot().measurement_active);
+    }
+
+    #[test]
+    fn profile_load_activates_and_failed_load_preserves_the_unapplied_draft() {
+        let (mut controller, store, runtime) = controller();
+        let loaded = controller.load_profile(2).expect("profile activates");
+        assert_eq!(*runtime.active.borrow(), loaded.saved);
+        assert_eq!(store.saves.borrow().last(), Some(&loaded.saved));
+        let mut edited = loaded.draft.clone();
+        edited.timing.socd_transition_min_micros = 3_000;
+        controller.replace_draft(edited.clone());
+        runtime
+            .apply_results
+            .borrow_mut()
+            .push_back(Err("activation failed".into()));
+        assert!(controller.load_profile(3).is_err());
+        assert_eq!(controller.snapshot().draft, edited);
+        assert_eq!(controller.snapshot().saved, loaded.saved);
+        assert_eq!(*runtime.active.borrow(), loaded.saved);
+        assert_eq!(store.saves.borrow().last(), Some(&loaded.saved));
+    }
+
+    #[test]
+    fn rename_never_activates_draft_and_apply_saves_only_the_active_profile() {
+        let (mut controller, _, runtime) = controller();
+        let loaded = controller.load_profile(1).expect("profile activates");
+        let mut edited = loaded.draft.clone();
+        edited.timing.socd_transition_max_micros = 8_000;
+        controller.replace_draft(edited);
+        let renamed = controller
+            .rename_profile(1, "  Custom  ".into())
+            .expect("rename persists");
+        assert_eq!(*runtime.active.borrow(), loaded.saved);
+        assert_eq!(renamed.draft.timing.socd_transition_max_micros, 8_000);
+        let applied = controller.apply().expect("draft applies");
+        let bank = applied.saved.profile_bank();
+        assert_eq!(bank.slots[1].name, "Custom");
+        assert_eq!(bank.slots[1].timing, applied.saved.timing);
+        assert_eq!(bank.slots[0], loaded.saved.profile_bank().slots[0]);
+        assert_eq!(
+            controller.restore_all_defaults().unwrap().draft.profiles,
+            applied.saved.profiles
+        );
     }
 }

@@ -15,14 +15,66 @@ pub struct Settings {
     pub bindings: [PhysicalKey; 4],
     #[serde(default)]
     pub timing: TimingSettings,
+    /// Absent in older files; the first profile operation seeds slot 1 from current settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profiles: Option<Box<ProfileBank>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ProfileSlot {
+    pub name: String,
+    pub bindings: [PhysicalKey; 4],
+    pub timing: TimingSettings,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ProfileBank {
+    pub active: u8,
+    pub slots: [ProfileSlot; 4],
+}
+
+/// How one opposite-direction overlap resolves. The four modes are
+/// independent and exhaustive: every mode is reachable on its own, and no
+/// mode gates another, so the engine never has to ask whether a stored
+/// combination is meaningful.
+///
+/// Listed in the order the settings card shows them, which runs from no
+/// delay through the press/release spectrum.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub enum SocdMode {
+    /// Last input wins with no added delay.
+    #[default]
+    Immediate,
+    /// Release the previous direction now, press the new one after a delay,
+    /// so the game sees a gap with no direction held.
+    PressDelay,
+    /// Press the new direction now, release the previous one after a delay,
+    /// so the game sees both directions held for that window.
+    ReleaseDelay,
+    /// Pick press delay or release delay per overlap, by configured odds.
+    RandomMix,
+}
+
+impl SocdMode {
+    pub const ALL: [Self; 4] = [
+        Self::Immediate,
+        Self::PressDelay,
+        Self::RandomMix,
+        Self::ReleaseDelay,
+    ];
+
+    /// Whether the mode ever schedules delayed output. `Immediate` keeps the
+    /// direct low-latency path; the other three need the platform scheduler.
+    pub const fn delays_output(self) -> bool {
+        !matches!(self, Self::Immediate)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TimingSettings {
-    pub socd_transition_delay_enabled: bool,
+    pub mode: SocdMode,
     pub socd_transition_min_micros: u32,
     pub socd_transition_max_micros: u32,
-    pub preserve_overlap: bool,
     pub overlap_preservation_rate: u8,
     pub preserved_overlap_min_micros: u32,
     pub preserved_overlap_max_micros: u32,
@@ -58,12 +110,18 @@ impl StoredMilliseconds {
 
 /// Stored timing settings use only the current field names. Aliases from
 /// unreleased development builds (`transition_min_ms`, `overlap_probability`,
-/// `full_overlap`, and friends) are not recognized: no released build ever
-/// wrote a settings file, so there is nothing to migrate. Unknown fields are
+/// `full_overlap`, and friends) are not recognized. Unknown fields are
 /// ignored and missing fields take the defaults below; anything else must
 /// pass `validate()` when the file is loaded.
+///
+/// The two booleans are the exception: v1.0.0 through v1.0.2 wrote them, and
+/// they describe the same four modes as a master switch plus a sub-switch.
+/// They are read only when `mode` is absent and are never written back, so a
+/// file upgrades itself on the next save.
 #[derive(Default, Deserialize)]
 struct StoredTimingSettings {
+    #[serde(default)]
+    mode: Option<SocdMode>,
     #[serde(default)]
     socd_transition_delay_enabled: Option<bool>,
     #[serde(default)]
@@ -80,6 +138,31 @@ struct StoredTimingSettings {
     preserved_overlap_max_ms: Option<StoredMilliseconds>,
 }
 
+impl StoredTimingSettings {
+    /// Resolves the mode a stored file describes. Pre-mode files carried the
+    /// preference for a mode they could not reach — overlap preservation with
+    /// the master switch off behaved exactly like `Immediate` — so the
+    /// mapping reads the behavior that shipped, not the stored intent.
+    fn mode(&self) -> SocdMode {
+        if let Some(mode) = self.mode {
+            return mode;
+        }
+        match (
+            self.socd_transition_delay_enabled.unwrap_or(false),
+            self.preserve_overlap.unwrap_or(false),
+            self.overlap_preservation_rate
+                .unwrap_or(DEFAULT_PRESERVATION_RATE),
+        ) {
+            (true, true, 100) => SocdMode::ReleaseDelay,
+            (true, true, _) => SocdMode::RandomMix,
+            (true, false, _) => SocdMode::PressDelay,
+            (false, _, _) => SocdMode::Immediate,
+        }
+    }
+}
+
+const DEFAULT_PRESERVATION_RATE: u8 = 50;
+
 impl<'de> Deserialize<'de> for TimingSettings {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -87,7 +170,7 @@ impl<'de> Deserialize<'de> for TimingSettings {
     {
         let stored = StoredTimingSettings::deserialize(deserializer)?;
         Ok(Self {
-            socd_transition_delay_enabled: stored.socd_transition_delay_enabled.unwrap_or(false),
+            mode: stored.mode(),
             socd_transition_min_micros: stored
                 .socd_transition_min_ms
                 .map(StoredMilliseconds::into_micros)
@@ -98,8 +181,9 @@ impl<'de> Deserialize<'de> for TimingSettings {
                 .map(StoredMilliseconds::into_micros)
                 .transpose()?
                 .unwrap_or(4_000),
-            preserve_overlap: stored.preserve_overlap.unwrap_or(false),
-            overlap_preservation_rate: stored.overlap_preservation_rate.unwrap_or(50),
+            overlap_preservation_rate: stored
+                .overlap_preservation_rate
+                .unwrap_or(DEFAULT_PRESERVATION_RATE),
             preserved_overlap_min_micros: stored
                 .preserved_overlap_min_ms
                 .map(StoredMilliseconds::into_micros)
@@ -119,11 +203,8 @@ impl Serialize for TimingSettings {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("TimingSettings", 7)?;
-        state.serialize_field(
-            "socd_transition_delay_enabled",
-            &self.socd_transition_delay_enabled,
-        )?;
+        let mut state = serializer.serialize_struct("TimingSettings", 6)?;
+        state.serialize_field("mode", &self.mode)?;
         state.serialize_field(
             "socd_transition_min_ms",
             &millis_decimal(self.socd_transition_min_micros),
@@ -132,7 +213,6 @@ impl Serialize for TimingSettings {
             "socd_transition_max_ms",
             &millis_decimal(self.socd_transition_max_micros),
         )?;
-        state.serialize_field("preserve_overlap", &self.preserve_overlap)?;
         state.serialize_field("overlap_preservation_rate", &self.overlap_preservation_rate)?;
         state.serialize_field(
             "preserved_overlap_min_ms",
@@ -153,11 +233,10 @@ fn millis_decimal(micros: u32) -> f64 {
 impl Default for TimingSettings {
     fn default() -> Self {
         Self {
-            socd_transition_delay_enabled: false,
+            mode: SocdMode::Immediate,
             socd_transition_min_micros: 2_000,
             socd_transition_max_micros: 4_000,
-            preserve_overlap: false,
-            overlap_preservation_rate: 50,
+            overlap_preservation_rate: DEFAULT_PRESERVATION_RATE,
             preserved_overlap_min_micros: 2_000,
             preserved_overlap_max_micros: 6_000,
         }
@@ -165,11 +244,14 @@ impl Default for TimingSettings {
 }
 
 impl TimingSettings {
-    pub fn effective_overlap_preservation_rate(&self) -> u8 {
-        if self.socd_transition_delay_enabled && self.preserve_overlap {
-            self.overlap_preservation_rate
-        } else {
-            0
+    /// Share of overlaps the engine resolves by delaying the previous key's
+    /// release instead of delaying the new key's press. Every mode answers
+    /// this outright, so no combination of fields needs a defensive guard.
+    pub fn release_delay_share(&self) -> u8 {
+        match self.mode {
+            SocdMode::Immediate | SocdMode::PressDelay => 0,
+            SocdMode::ReleaseDelay => 100,
+            SocdMode::RandomMix => self.overlap_preservation_rate,
         }
     }
 }
@@ -181,6 +263,7 @@ pub const MAX_TIMING_MICROS: u32 = 1_000_000;
 
 #[derive(Debug)]
 pub enum SettingsError {
+    InvalidProfile,
     DuplicateBinding,
     EmptyBinding,
     InvalidTimingRange,
@@ -196,6 +279,10 @@ pub enum SettingsError {
 impl fmt::Display for SettingsError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidProfile => write!(
+                formatter,
+                "profile slot must be 1–4 and its name must contain 1–64 visible characters"
+            ),
             Self::DuplicateBinding => write!(formatter, "each pair key must be unique"),
             Self::EmptyBinding => write!(formatter, "a key binding cannot be empty"),
             Self::InvalidTimingRange => {
@@ -213,7 +300,7 @@ impl fmt::Display for SettingsError {
             Self::InvalidPreservedOverlapDuration => {
                 write!(
                     formatter,
-                    "preserved overlap duration must be at least 0.1 ms when overlap preservation is active"
+                    "preserved overlap duration must be at least 0.1 ms"
                 )
             }
             Self::InvalidTimingPrecision => {
@@ -244,11 +331,64 @@ impl Default for Settings {
                 PhysicalKey::new(0x20, false), // D
             ],
             timing: TimingSettings::default(),
+            profiles: None,
         }
     }
 }
 
 impl Settings {
+    pub fn profile_bank(&self) -> ProfileBank {
+        self.profiles.as_deref().cloned().unwrap_or_else(|| {
+            let defaults = Settings::default();
+            let names = [
+                "Latency not found",
+                "One breath between keys",
+                "Chaos, but calibrated",
+                "Old habits die slowly",
+            ];
+            let mut bank = ProfileBank {
+                active: 0,
+                slots: std::array::from_fn(|index| ProfileSlot {
+                    name: names[index].into(),
+                    bindings: defaults.bindings,
+                    timing: TimingSettings {
+                        mode: SocdMode::ALL[index],
+                        ..defaults.timing.clone()
+                    },
+                }),
+            };
+            bank.slots[0].bindings = self.bindings;
+            bank.slots[0].timing = self.timing.clone();
+            bank
+        })
+    }
+
+    pub fn sync_active_profile(&mut self) -> Result<(), SettingsError> {
+        if let Some(bank) = &mut self.profiles {
+            let slot = bank
+                .slots
+                .get_mut(usize::from(bank.active))
+                .ok_or(SettingsError::InvalidProfile)?;
+            slot.bindings = self.bindings;
+            slot.timing = self.timing.clone();
+        }
+        Ok(())
+    }
+
+    pub fn select_profile(&self, index: u8) -> Result<Self, SettingsError> {
+        let mut bank = self.profile_bank();
+        let slot = bank
+            .slots
+            .get(usize::from(index))
+            .ok_or(SettingsError::InvalidProfile)?;
+        let mut next = self.clone();
+        next.bindings = slot.bindings;
+        next.timing = slot.timing.clone();
+        bank.active = index;
+        next.profiles = Some(Box::new(bank));
+        next.validate()?;
+        Ok(next)
+    }
     pub fn binding(&self, key: LogicalKey) -> PhysicalKey {
         self.bindings[key.index()]
     }
@@ -264,6 +404,26 @@ impl Settings {
     }
 
     pub fn validate(&self) -> Result<(), SettingsError> {
+        if let Some(bank) = &self.profiles {
+            if bank.active >= 4 {
+                return Err(SettingsError::InvalidProfile);
+            }
+            for slot in &bank.slots {
+                if slot.name.trim().is_empty()
+                    || slot.name.chars().count() > 64
+                    || slot.name.chars().any(char::is_control)
+                {
+                    return Err(SettingsError::InvalidProfile);
+                }
+                // The same settings validator owns stored profiles and active configuration.
+                Settings {
+                    bindings: slot.bindings,
+                    timing: slot.timing.clone(),
+                    profiles: None,
+                }
+                .validate()?;
+            }
+        }
         if self.bindings.iter().any(|binding| binding.scan_code == 0) {
             return Err(SettingsError::EmptyBinding);
         }

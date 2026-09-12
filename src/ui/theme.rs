@@ -1,14 +1,13 @@
 //! Palette and widget styles for the settings window.
 //!
-//! Values follow the redesign preview in
-//! `stitch_ui_redesign_and_enhancement/feasible_preview_v2.html`. Everything here
-//! uses system fonts and iced's own style structs, so the runtime dependency tree
-//! is unaffected.
+//! Values follow the React reference named by `docs/architecture/ui.md`.
+//! Everything here uses generic system font families and iced's
+//! own style structs, so the resident dependency tree is unaffected.
 
 use iced::{
     Background, Border, Color, Font, Shadow, Theme, Vector,
     font::Weight,
-    widget::{button, container, rule, slider, text_input, toggler},
+    widget::{button, container, rule, slider, text_input},
 };
 
 const fn rgb(red: u8, green: u8, blue: u8) -> Color {
@@ -19,13 +18,15 @@ const fn rgb(red: u8, green: u8, blue: u8) -> Color {
     )
 }
 
-const CANVAS: Color = rgb(0xf6, 0xf8, 0xfa);
+const CANVAS: Color = Color::WHITE;
 const SURFACE: Color = Color::WHITE;
-const INSET: Color = rgb(0xee, 0xf2, 0xf6);
+const INSET: Color = rgb(0xf8, 0xfa, 0xfc);
 const BORDER: Color = rgb(0xe1, 0xe4, 0xe8);
 pub const BODY_TEXT: Color = rgb(0x0f, 0x17, 0x2a);
 pub const MUTED_TEXT: Color = rgb(0x64, 0x74, 0x8b);
 pub const PRIMARY_TEXT: Color = rgb(0x4f, 0x46, 0xe5);
+pub const RELEASE_TEXT: Color = rgb(0x8b, 0x5c, 0xf6);
+pub const MIX_TEXT: Color = rgb(0x6d, 0x51, 0xee);
 pub const WARN_TEXT: Color = rgb(0xca, 0x8a, 0x04);
 pub const OK_TEXT: Color = rgb(0x10, 0xb9, 0x81);
 pub const ERROR_TEXT: Color = rgb(0xdc, 0x26, 0x26);
@@ -37,9 +38,14 @@ const RAIL_INACTIVE: Color = rgb(0xcb, 0xd5, 0xe1);
 const ERROR_BG: Color = rgb(0xfe, 0xf2, 0xf2);
 const ERROR_BORDER: Color = rgb(0xfc, 0xa5, 0xa5);
 
-/// System UI face. `Font::new` resolves an installed family, so nothing is
-/// bundled and the runtime feature set is unchanged.
-pub const UI_FONT: Font = Font::new("Segoe UI");
+/// System UI face, left generic on purpose. `Font::DEFAULT` is
+/// `Family::SansSerif`, so the shaper resolves whatever the OS calls its
+/// default sans and then walks its own fallback chain for glyphs that face
+/// lacks — Hangul and CJK included. Naming a family instead (`Segoe UI`)
+/// pins a face that does not exist on every target and reintroduces the
+/// tofu the reference's font stack exists to avoid. Nothing is bundled
+/// either way, so the runtime feature set is unchanged.
+pub const UI_FONT: Font = Font::DEFAULT;
 /// Bold system UI face for the status line and action-bar feedback.
 pub const UI_FONT_BOLD: Font = Font {
     weight: Weight::Bold,
@@ -54,10 +60,10 @@ pub const BODY_TEXT_SIZE: f32 = 13.0;
 pub const HEADING_SIZE: f32 = 15.0;
 
 pub const PAGE_PADDING: f32 = 16.0;
-pub const SECTION_GAP: f32 = 12.0;
+pub const SECTION_GAP: f32 = 16.0;
 pub const ROW_GAP: f32 = 8.0;
-pub const CARD_PADDING: f32 = 16.0;
-pub const GROUP_PADDING: f32 = 10.0;
+pub const CARD_PADDING: f32 = 20.0;
+pub const GROUP_PADDING: f32 = 14.0;
 
 /// Page background behind the cards.
 pub fn canvas_style() -> container::Style {
@@ -73,9 +79,14 @@ pub fn card_style() -> container::Style {
     container::Style {
         background: Some(Background::Color(SURFACE)),
         border: Border {
-            color: BORDER,
-            width: 1.0,
-            radius: 8.0.into(),
+            color: rgb(0xc7, 0xd2, 0xfe),
+            width: 2.0,
+            radius: 16.0.into(),
+        },
+        shadow: Shadow {
+            color: Color::from_rgba(0.0, 0.0, 0.0, 0.04),
+            offset: Vector::new(0.0, 1.0),
+            blur_radius: 2.0,
         },
         ..container::Style::default()
     }
@@ -86,17 +97,12 @@ pub fn group_style() -> container::Style {
     container::Style {
         background: Some(Background::Color(INSET)),
         border: Border {
-            width: 0.0,
-            radius: 6.0.into(),
-            ..Border::default()
+            color: BORDER,
+            width: 1.0,
+            radius: 12.0.into(),
         },
         ..container::Style::default()
     }
-}
-
-/// Segmented view-switch well holding the two view buttons.
-pub fn switch_style() -> container::Style {
-    group_style()
 }
 
 /// Surface tile inside a group, used for a single key row.
@@ -107,38 +113,6 @@ pub fn slot_style() -> container::Style {
             width: 0.0,
             radius: 6.0.into(),
             ..Border::default()
-        },
-        ..container::Style::default()
-    }
-}
-
-/// Light-red tile marking a key row whose binding duplicates another slot.
-pub fn slot_error_style() -> container::Style {
-    container::Style {
-        background: Some(Background::Color(ERROR_BG)),
-        border: Border {
-            width: 0.0,
-            radius: 6.0.into(),
-            ..Border::default()
-        },
-        ..container::Style::default()
-    }
-}
-
-/// Monospace key badge. iced borders have a single width, so the keycap's
-/// thicker bottom edge is approximated with a one-pixel shadow.
-pub fn kbd_style() -> container::Style {
-    container::Style {
-        background: Some(Background::Color(SURFACE)),
-        border: Border {
-            color: KBD_BORDER,
-            width: 1.0,
-            radius: 4.0.into(),
-        },
-        shadow: Shadow {
-            color: KBD_BORDER,
-            offset: Vector::new(0.0, 1.0),
-            blur_radius: 0.0,
         },
         ..container::Style::default()
     }
@@ -166,6 +140,69 @@ pub fn dot_style(color: Color) -> container::Style {
     }
 }
 
+pub fn keycap(
+    status: button::Status,
+    selected: bool,
+    duplicate: bool,
+    accent: Color,
+) -> button::Style {
+    let active = selected || status == button::Status::Pressed;
+    button::Style {
+        background: Some(
+            if active {
+                accent
+            } else if duplicate {
+                ERROR_BG
+            } else {
+                SURFACE
+            }
+            .into(),
+        ),
+        text_color: if active {
+            SURFACE
+        } else if duplicate {
+            ERROR_TEXT
+        } else {
+            BODY_TEXT
+        },
+        border: Border {
+            color: if duplicate {
+                ERROR_BORDER
+            } else if active || status == button::Status::Hovered {
+                accent
+            } else {
+                BORDER
+            },
+            width: 2.0,
+            radius: 12.0.into(),
+        },
+        shadow: Shadow {
+            color: Color::from_rgba(0.0, 0.0, 0.0, 0.05),
+            offset: Vector::new(0.0, 2.0),
+            blur_radius: 1.0,
+        },
+        ..button::Style::default()
+    }
+}
+
+pub fn mode_button(status: button::Status, selected: bool, accent: Color) -> button::Style {
+    if selected {
+        button::Style {
+            background: Some(accent.into()),
+            ..tab_selected(&Theme::Light, status)
+        }
+    } else {
+        tab_unselected(&Theme::Light, status)
+    }
+}
+
+pub fn mixer_slider(theme: &Theme, status: slider::Status) -> slider::Style {
+    let mut style = accent_slider(theme, status);
+    style.rail.backgrounds.1 = RELEASE_TEXT.into();
+    style.handle.border_color = MIX_TEXT;
+    style
+}
+
 /// Filled accent button for the one primary action on a screen.
 pub fn primary_button(_theme: &Theme, status: button::Status) -> button::Style {
     let background = match status {
@@ -188,7 +225,7 @@ pub fn primary_button(_theme: &Theme, status: button::Status) -> button::Style {
 /// Outlined button for secondary actions.
 pub fn secondary_button(_theme: &Theme, status: button::Status) -> button::Style {
     let (background, text_color) = match status {
-        button::Status::Hovered | button::Status::Pressed => (HOVER_SURFACE, BODY_TEXT),
+        button::Status::Hovered | button::Status::Pressed => (rgb(0xee, 0xf2, 0xff), PRIMARY_TEXT),
         button::Status::Active => (SURFACE, BODY_TEXT),
         button::Status::Disabled => (SURFACE, MUTED_TEXT),
     };
@@ -198,7 +235,7 @@ pub fn secondary_button(_theme: &Theme, status: button::Status) -> button::Style
         border: Border {
             color: BORDER,
             width: 1.0,
-            radius: 6.0.into(),
+            radius: 10.0.into(),
         },
         ..button::Style::default()
     }
@@ -207,8 +244,8 @@ pub fn secondary_button(_theme: &Theme, status: button::Status) -> button::Style
 /// The selected tab in the view switch: a raised pill inside the inset well.
 pub fn tab_selected(_theme: &Theme, _status: button::Status) -> button::Style {
     button::Style {
-        background: Some(Background::Color(SURFACE)),
-        text_color: BODY_TEXT,
+        background: Some(Background::Color(PRIMARY_TEXT)),
+        text_color: SURFACE,
         border: Border {
             color: BORDER,
             width: 1.0,
@@ -241,32 +278,6 @@ pub fn tab_unselected(_theme: &Theme, status: button::Status) -> button::Style {
     }
 }
 
-/// Accent toggler matching the preview's switch.
-pub fn accent_toggler(_theme: &Theme, status: toggler::Status) -> toggler::Style {
-    let (is_toggled, dimmed) = match status {
-        toggler::Status::Active { is_toggled } | toggler::Status::Hovered { is_toggled } => {
-            (is_toggled, false)
-        }
-        toggler::Status::Disabled { is_toggled } => (is_toggled, true),
-    };
-    let background = if is_toggled {
-        PRIMARY_TEXT
-    } else {
-        RAIL_INACTIVE
-    };
-    toggler::Style {
-        background: Background::Color(if dimmed { fade(background) } else { background }),
-        background_border_width: 0.0,
-        background_border_color: Color::TRANSPARENT,
-        foreground: Background::Color(SURFACE),
-        foreground_border_width: 0.0,
-        foreground_border_color: Color::TRANSPARENT,
-        text_color: None,
-        border_radius: None,
-        padding_ratio: 0.1,
-    }
-}
-
 /// Accent slider: filled rail up to the handle, hollow after it.
 pub fn accent_slider(_theme: &Theme, status: slider::Status) -> slider::Style {
     let handle_radius = match status {
@@ -279,9 +290,9 @@ pub fn accent_slider(_theme: &Theme, status: slider::Status) -> slider::Style {
                 Background::Color(PRIMARY_TEXT),
                 Background::Color(RAIL_INACTIVE),
             ),
-            width: 4.0,
+            width: 10.0,
             border: Border {
-                radius: 2.0.into(),
+                radius: 5.0.into(),
                 ..Border::default()
             },
         },
@@ -289,9 +300,9 @@ pub fn accent_slider(_theme: &Theme, status: slider::Status) -> slider::Style {
             shape: slider::HandleShape::Circle {
                 radius: handle_radius,
             },
-            background: Background::Color(PRIMARY_TEXT),
-            border_width: 2.0,
-            border_color: SURFACE,
+            background: Background::Color(SURFACE),
+            border_width: 3.0,
+            border_color: PRIMARY_TEXT,
         },
     }
 }
@@ -408,8 +419,4 @@ pub fn value_input_error(_theme: &Theme, status: text_input::Status) -> text_inp
             ..ERROR_TEXT
         },
     }
-}
-
-const fn fade(color: Color) -> Color {
-    Color { a: 0.4, ..color }
 }

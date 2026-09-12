@@ -4,7 +4,7 @@ use lastkey::{
     core::{
         DeliveryState, EventDisposition, KeyAction, LogicalKey, OutputEmitter, TimingController,
     },
-    settings::TimingSettings,
+    settings::{SocdMode, TimingSettings},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -33,7 +33,7 @@ impl OutputEmitter for TestEmitter {
 
 fn disabled_controller() -> TimingController {
     TimingController::new(TimingSettings {
-        socd_transition_delay_enabled: false,
+        mode: SocdMode::Immediate,
         ..Default::default()
     })
 }

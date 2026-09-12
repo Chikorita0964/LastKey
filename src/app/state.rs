@@ -33,6 +33,8 @@ pub(super) struct AppState {
     pub measurement_active: bool,
     pub measurement_generation: u64,
     pub measurement: Option<MeasurementUpdate>,
+    pub monitor_active: bool,
+    pub monitor_generation: u64,
 }
 
 impl AppState {
@@ -45,6 +47,8 @@ impl AppState {
             measurement_active: false,
             measurement_generation: 0,
             measurement: None,
+            monitor_active: false,
+            monitor_generation: 0,
         }
     }
 
@@ -66,5 +70,10 @@ impl AppState {
     pub fn invalidate_measurement(&mut self) {
         self.measurement_generation = self.measurement_generation.wrapping_add(1);
         self.measurement_active = false;
+    }
+
+    pub fn invalidate_monitor(&mut self) {
+        self.monitor_generation = self.monitor_generation.wrapping_add(1);
+        self.monitor_active = false;
     }
 }

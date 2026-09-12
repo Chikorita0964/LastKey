@@ -3,8 +3,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::settings::TimingSettings;
 
 use super::{
-    Axis, AxisDecision, DeliveryState, EventDisposition, KeyAction, LogicalKey, OutputEmitter,
-    SocdState,
+    Axis, AxisDecision, DeliveryState, EventDisposition, KeyAction, LogicalKey, MonitorDecision,
+    OutputEmitter, SocdState,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -16,6 +16,7 @@ enum PendingKind {
 #[derive(Clone, Copy, Debug)]
 struct PendingTransition {
     due: Instant,
+    delay: Duration,
     kind: PendingKind,
 }
 
@@ -27,6 +28,7 @@ pub struct TimingController {
     settings: TimingSettings,
     pending: [Option<PendingTransition>; 2],
     random_state: u64,
+    last_decision: MonitorDecision,
 }
 
 impl TimingController {
@@ -44,6 +46,7 @@ impl TimingController {
             settings,
             pending: [None, None],
             random_state: seed,
+            last_decision: MonitorDecision::Immediate,
         }
     }
 
@@ -54,6 +57,9 @@ impl TimingController {
         now: Instant,
         emitter: &mut E,
     ) -> EventDisposition {
+        // The monitor reads this after every call, including the early
+        // returns below, where nothing can be delayed.
+        self.last_decision = MonitorDecision::Immediate;
         if action == KeyAction::Up
             && !self.socd.physically_held(key)
             && !self.output[key.index()].is_held()
@@ -79,6 +85,15 @@ impl TimingController {
                 continue;
             }
             self.pending[index] = None;
+            let decision = match pending.kind {
+                PendingKind::Press(_) => MonitorDecision::PressDelayed {
+                    delay_micros: pending.delay.as_micros() as u32,
+                },
+                PendingKind::Release(_) => MonitorDecision::ReleaseDelayed {
+                    delay_micros: pending.delay.as_micros() as u32,
+                },
+            };
+            self.last_decision = decision;
             match pending.kind {
                 PendingKind::Press(key) => self.press(key, emitter),
                 PendingKind::Release(key) => {
@@ -104,12 +119,19 @@ impl TimingController {
             .min()
     }
 
-    pub fn is_enabled(&self) -> bool {
-        self.settings.socd_transition_delay_enabled
+    pub fn delays_output(&self) -> bool {
+        self.settings.mode.delays_output()
     }
 
     pub fn output_state(&self, key: LogicalKey) -> DeliveryState {
         self.output[key.index()]
+    }
+
+    /// How the most recent `process` or fired `poll` resolved, for the
+    /// monitor timeline. Read immediately after the call; `process` resets it
+    /// to `Immediate` first so early returns report honestly.
+    pub fn last_decision(&self) -> MonitorDecision {
+        self.last_decision
     }
 
     /// Clears both output and physical SOCD state at measurement boundaries.
@@ -141,10 +163,9 @@ impl TimingController {
             .find(|key| self.output[key.index()].is_held());
         if let (Some(old), Some(new)) = (held, decision.desired)
             && old != new
-            && self.is_enabled()
+            && self.delays_output()
         {
-            let overlap_selected = self.choose_overlap();
-            if overlap_selected {
+            if self.choose_release_delay() {
                 // If the overlapping press fails, keep the old output held and
                 // drop the new direction. Unlike the immediate path there is no
                 // physical pass-through here because both keys are already held
@@ -154,8 +175,12 @@ impl TimingController {
                         self.settings.preserved_overlap_min_micros,
                         self.settings.preserved_overlap_max_micros,
                     );
+                    self.last_decision = MonitorDecision::ReleaseDelayed {
+                        delay_micros: delay.as_micros() as u32,
+                    };
                     self.pending[axis_index(decision.axis)] = Some(PendingTransition {
                         due: now + delay,
+                        delay,
                         kind: PendingKind::Release(old),
                     });
                 }
@@ -164,8 +189,12 @@ impl TimingController {
                     self.settings.socd_transition_min_micros,
                     self.settings.socd_transition_max_micros,
                 );
+                self.last_decision = MonitorDecision::PressDelayed {
+                    delay_micros: delay.as_micros() as u32,
+                };
                 self.pending[axis_index(decision.axis)] = Some(PendingTransition {
                     due: now + delay,
+                    delay,
                     kind: PendingKind::Press(new),
                 });
             }
@@ -232,16 +261,19 @@ impl TimingController {
         }
     }
 
-    fn choose_overlap(&mut self) -> bool {
-        let preservation_rate = self.settings.effective_overlap_preservation_rate();
-        if preservation_rate == 0 {
+    /// Whether this overlap delays the previous key's release instead of the
+    /// new key's press. The two pure modes short-circuit, so only Random Mix
+    /// ever draws a number.
+    fn choose_release_delay(&mut self) -> bool {
+        let share = self.settings.release_delay_share();
+        if share == 0 {
             return false;
         }
-        if preservation_rate == 100 {
+        if share >= 100 {
             return true;
         }
         let roll = (self.next_random() % 100) as u8;
-        roll < preservation_rate
+        roll < share
     }
 
     fn random_delay(&mut self, min_micros: u32, max_micros: u32) -> Duration {

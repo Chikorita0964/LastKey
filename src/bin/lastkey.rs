@@ -13,7 +13,7 @@ mod windows_runtime {
 
     use lastkey::{
         app::{AppController, FileSettingsStore},
-        platform::windows::{HOOK_STATUS_MESSAGE, InputService, UiServer},
+        platform::windows::{FILTER_STATUS_MESSAGE, HOOK_STATUS_MESSAGE, InputService, UiServer},
         protocol::UiView,
         settings::{self, Settings},
     };
@@ -70,10 +70,17 @@ mod windows_runtime {
         )));
         let ui_server =
             UiServer::start(Arc::clone(&controller)).map_err(|error| error.to_string())?;
-        let tray = create_tray()?;
+        let (tray, filter_item) = create_tray()?;
+        sync_filter_item(&controller, &filter_item);
         let mut settings_process = SettingsProcess::default();
 
-        run_message_loop(&ui_server, &tray, &mut settings_process)?;
+        run_message_loop(
+            &ui_server,
+            &tray,
+            &filter_item,
+            &controller,
+            &mut settings_process,
+        )?;
 
         let _ = ui_server.notify_shutdown();
         settings_process.shutdown();
@@ -85,6 +92,8 @@ mod windows_runtime {
     fn run_message_loop(
         ui_server: &UiServer,
         tray: &TrayIcon,
+        filter_item: &MenuItem,
+        controller: &Arc<Mutex<AppController<FileSettingsStore, InputService>>>,
         settings_process: &mut SettingsProcess,
     ) -> Result<(), String> {
         let mut message = MSG::default();
@@ -108,6 +117,10 @@ mod windows_runtime {
                 }));
                 continue;
             }
+            if message.hwnd.0.is_null() && message.message == FILTER_STATUS_MESSAGE {
+                sync_filter_item(controller, filter_item);
+                continue;
+            }
             unsafe {
                 let _ = TranslateMessage(&message);
                 DispatchMessageW(&message);
@@ -122,6 +135,18 @@ mod windows_runtime {
                             show_error("Settings Error", &error);
                         }
                     }
+                    "lastkey-filter" => {
+                        // The label names the action, not the state: it flips
+                        // after a confirmed toggle. Only the label carries the
+                        // state so the tooltip stays a single signal.
+                        match toggle_filter(controller) {
+                            Ok(enabled) => {
+                                filter_item.set_text(if enabled { "Disable" } else { "Enable" });
+                                let _ = ui_server.notify_filter_changed();
+                            }
+                            Err(error) => show_error("Filter Error", &error),
+                        }
+                    }
                     "lastkey-exit" => return Ok(()),
                     _ => {}
                 }
@@ -129,24 +154,71 @@ mod windows_runtime {
         }
     }
 
-    fn create_tray() -> Result<TrayIcon, String> {
+    fn create_tray() -> Result<(TrayIcon, MenuItem), String> {
         let menu = Menu::new();
+        let filter_item = MenuItem::with_id("lastkey-filter", "Disable", true, None);
         for item in [
             MenuItem::with_id("lastkey-settings", "Settings", true, None),
+            filter_item.clone(),
             MenuItem::with_id("lastkey-exit", "Exit", true, None),
         ] {
             menu.append(&item).map_err(|error| error.to_string())?;
         }
-        TrayIconBuilder::new()
+        let tray = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
             .with_icon(tray_icon_image()?)
             .with_tooltip("LastKey")
             .build()
+            .map_err(|error| error.to_string())?;
+        Ok((tray, filter_item))
+    }
+
+    /// Reads the engine's filter state into the tray label. Runs once at
+    /// startup so the label can never disagree with the engine; afterwards
+    /// only confirmed toggles move it.
+    fn sync_filter_item(
+        controller: &Arc<Mutex<AppController<FileSettingsStore, InputService>>>,
+        filter_item: &MenuItem,
+    ) {
+        let enabled = controller
+            .lock()
+            .map(|controller| {
+                controller
+                    .filter_enabled()
+                    .map_err(|error| error.to_string())
+            })
+            .map_err(|_| "controller mutex is poisoned".to_string())
+            .and_then(|result| result);
+        match enabled {
+            Ok(enabled) => {
+                filter_item.set_text(if enabled { "Disable" } else { "Enable" });
+            }
+            Err(error) => show_error("Filter Error", &error),
+        }
+    }
+
+    /// Queries the authoritative engine state, flips it, and reports the new
+    /// state for the label. Query-then-set keeps the label honest even if a
+    /// previous toggle failed halfway.
+    fn toggle_filter(
+        controller: &Arc<Mutex<AppController<FileSettingsStore, InputService>>>,
+    ) -> Result<bool, String> {
+        let mut controller = controller
+            .lock()
+            .map_err(|_| "controller mutex is poisoned".to_string())?;
+        let enabled = controller
+            .filter_enabled()
+            .map_err(|error| error.to_string())?;
+        controller
+            .set_filter_enabled(!enabled)
+            .map_err(|error| error.to_string())?;
+        controller
+            .filter_enabled()
             .map_err(|error| error.to_string())
     }
 
     fn tray_icon_image() -> Result<Icon, String> {
-        // build.rs embeds assets/source/lastkey-logo.ico via winres with
+        // build.rs embeds assets/icons/ico/socd-light.ico via winres with
         // resource ID 1, so prefer it for consistent branding. Fall back to
         // the hand-drawn placeholder only if the embedded resource is missing.
         if let Ok(icon) = Icon::from_resource(1, None) {

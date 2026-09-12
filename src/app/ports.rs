@@ -1,6 +1,9 @@
 use std::sync::mpsc::Receiver;
 
-use crate::settings::{self, Settings};
+use crate::{
+    core::MonitorEvent,
+    settings::{self, Settings},
+};
 
 use super::{CapturedKey, MeasurementUpdate};
 
@@ -31,4 +34,12 @@ pub trait RuntimeService {
     fn start_measurement(&self) -> Result<Receiver<MeasurementUpdate>, String>;
 
     fn stop_measurement(&self) -> Result<Option<MeasurementUpdate>, String>;
+
+    fn set_filter_enabled(&self, enabled: bool) -> Result<(), String>;
+
+    fn filter_enabled(&self) -> Result<bool, String>;
+
+    fn start_monitor(&self) -> Result<Receiver<MonitorEvent>, String>;
+
+    fn stop_monitor(&self) -> Result<(), String>;
 }

@@ -48,8 +48,8 @@ use windows::{
 use crate::{
     app::RuntimeService,
     core::{
-        EventDisposition, KeyAction, LogicalKey, MeasurementSession, OutputEmitter, PhysicalKey,
-        TimingController, recommend,
+        EventDisposition, KeyAction, LogicalKey, MeasurementSession, MonitorDecision, MonitorEdge,
+        MonitorEvent, OutputEmitter, PhysicalKey, TimingController, recommend,
     },
     settings::Settings,
 };
@@ -131,6 +131,16 @@ enum InputCommand {
         ready: mpsc::SyncSender<Result<(), InputServiceError>>,
     },
     StopMeasurement(mpsc::SyncSender<Option<MeasurementUpdate>>),
+    SetFilterEnabled {
+        enabled: bool,
+        ready: mpsc::SyncSender<()>,
+    },
+    FilterEnabled(mpsc::SyncSender<bool>),
+    StartMonitor {
+        sender: Sender<MonitorEvent>,
+        ready: mpsc::SyncSender<()>,
+    },
+    StopMonitor(mpsc::SyncSender<()>),
     Stop,
 }
 
@@ -213,6 +223,31 @@ impl InputService {
         self.request(InputCommand::StopMeasurement)
     }
 
+    /// Flips the master filter switch. Idempotent and deadline-free: enabling
+    /// resets timing state and disabling releases output, so a late command
+    /// converges to the same requested state.
+    pub fn set_filter_enabled(&self, enabled: bool) -> std::result::Result<(), InputServiceError> {
+        self.request(|ready| InputCommand::SetFilterEnabled { enabled, ready })
+    }
+
+    /// Returns the engine's filter state. Queued behind any in-flight toggle,
+    /// so the answer confirms its outcome.
+    pub fn filter_enabled(&self) -> std::result::Result<bool, InputServiceError> {
+        self.request(InputCommand::FilterEnabled)
+    }
+
+    /// Starts passive timeline observation. Arming carries no deadline: unlike
+    /// measurement it touches no engine state, so starting late is harmless.
+    pub fn start_monitor(&self) -> std::result::Result<Receiver<MonitorEvent>, InputServiceError> {
+        let (sender, receiver) = mpsc::channel();
+        self.request(|ready| InputCommand::StartMonitor { sender, ready })?;
+        Ok(receiver)
+    }
+
+    pub fn stop_monitor(&self) -> std::result::Result<(), InputServiceError> {
+        self.request(InputCommand::StopMonitor)
+    }
+
     pub fn stop(mut self) {
         self.stop_inner();
     }
@@ -284,18 +319,69 @@ impl RuntimeService for InputService {
     fn stop_measurement(&self) -> Result<Option<MeasurementUpdate>, String> {
         InputService::stop_measurement(self).map_err(|error| error.to_string())
     }
+
+    fn set_filter_enabled(&self, enabled: bool) -> Result<(), String> {
+        InputService::set_filter_enabled(self, enabled).map_err(|error| error.to_string())
+    }
+
+    fn filter_enabled(&self) -> Result<bool, String> {
+        InputService::filter_enabled(self).map_err(|error| error.to_string())
+    }
+
+    fn start_monitor(&self) -> Result<Receiver<MonitorEvent>, String> {
+        InputService::start_monitor(self).map_err(|error| error.to_string())
+    }
+
+    fn stop_monitor(&self) -> Result<(), String> {
+        InputService::stop_monitor(self).map_err(|error| error.to_string())
+    }
 }
 
 struct InputEngine {
     timing: TimingController,
     settings: Settings,
+    /// Master switch for the filter. When false the hook keeps firing but
+    /// every mapped key passes through untouched: no SOCD, no timing, no
+    /// synthetic output. Owned here so tray and UI observe one value.
+    filter_enabled: bool,
     capture_sender: Option<Sender<CapturedKey>>,
     measurement: Option<MeasurementSession>,
     measurement_sender: Option<Sender<MeasurementUpdate>>,
+    monitor: Option<MonitorTap>,
     // Capture consumes key-down, so its matching key-up must also be consumed.
     captured_key_awaiting_release: Option<PhysicalKey>,
     scheduler: Option<HighResolutionTimer>,
     hook_health: HookHealth,
+}
+
+/// An active monitor session: passive observation for the timeline canvas.
+/// Unlike measurement it never bypasses or resets the filter; it only
+/// records what the engine saw and emitted.
+struct MonitorTap {
+    sender: Sender<MonitorEvent>,
+    start: Instant,
+}
+
+/// Records synthetic emissions into a sink while delegating to the real
+/// emitter. Lets the monitor observe output without touching delivery.
+struct TapEmitter<'a, E> {
+    inner: &'a mut E,
+    sink: &'a mut Vec<MonitorEdge>,
+}
+
+impl<E: OutputEmitter> OutputEmitter for TapEmitter<'_, E> {
+    fn emit(&mut self, key: LogicalKey, action: KeyAction) -> bool {
+        if self.inner.emit(key, action) {
+            self.sink.push(MonitorEdge {
+                key,
+                action,
+                synthetic: true,
+            });
+            true
+        } else {
+            false
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -472,9 +558,11 @@ impl InputEngine {
         Self {
             timing: TimingController::new(settings.timing.clone()),
             settings,
+            filter_enabled: true,
             capture_sender: None,
             measurement: None,
             measurement_sender: None,
+            monitor: None,
             captured_key_awaiting_release: None,
             scheduler: None,
             hook_health: HookHealth::new(),
@@ -519,11 +607,48 @@ impl InputEngine {
         // measurement feed hook-health, keeping the queue free of unrelated
         // typing and out of the hottest hook path for other applications.
         self.hook_health.observe_hook(physical, action, now);
+        if !self.filter_enabled {
+            // Bypass: the OS delivers the untouched physical event below, so
+            // no synthetic output, no pending work, and no state change here.
+            // Health above keeps observing so raw arrivals never read as
+            // hook misses while the filter is off.
+            self.record_monitor(
+                now,
+                Some(MonitorEdge {
+                    key,
+                    action,
+                    synthetic: false,
+                }),
+                Vec::new(),
+                MonitorDecision::Immediate,
+            );
+            return EventDisposition::PassThrough;
+        }
         let mut emitter = WindowsEmitter {
             settings: &self.settings,
         };
-        let disposition = self.timing.process(key, action, now, &mut emitter);
-        if self.timing.is_enabled() {
+        // Unconditional tap: an empty sink costs nothing, and the monitor
+        // decision is only read when a session is active.
+        let mut sink = Vec::new();
+        let disposition = {
+            let mut tap = TapEmitter {
+                inner: &mut emitter,
+                sink: &mut sink,
+            };
+            self.timing.process(key, action, now, &mut tap)
+        };
+        let decision = self.timing.last_decision();
+        self.record_monitor(
+            now,
+            Some(MonitorEdge {
+                key,
+                action,
+                synthetic: false,
+            }),
+            sink,
+            decision,
+        );
+        if self.timing.delays_output() {
             self.update_timer();
         }
         disposition
@@ -564,6 +689,21 @@ impl InputEngine {
                 statistics,
                 recommendation: recommend(statistics),
             };
+            // The hook path is bypassed while measuring, so raw is the only
+            // observer here; in normal operation the hook already recorded
+            // this edge and raw must stay silent to avoid double counting.
+            // Placed after the last session borrow so the mutable call below
+            // compiles; the edge it reports already happened above.
+            self.record_monitor(
+                now,
+                Some(MonitorEdge {
+                    key,
+                    action,
+                    synthetic: false,
+                }),
+                Vec::new(),
+                MonitorDecision::Immediate,
+            );
             let delivered = self
                 .measurement_sender
                 .as_ref()
@@ -588,6 +728,10 @@ impl InputEngine {
         self.capture_sender = None;
         self.measurement = None;
         self.measurement_sender = None;
+        // Like measurement, the monitor cannot survive settings replacement:
+        // its output lane would miss the releases above. The consumer
+        // restarts it after the answering snapshot if it still wants it.
+        self.monitor = None;
     }
 
     /// Activates settings unless the caller's acknowledgement wait already
@@ -616,11 +760,87 @@ impl InputEngine {
     }
 
     fn poll(&mut self) {
+        let now = Instant::now();
         let mut emitter = WindowsEmitter {
             settings: &self.settings,
         };
-        self.timing.poll(Instant::now(), &mut emitter);
+        let mut sink = Vec::new();
+        {
+            let mut tap = TapEmitter {
+                inner: &mut emitter,
+                sink: &mut sink,
+            };
+            self.timing.poll(now, &mut tap);
+        }
+        // Simultaneous cross-axis completions share the last decision. Only
+        // badges can observe it and only under mixed rolls on the same tick;
+        // the recorded outputs themselves are exact.
+        if !sink.is_empty() {
+            let decision = self.timing.last_decision();
+            self.record_monitor(now, None, sink, decision);
+        }
         self.update_timer();
+    }
+
+    /// Flips the master filter switch. Disabling releases synthetic-held keys
+    /// first so nothing stays held while the OS delivers input untouched;
+    /// enabling resets timing state so stale holds from the off window cannot
+    /// swallow the next press as a repeat. Both are idempotent.
+    fn set_filter_enabled(&mut self, enabled: bool) {
+        if enabled == self.filter_enabled {
+            return;
+        }
+        self.filter_enabled = enabled;
+        if enabled {
+            self.reset_timing_state();
+        } else {
+            self.release_all();
+        }
+    }
+
+    fn filter_enabled(&self) -> bool {
+        self.filter_enabled
+    }
+
+    /// Starts passive observation for the timeline canvas. Unlike measurement
+    /// and capture this touches no timing, output, or session state: arming
+    /// late is harmless, so there is no deadline.
+    fn start_monitor(&mut self, sender: Sender<MonitorEvent>) {
+        self.monitor = Some(MonitorTap {
+            sender,
+            start: Instant::now(),
+        });
+    }
+
+    fn stop_monitor(&mut self) {
+        self.monitor = None;
+    }
+
+    /// Streams one step of filter behavior when a session is active, and
+    /// retires the session when its consumer is gone. Lifecycle output
+    /// changes (apply, filter toggles) are not streamed; consumers
+    /// resynchronize held-output state on snapshots and filter changes.
+    fn record_monitor(
+        &mut self,
+        now: Instant,
+        physical: Option<MonitorEdge>,
+        outputs: Vec<MonitorEdge>,
+        decision: MonitorDecision,
+    ) {
+        let Some(tap) = self.monitor.as_ref() else {
+            return;
+        };
+        let event = MonitorEvent {
+            elapsed_micros: now.saturating_duration_since(tap.start).as_micros() as u64,
+            filter_enabled: self.filter_enabled,
+            physical,
+            outputs,
+            decision,
+        };
+        if tap.sender.send(event).is_err() {
+            // Same rule as measurement: stop feeding a dead queue.
+            self.monitor = None;
+        }
     }
 
     fn handle_timer_signal(&mut self) {
@@ -1142,6 +1362,38 @@ fn input_thread(
                             .stop_measurement();
                         let _ = ready.send(update);
                     }),
+                    InputCommand::SetFilterEnabled { enabled, ready } => ENGINE.with(|engine| {
+                        engine
+                            .borrow_mut()
+                            .as_mut()
+                            .expect("input engine is initialized")
+                            .set_filter_enabled(enabled);
+                        let _ = ready.send(());
+                    }),
+                    InputCommand::FilterEnabled(ready) => ENGINE.with(|engine| {
+                        let enabled = engine
+                            .borrow()
+                            .as_ref()
+                            .expect("input engine is initialized")
+                            .filter_enabled();
+                        let _ = ready.send(enabled);
+                    }),
+                    InputCommand::StartMonitor { sender, ready } => ENGINE.with(|engine| {
+                        engine
+                            .borrow_mut()
+                            .as_mut()
+                            .expect("input engine is initialized")
+                            .start_monitor(sender);
+                        let _ = ready.send(());
+                    }),
+                    InputCommand::StopMonitor(ready) => ENGINE.with(|engine| {
+                        engine
+                            .borrow_mut()
+                            .as_mut()
+                            .expect("input engine is initialized")
+                            .stop_monitor();
+                        let _ = ready.send(());
+                    }),
                     InputCommand::Stop => {
                         keep_running = false;
                         break;
@@ -1297,6 +1549,7 @@ fn is_capture_eligible(physical: PhysicalKey) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::SocdMode;
 
     #[test]
     fn service_response_timeout_is_reported() {
@@ -1412,6 +1665,157 @@ mod tests {
     }
 
     #[test]
+    fn filter_starts_enabled() {
+        let engine = InputEngine::new(Settings::default());
+
+        assert!(engine.filter_enabled());
+    }
+
+    #[test]
+    fn disabled_filter_passes_mapped_keys_through_untouched() {
+        // PressDelay would release and delay here; disabled, nothing may be
+        // held, emitted, or scheduled. This path creates no emitter, so the
+        // test performs no synthetic I/O.
+        let mut engine = InputEngine::new(enabled_timing_settings());
+        let physical = engine.settings.binding(LogicalKey::HorizontalFirst);
+        let now = Instant::now();
+        engine.set_filter_enabled(false);
+
+        assert_eq!(
+            engine.process_hook(physical, KeyAction::Down, now),
+            EventDisposition::PassThrough
+        );
+        assert_eq!(
+            engine.process_hook(physical, KeyAction::Up, now),
+            EventDisposition::PassThrough
+        );
+        assert_eq!(
+            engine.timing.output_state(LogicalKey::HorizontalFirst),
+            crate::core::DeliveryState::NotHeld
+        );
+        assert!(engine.timing.next_deadline().is_none());
+    }
+
+    #[test]
+    fn filter_toggle_preserves_monitor_session() {
+        let mut engine = InputEngine::new(Settings::default());
+        let (sender, _receiver) = mpsc::channel();
+        engine.start_monitor(sender);
+
+        engine.set_filter_enabled(false);
+        assert!(engine.monitor.is_some());
+        engine.set_filter_enabled(true);
+        assert!(engine.monitor.is_some());
+    }
+
+    #[test]
+    fn monitor_records_bypassed_edges_while_disabled() {
+        let mut engine = InputEngine::new(Settings::default());
+        let (sender, receiver) = mpsc::channel();
+        engine.start_monitor(sender);
+        engine.set_filter_enabled(false);
+        let physical = engine.settings.binding(LogicalKey::HorizontalFirst);
+        let start = Instant::now();
+
+        engine.process_hook(physical, KeyAction::Down, start);
+        engine.process_hook(physical, KeyAction::Up, start);
+
+        let first = receiver.recv().expect("first edge streams");
+        let second = receiver.recv().expect("second edge streams");
+        assert!(!first.filter_enabled);
+        assert_eq!(
+            first.physical,
+            Some(MonitorEdge {
+                key: LogicalKey::HorizontalFirst,
+                action: KeyAction::Down,
+                synthetic: false,
+            })
+        );
+        assert!(first.outputs.is_empty());
+        assert_eq!(first.decision, MonitorDecision::Immediate);
+        assert_eq!(second.physical.map(|edge| edge.action), Some(KeyAction::Up));
+        assert!(second.elapsed_micros >= first.elapsed_micros);
+    }
+
+    #[test]
+    fn monitor_records_raw_edges_during_measurement() {
+        // The hook path is bypassed while measuring, so raw is the only
+        // observer; neither path emits, so no synthetic I/O happens here.
+        let mut engine = InputEngine::new(Settings::default());
+        let (monitor_sender, monitor_receiver) = mpsc::channel();
+        let (measurement_sender, _measurement_receiver) = mpsc::channel();
+        engine.start_monitor(monitor_sender);
+        engine.start_measurement(measurement_sender);
+        let physical = engine.settings.binding(LogicalKey::HorizontalFirst);
+        let start = Instant::now();
+
+        engine.process_raw(physical, KeyAction::Down, start);
+
+        let event = monitor_receiver.recv().expect("raw edge streams");
+        assert!(event.filter_enabled);
+        assert_eq!(
+            event.physical,
+            Some(MonitorEdge {
+                key: LogicalKey::HorizontalFirst,
+                action: KeyAction::Down,
+                synthetic: false,
+            })
+        );
+        assert!(event.outputs.is_empty());
+    }
+
+    #[test]
+    fn monitor_session_drops_when_consumer_gone() {
+        let mut engine = InputEngine::new(Settings::default());
+        let (sender, receiver) = mpsc::channel();
+        engine.start_monitor(sender);
+        drop(receiver);
+        engine.set_filter_enabled(false);
+        let physical = engine.settings.binding(LogicalKey::HorizontalFirst);
+
+        engine.process_hook(physical, KeyAction::Down, Instant::now());
+
+        assert!(engine.monitor.is_none());
+    }
+
+    #[test]
+    fn tap_emitter_records_synthetic_output() {
+        let mut inner = TestEmitter { attempts: vec![] };
+        let mut sink = Vec::new();
+        let mut tap = TapEmitter {
+            inner: &mut inner,
+            sink: &mut sink,
+        };
+
+        assert!(tap.emit(LogicalKey::HorizontalFirst, KeyAction::Down));
+
+        assert_eq!(
+            sink,
+            [MonitorEdge {
+                key: LogicalKey::HorizontalFirst,
+                action: KeyAction::Down,
+                synthetic: true,
+            }]
+        );
+        assert_eq!(
+            inner.attempts,
+            [(LogicalKey::HorizontalFirst, KeyAction::Down)]
+        );
+    }
+
+    #[test]
+    fn apply_drops_monitor_session() {
+        let mut engine = InputEngine::new(Settings::default());
+        let (sender, _receiver) = mpsc::channel();
+        engine.start_monitor(sender);
+
+        // Fresh engine: nothing held, so no synthetic I/O happens here.
+        engine.apply(Settings::default());
+
+        assert!(engine.monitor.is_none());
+    }
+
+    #[test]
     fn expired_measurement_start_arms_no_session() {
         let mut engine = InputEngine::new(Settings::default());
         let (sender, _receiver) = mpsc::channel();
@@ -1485,7 +1889,7 @@ mod tests {
 
     fn enabled_timing_settings() -> Settings {
         let mut settings = Settings::default();
-        settings.timing.socd_transition_delay_enabled = true;
+        settings.timing.mode = SocdMode::PressDelay;
         settings
     }
 
@@ -1654,7 +2058,7 @@ mod tests {
     fn expired_apply_is_skipped_without_touching_settings() {
         let mut engine = InputEngine::new(Settings::default());
         let mut next = Settings::default();
-        next.timing.socd_transition_delay_enabled = true;
+        next.timing.mode = SocdMode::PressDelay;
 
         assert!(!engine.apply_if_current(next, Instant::now() - Duration::from_secs(1)));
         assert_eq!(engine.settings, Settings::default());
