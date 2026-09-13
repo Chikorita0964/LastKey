@@ -283,6 +283,13 @@ impl Error for ProtocolError {
     }
 }
 
+/// The version field alone, so `decode` can reject a stale peer before it
+/// tries to read a message shaped for a different protocol.
+#[derive(Deserialize)]
+struct EnvelopeVersion {
+    version: u16,
+}
+
 pub fn encode<T: Serialize>(message: &T) -> Result<Vec<u8>, ProtocolError> {
     let payload = serde_json::to_vec(&Envelope {
         version: PROTOCOL_VERSION,
@@ -313,14 +320,21 @@ pub fn decode<T: DeserializeOwned>(frame: &[u8]) -> Result<T, ProtocolError> {
     if payload.len() != payload_length {
         return Err(ProtocolError::InvalidFrameLength);
     }
-    let envelope: Envelope<T> =
+    // Read the version on its own first. Versions diverge precisely when a bump
+    // removed or renamed a variant, so deserializing the message first would
+    // report `Serialization` for the one case the version field exists to
+    // explain. Parsing the payload twice costs nothing that matters: frames are
+    // capped at MAX_FRAME_SIZE and this pipe carries settings traffic, not input.
+    let header: EnvelopeVersion =
         serde_json::from_slice(payload).map_err(ProtocolError::Serialization)?;
-    if envelope.version != PROTOCOL_VERSION {
+    if header.version != PROTOCOL_VERSION {
         return Err(ProtocolError::VersionMismatch {
             expected: PROTOCOL_VERSION,
-            actual: envelope.version,
+            actual: header.version,
         });
     }
+    let envelope: Envelope<T> =
+        serde_json::from_slice(payload).map_err(ProtocolError::Serialization)?;
     Ok(envelope.message)
 }
 
@@ -361,6 +375,32 @@ mod tests {
         assert!(matches!(
             decode::<UiCommand>(&length),
             Err(ProtocolError::FrameTooLarge(_))
+        ));
+    }
+
+    /// The diagnostic a stale client actually gets. A version bump that
+    /// removes or renames a variant is the only reason versions diverge in
+    /// practice, so the mismatch has to win over the payload error.
+    #[test]
+    fn a_version_mismatch_is_reported_even_when_the_message_no_longer_parses() {
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "version": PROTOCOL_VERSION - 1,
+            "message": "AVariantThisVersionRemoved",
+        }))
+        .expect("envelope serializes");
+        let mut frame = Vec::from(
+            u32::try_from(payload.len())
+                .expect("payload length fits")
+                .to_le_bytes(),
+        );
+        frame.extend_from_slice(&payload);
+
+        assert!(matches!(
+            decode::<UiCommand>(&frame),
+            Err(ProtocolError::VersionMismatch {
+                expected: PROTOCOL_VERSION,
+                actual,
+            }) if actual == PROTOCOL_VERSION - 1
         ));
     }
 
