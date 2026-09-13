@@ -1,7 +1,9 @@
 use std::time::{Duration, Instant};
 
 use lastkey::{
-    core::{KeyAction, LogicalKey, MonitorDecision, OutputEmitter, TimingController},
+    core::{
+        DeliveryState, KeyAction, LogicalKey, MonitorDecision, OutputEmitter, TimingController,
+    },
     settings::{SocdMode, TimingSettings},
 };
 
@@ -567,4 +569,71 @@ fn last_decision_is_immediate_for_early_returns() {
     );
 
     assert_eq!(controller.last_decision(), MonitorDecision::Immediate);
+}
+
+/// Disabling the filter calls `release_all` while the engine may hold synthetic
+/// output and have a delayed transition armed. Anything left held there stays
+/// held forever: the OS resumes delivering physical events, so no later edge
+/// belongs to the synthetic key that would release it.
+#[test]
+fn releasing_everything_drops_held_output_and_armed_work_together() {
+    let start = Instant::now();
+    let mut controller =
+        TimingController::with_seed(timing(SocdMode::ReleaseDelay, (0, 0), (7, 7), 1), 1);
+    let mut emitter = Emitter::default();
+    controller.process(
+        LogicalKey::VerticalFirst,
+        KeyAction::Down,
+        start,
+        &mut emitter,
+    );
+    controller.process(
+        LogicalKey::VerticalSecond,
+        KeyAction::Down,
+        start,
+        &mut emitter,
+    );
+    // Both keys are held and the delayed release of the first is armed.
+    assert_eq!(
+        controller.output_state(LogicalKey::VerticalFirst),
+        DeliveryState::SyntheticHeld
+    );
+    assert_eq!(
+        controller.output_state(LogicalKey::VerticalSecond),
+        DeliveryState::SyntheticHeld
+    );
+    assert!(controller.next_deadline().is_some());
+
+    let mut release = Emitter::default();
+    controller.release_all(&mut release);
+
+    assert_eq!(
+        release.0,
+        [
+            Attempt(LogicalKey::VerticalFirst, KeyAction::Up),
+            Attempt(LogicalKey::VerticalSecond, KeyAction::Up)
+        ]
+    );
+    assert_eq!(
+        controller.output_state(LogicalKey::VerticalFirst),
+        DeliveryState::NotHeld
+    );
+    assert_eq!(
+        controller.output_state(LogicalKey::VerticalSecond),
+        DeliveryState::NotHeld
+    );
+    assert_eq!(controller.next_deadline(), None);
+}
+
+/// The same call runs on every disable, including the common one where nothing
+/// is held. It must not invent a release for a key the user never pressed.
+#[test]
+fn releasing_everything_emits_nothing_when_no_output_is_held() {
+    let mut controller = TimingController::new(timing(SocdMode::PressDelay, (4, 4), (0, 0), 0));
+    let mut emitter = Emitter::default();
+
+    controller.release_all(&mut emitter);
+
+    assert_eq!(emitter.0, []);
+    assert_eq!(controller.next_deadline(), None);
 }
