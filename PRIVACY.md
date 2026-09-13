@@ -6,7 +6,7 @@ LastKey is a local, open-source Windows application with an experimental Linux i
 
 ## Keyboard Input
 
-On Windows, the application uses a `WH_KEYBOARD_LL` low-level keyboard hook. On Linux, the experimental backend reads configured keyboard devices through `evdev` and emits resolved keys through a local `uinput` virtual keyboard. Both backends process only configured directional keys (W/S, A/D by default) to resolve simultaneous opposing directional inputs.
+On Windows, the application uses a `WH_KEYBOARD_LL` low-level keyboard hook. On Linux, the experimental backend reads configured keyboard devices through `evdev` and emits resolved keys through a local `uinput` virtual keyboard. Both backends process only configured directional keys (W/S, A/D by default) to resolve simultaneous opposing directional inputs. Disabling the filter from the tray or the settings window stops all resolution and output; the hook itself stays installed and forwards every event untouched, because reinstalling it later is an operation that can fail.
 
 All key processing occurs entirely in-memory during execution. Keystrokes are never written to disk or transmitted over a network. The Windows `SendInput` API and Linux `uinput` device are used only to output resolved directional key events. Optional timing measurement stores aggregate transition and overlap values only in memory for the active session; it never persists raw samples or key history.
 

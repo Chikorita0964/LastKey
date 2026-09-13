@@ -30,8 +30,8 @@ The input timing card provides four independent modes:
 | **Release Delay** | Press the new direction now and release the old one after a randomized overlap. |
 | **Random Mix** | Choose press delay or release delay for each overlap using the configured share. |
 
-Natural neutral transitions are unchanged. Switching modes preserves the configured ranges; unused
-controls stay muted. Range handles cover 0–20 ms, and numeric editors accept durations up to 1000 ms
+Natural neutral transitions are unchanged. Switching modes preserves the configured ranges; controls
+a mode does not use are hidden until you switch back to a mode that uses them. Range handles cover 0–20 ms, and numeric editors accept durations up to 1000 ms
 in 0.1 ms steps. Release delay has a 0.1 ms minimum.
 
 ## If `SendInput` fails

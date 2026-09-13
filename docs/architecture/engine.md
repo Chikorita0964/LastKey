@@ -67,8 +67,8 @@ reported together. The UI never reports Apply success before the runtime confirm
   needs no defensive guard for an undefined combination. `TimingSettings::release_delay_share` turns
   the mode into the one number `TimingController` asks for: 0 for `Immediate` and `PressDelay`, 100
   for `ReleaseDelay`, the configured ratio for `RandomMix`. Only `RandomMix` ever draws a number.
-- Each mode reads only the values it acts on, and the settings card grays out the rest without
-  discarding them, so switching modes never loses a configured range.
+- Each mode reads only the values it acts on. The settings card unmounts the groups a mode does not
+  use while the draft keeps their values, so switching modes never loses a configured range.
 - The UI works in 0.1 ms units; internally everything is integer microseconds, so scheduling never
   depends on floating point.
 - Recommendations use the P10 minimum and P50 maximum with P90 as an exclusive ceiling, keeping slow
@@ -190,6 +190,8 @@ Each item looks removable until its reason is known. Changing one requires a rep
 | A lost hook releases output, then notifies once via thread message | With no hook, no release event will ever arrive to clear held output. Notification fires on lost/recovered transitions only, after consecutive failures spaced by the reinstall cooldown, never on a timer |
 | A failed scheduled release releases the opposite key instead | Never leave both directions of one axis held together |
 | The four SOCD modes are one enum, not a switch gating a sub-switch | The boolean pair had eight states for four behaviors; the unreachable ones needed runtime guards that silently rewrote a stored preference. An enum makes every state defined and every mode reachable on its own |
+| Disabling the filter releases held output and cancels the timer; enabling resets timing state (`set_filter_enabled`) | The hook stays installed and bypasses instead of uninstalling, so no later edge belongs to a synthetic key still held from before the disable, and a stale hold would swallow the first press after re-enabling as a repeat. `release_all` and `reset_state` are what stop that; `tests/timing.rs` covers both |
+| The disabled bypass sits after the configured-key and measurement guards, not at the very top | Hook-health has to keep observing while the filter is off, or raw arrivals read as hook misses and trigger a reinstall of a hook that is working |
 | Delivery recovery is tested through `TimingController`, not a parallel router | A second copy of this policy that no shipping path executes drifts from the real one |
 
 ### Lifecycle and IPC

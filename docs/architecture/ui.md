@@ -43,38 +43,85 @@ and lyon.
 Palette, styling, and metrics live in src/ui/theme.rs; the application and edit state live in
 src/ui/app.rs; native range/logo widgets and the bounded timeline have their own rendering owners.
 
+Two conventions in `theme.rs` are load-bearing, because both are easy to "fix" back into a defect:
+
+- **Two colour lineages.** The reference styles the DOM with Tailwind classes but hands raw hex
+  literals to its icon and canvas components. Tailwind v4 re-specified the scale in oklch, so a class
+  and the v3 hex of the same name no longer agree: beside `bg-indigo-600` (`#4f39f6`) sits
+  `CanvasIcon color="#4f46e5"`, indigo-600 as v3 defined it. `INDIGO_600` therefore serves painted
+  fills and `PRIMARY_TEXT` serves drawn ink; they are deliberately different values and must not be
+  merged.
+- **Control padding carries the border.** iced lays a button out from `padding` alone — it never adds
+  `Border::width` to the box, and strokes the hairline inside those bounds — while the reference sizes
+  controls under CSS `box-sizing: border-box`, where padding starts inside the border. Reproducing the
+  reference's drawn edge therefore needs `iced_padding = css_padding + border_width`, which is what the
+  `+ 1.0` in `BUTTON_PADDING` and its siblings encode. Replacing them with the bare CSS numbers
+  (`px-3 py-1.5` → `[6, 12]`) shrinks every bordered control by 2px per axis.
+- **A `Fill` child owns the axis it fills.** `rule::vertical` is sized `{ width: thickness, height:
+  Length::Fill }`, so inside a row it stretches to that row's height and sets it; a card whose pair
+  divider used one measured 150px against the reference's 78px, because a CSS `border-l` is
+  content-sized instead. Any hairline or spacer inside a row or column must have an explicit size on
+  the axis it is not meant to control — `theme::pair_divider` exists for exactly that. Check a
+  widget's `size()` before trusting it as decoration.
+
 - One page starts at 1040×800 with a 960×600 minimum. The header holds branding, connection status,
-  profile selection, and engine on/off. Mappings and timing are side by side; timeline, measurement,
-  and results follow in a single body. Only the body scrolls; actions stay pinned. Narrow reflow is
-  outside this port. Profile dialogs overlay the stable page slot, preserving scroll position.
+  profile selection, and engine on/off as compact icon-only controls. Mappings and timing are side
+  by side at matched height; timeline, measurement, and results follow in a single body. Only the
+  body scrolls; actions stay pinned. Narrow reflow is outside this port. Profile and language menus
+  overlay the stable page slot as panels anchored to the top-right below the header — not centered
+  modals — preserving scroll position, and profile errors remain visible inside the panel.
 - Existing UiView launch/focus requests navigate to the top or bottom of that body. Pre-snapshot
   requests wait until it mounts; ordinary snapshots never reset its scroll offset.
 - The D-pad uses capture buttons, highlights duplicate assignments, and shows observed timeline
-  holds. Clicking the selected capture again cancels it. Modifier exclusions stay unchanged.
+  holds. Its center tile carries a resting dot that follows the engine's output direction and rests while the timeline shows physical input, arrows are
+  tinted per direction, and the unique/duplicate status sits in a footer below the inset. Clicking
+  the selected capture again cancels it. While a capture is armed an indigo banner above the stage
+  prompts for a new key and offers an explicit ESC cancel; the banner stays static (no pulse). The
+  stage itself carries only the reference's "Click keycap to rebind" hint — no modifier note —
+  while the engine's modifier exclusion behavior is unchanged.
 - TimingField owns editability, draft access, range validation, and buffers. Each duration group has
   a two-handle 0–20 ms rail plus numeric editors supporting the existing 1000 ms ceiling. Both use
   0.1 ms units; release delay retains its 0.1 ms minimum. Values beyond the rail are preserved in the
-  numeric editors. Mode changes keep unused groups visible and muted without discarding values.
-- The Random Mix slider controls complementary press/release shares. The numeric release share
-  retains the backend's 1–100 percent validation range. Delay decisions shown on the timeline come
-  from the engine, never from the displayed share.
-- The timing card carries the reference's mode preview: a looping demonstration of the selected
-  mode with play/pause, previous/next to step through the modes, the two keycaps lighting per phase,
-  a badge showing the configured range for that mode, and a state line naming what the game receives.
-  It is in scope. `canvas` and self-driven repaint cover it; the earlier blanket ban on animation is
-  what kept it out, and that ban now reads as "no animation engine", not "no motion". Start paused
-  when the OS asks for reduced motion, and stop the repaint while the card is off screen.
+  numeric editors. Mode changes mount only the groups the mode uses — Immediate mounts the preview,
+  Press or Release Delay their own group, Random Mix the ratio and both groups — while the draft
+  keeps every hidden value. A group hidden by the mode is unmounted, not disabled, and `is_editable`
+  still gates its messages so no hidden control can act.
+- The Random Mix slider controls complementary press/release shares shown as one `press : release`
+  value; the press share derives from the stored release share, which is the editable side. The
+  numeric release share retains the backend's 1–100 percent validation range. Delay decisions shown
+  on the timeline come from the engine, never from the displayed share.
+- The timing card explains the selected mode as numbered steps with a highlighted final step; the
+  block is absent in Random Mix, where the ratio and both groups already fill the card.
+- A stopped timeline collapses to its title, subtitle, and start control; the graph, source,
+  decision, and scale mount only while recording.
+- In Immediate mode, the timing card mounts a separate illustrative preview with three examples:
+  Immediate, Press Delay, and Release Delay. Previous/next select examples without changing the
+  draft. Random Mix is explained as choosing between the two delay examples; the preview never
+  predicts engine randomness or reads monitor output. Four phases advance every 850 ms while
+  playing. Phase 1 highlights the configured delay range, including 0 ms for Immediate.
+- The preview starts paused on every UI launch: the pinned Iced API exposes no reduced-motion
+  preference. Play is explicit, and its widget stops requesting redraws outside the scroll viewport.
+  Long labels remain ellipsized at rest and reveal their end on pointer hover, using linear motion
+  at 70 px/s clamped to 260–2400 ms. Pointer reversal continues from the displayed offset; content
+  or width changes reset it, and off-screen labels do not request animation frames.
+- Profile slots include four directional keycap chips. The UI reuses authoritative display names
+  available in the current snapshot. Other physical keys display their explicit SC:xx or E0:xx
+  scan code because the current wire does not provide inactive-profile key names; no keyboard-layout
+  table or platform call is added to the settings process. Complete labels remain in tooltips.
 - An untouched numeric editor is a facade button. Its first press focuses and selects the real
   input; subsequent presses place the caret normally. Focus moves rearm this behavior. Invalid
   text or inverted bounds are highlighted only for editable groups.
 - Ordinary snapshots merge authoritative bindings/metadata with local timing edits. Apply success
   retains edits made during its round trip. Explicit profile load replaces the whole draft.
 - Measurement is opt-in. Reset session clears an idle result or restarts an active generation.
-  Recommendations update only the draft and navigate to the top; Apply remains explicit.
+  Recommendations update only the draft and navigate to the top; Apply remains explicit. The
+  latency table orders its columns P10, P50, P90 and carries the indistinguishable-input note
+  inside that pattern's own row. Recommendation tiles use the same delay names as the timing card
+  and keep their hint inside the tile.
 - Errors and notices occupy the common action bar so feedback never replaces the scrollable's
   widget position. Before connection they appear in the waiting body. Profile errors remain visible
-  inside the dialog. English is the current UI language; the reference's zh/es dictionaries are
-  English placeholders and no nonfunctional selector is presented.
+  inside the dialog. English, Chinese, and Spanish are selectable for the current UI session;
+  translations live in their language files and untranslated runtime diagnostics retain their text.
 - Under iced-ui, build.rs unpacks the 32×32 PNG layer from
   assets/icons/ico/socd-light.ico for both the header logo and native window icon. Asset decode
   failure aborts the build; an invalid runtime pixel buffer yields no native icon.

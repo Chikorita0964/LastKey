@@ -68,8 +68,31 @@ What the command set above does not cover. Each line is a known gap, not a plan.
   live results, the measurement empty state, the feedback bar on a real Start/Stop failure, and the
   title-bar icon plus its DPI scaling. The UI scoped tests and settings executable build passed for
   the composition slice; they do not verify these on-screen results.
+- The 2026-09-13 UI detail slice adds the timing example, profile chips, hover-scroll labels, and
+  reference copy. Its tests, both clippy configurations, Linux check, format check, dependency tree,
+  release-form script, and settings executable build passed. Native inspection of this slice was
+  blocked by `GetCursorPos failed: Access is denied (0x80070005)` and a black window capture.
+  Preview playback, hover interruption, translated layout, and minimum-size rendering still need
+  a desktop session that the native UI tool can access; test success is not visual evidence.
+- The same day's fidelity pass reworked the page against `target/ui-design-comparison.md`:
+  conditional timing groups, collapsed stopped timeline, anchored profile/language panels, timing
+  pills, mechanism steps, preview chrome, the D-pad center tile, latency column order, suggestion
+  tiles, icon-only header controls, and the amber dirty badge. The UI scoped loop (107 tests), both
+  clippy configurations, and fmt passed. None of it has been seen on screen: the panel anchor offset
+  `PROFILE_PANEL_TOP`, card height matching, and every restyled control need a native visual pass,
+  and the comparison document's own unverified list still applies.
 
-End-to-end tests are added only if manual validation shows a regression risk, and without adding
-abstractions to production code to enable them: session cleanup when a client dies, runtime shutdown
-with no UI ever connected, `UiServer` shutdown while a UI stays connected, malformed JSON over a real
-`PipeConnection`.
+End-to-end tests are added without adding abstractions to production code to enable them. Four now
+run against a real named pipe in `src/platform/windows/ipc.rs`: a malformed payload, an oversized
+length prefix, a client that dies mid-frame, and the peek that reports a disconnected client. A fifth
+covers the self-connect that releases a parked `accept`. Each opens its own pipe instance keyed by
+process and thread, and each hands the server the session before the client goes away — a pipe whose
+client closed first fails `ConnectNamedPipe` outright and tests a different path.
+
+Two remain untested and cannot be reached from a unit test as the code stands. `UiServer` shutdown
+with a UI connected, and with no UI ever connected, both need a `UiServer`, and
+`type Controller = Arc<Mutex<AppController<FileSettingsStore, InputService>>>` monomorphizes it
+against the real input service: constructing one installs a `WH_KEYBOARD_LL` hook in the test
+process. Making `UiServer` generic to admit a mock is the abstraction this rule forbids, and the
+existing `MockRuntime` is `Rc`-based and not `Send` besides. Leave both to manual validation unless
+that trade is deliberately reopened.
