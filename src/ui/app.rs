@@ -1,10 +1,10 @@
 use iced::{
     Center, Color, Element, Fill, Length, Padding, Size, Subscription, Task, Theme,
     widget::{
-        Id, button, column, container, opaque, operation, row, rule, scrollable, slider, space,
-        stack, text,
+        Id, button, column, container, mouse_area, opaque, operation, row, rule, scrollable,
+        slider, space, stack, text,
         text::{Alignment, Ellipsis, Wrapping},
-        text_input,
+        text_input, toggler,
     },
     window,
 };
@@ -12,13 +12,15 @@ use iced::{
 use crate::{
     core::MIN_RECOMMENDATION_SAMPLES,
     protocol::{KeySlot, MeasurementSnapshot, UiCommand, UiEvent, UiSnapshot, UiView},
-    settings::{Settings, SocdMode, TimingSettings},
+    settings::{ProfileSlot, Settings, SocdMode, TimingSettings},
 };
 
 use super::{
+    hover_text,
     icons::{self, Name as Icon},
     ipc_client::{self, Connection, Event},
     language::Language,
+    preview::{self, Preview},
     theme,
     timeline::{self, MonitorState, Timeline},
     widgets,
@@ -68,6 +70,14 @@ fn window_icon() -> Option<iced::window::Icon> {
 /// Section navigation preserves any size chosen by the user.
 const WINDOW_SIZE: Size = Size::new(1040.0, 800.0);
 
+/// Top offset anchoring the profile/language panel below the header card:
+/// page padding + header height + the gap the reference puts under its
+/// dropdowns (8). Iced has no absolute positioning, so the header's height
+/// is fixed rather than measured and this offset derives from it; a
+/// content-sized header would drift from the offset with font and DPI.
+const HEADER_HEIGHT: f32 = 60.0;
+const PROFILE_PANEL_TOP: f32 = theme::PAGE_PADDING + HEADER_HEIGHT + 8.0;
+
 /// Stable id shared by settings and measurement in the single page.
 const SETTINGS_BODY_ID: &str = "settings-body";
 
@@ -86,6 +96,7 @@ const VALUE_BOX_PADDING: Padding = Padding {
 struct SettingsApp {
     connection: Option<Connection>,
     monitor: MonitorState,
+    preview: Preview,
     pending_filter: Option<bool>,
     profiles: ProfileDialog,
     language: Language,
@@ -102,6 +113,7 @@ struct SettingsApp {
     /// pressing another control, or the window losing focus — rearms every
     /// box, so the next press selects all again, Explorer-style.
     editing: [bool; 5],
+    session_details_open: bool,
     status: String,
     /// Success notice shown as a toast until the next server snapshot.
     notice: Option<String>,
@@ -179,8 +191,9 @@ impl TimingField {
         self as usize
     }
 
-    /// The one definition of "this row is live". The view grays the row with
-    /// it and `update` drops slider drags with it, so the two cannot disagree.
+    /// The one definition of "this row is live". The view mounts only live
+    /// groups and `update` drops messages for the rest, so a message queued
+    /// before a mode switch cannot edit a value the new mode hides.
     /// Each mode uses exactly the values it acts on: Random Mix is the only
     /// mode that uses all three groups, and Immediate uses none.
     const fn is_editable(self, timing: &TimingSettings) -> bool {
@@ -271,6 +284,7 @@ enum Message {
     ProfileNameChanged(String),
     SaveProfileName,
     ToggleMonitor,
+    Preview(preview::Action),
     CancelCapture,
     ResetMeasurement,
     Capture(KeySlot),
@@ -295,6 +309,7 @@ impl SettingsApp {
         Self {
             connection: None,
             monitor: MonitorState::Stopped,
+            preview: Preview::default(),
             pending_filter: None,
             profiles: ProfileDialog::Closed,
             language: Language::default(),
@@ -303,6 +318,7 @@ impl SettingsApp {
             inputs: TimingInputs::default(),
             pending_section: Some(requested_view()),
             editing: [false; 5],
+            session_details_open: false,
             status: "Connecting to the LastKey runtime...".into(),
             notice: None,
             error: None,
@@ -338,6 +354,7 @@ impl SettingsApp {
                     | Message::EditProfileName(_)
                     | Message::ProfileNameChanged(_)
                     | Message::SaveProfileName
+                    | Message::CancelCapture
                     | Message::WindowUnfocused
             )
         {
@@ -345,6 +362,7 @@ impl SettingsApp {
         }
         self.track_box_focus(&message);
         match message {
+            Message::Preview(action) => self.preview.update(action),
             Message::Ipc(Event::Connected(connection)) => {
                 self.connection = Some(connection);
                 self.status = "Connected to the LastKey runtime.".into();
@@ -439,15 +457,31 @@ impl SettingsApp {
                 };
             }
             Message::CancelCapture => {
-                if self
-                    .snapshot
-                    .as_ref()
-                    .is_some_and(|snapshot| snapshot.capture_slot.is_some())
-                {
-                    self.send(UiCommand::CancelKeyCapture);
+                // Escape unwinds one layer at a time: a rename or confirm
+                // back to the slot list, the list or language menu to
+                // closed. In-flight loads and renames finish first, matching
+                // the close button's guard.
+                match &self.profiles {
+                    ProfileDialog::Rename { .. } | ProfileDialog::Confirm(_) => {
+                        self.profiles = ProfileDialog::List;
+                    }
+                    ProfileDialog::List | ProfileDialog::Languages => {
+                        self.profiles = ProfileDialog::Closed;
+                    }
+                    ProfileDialog::Loading | ProfileDialog::Renaming => {}
+                    ProfileDialog::Closed => {
+                        if self
+                            .snapshot
+                            .as_ref()
+                            .is_some_and(|snapshot| snapshot.capture_slot.is_some())
+                        {
+                            self.send(UiCommand::CancelKeyCapture);
+                        }
+                    }
                 }
             }
             Message::ResetMeasurement => {
+                self.session_details_open = false;
                 self.send(UiCommand::ResetMeasurement);
             }
             Message::RequestSnapshot => {
@@ -474,8 +508,8 @@ impl SettingsApp {
                 }
             }
             Message::TimingSliderChanged(field, milliseconds) => {
-                // The muted slider still emits drags while disabled, so the
-                // gate lives here as well as in the widget tree.
+                // A drag queued before the mode switched still arrives after
+                // its slider unmounts, so the gate lives here too.
                 if let Some(draft) = self.draft.as_mut()
                     && field.is_editable(&draft.timing)
                     && let Some(slot) = field.micros_mut(&mut draft.timing)
@@ -564,6 +598,7 @@ impl SettingsApp {
                 self.send(UiCommand::RestoreAllDefaults);
             }
             Message::ToggleMeasurement => {
+                self.session_details_open = true;
                 let active = self
                     .snapshot
                     .as_ref()
@@ -588,7 +623,8 @@ impl SettingsApp {
         match message {
             Message::TimingTextChanged(..)
             | Message::TimingTextSubmitted(..)
-            | Message::Ipc(..) => {}
+            | Message::Ipc(..)
+            | Message::Preview(preview::Action::Tick) => {}
             Message::ValueBoxActivated(field) => {
                 self.editing = [false; 5];
                 self.editing[field.index()] = true;
@@ -811,6 +847,9 @@ impl SettingsApp {
     }
 
     fn show_section(&mut self, view: UiView, focus: bool) -> Task<Message> {
+        if view == UiView::Measurement {
+            self.session_details_open = true;
+        }
         let scroll = if self.snapshot.is_some() {
             match view {
                 UiView::Settings => {
@@ -847,78 +886,67 @@ impl SettingsApp {
     fn view(&self) -> Element<'_, Message> {
         let connected = self.connection.is_some();
         let state_color = if connected {
-            theme::OK_TEXT
+            theme::EMERALD_500
         } else {
-            theme::MUTED_TEXT
+            theme::SLATE_300
         };
+        let filter_enabled = self
+            .snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.filter_enabled);
+        // Compact icon-only controls (reference: header buttons are icons
+        // with aria-labels). No hover tooltips: the reference shows no
+        // hover descriptions.
         let header = container(
             row![
                 widgets::logo(WINDOW_ICON_RGBA, WINDOW_ICON_WIDTH),
-                text(self.language.text("LastKey"))
+                text("LastKey")
                     .size(theme::HEADING_SIZE)
                     .font(theme::UI_FONT_BOLD),
                 row![
                     dot(state_color),
-                    text(self.language.text(&self.status))
-                        .size(theme::BODY_TEXT_SIZE)
-                        .font(theme::UI_FONT_BOLD)
-                        .color(theme::MUTED_TEXT)
-                        .width(Fill)
-                        .wrapping(Wrapping::None)
-                        .ellipsis(Ellipsis::End),
+                    hover_text::label(
+                        self.language.text(&self.status),
+                        theme::BODY_TEXT_SIZE,
+                        theme::UI_FONT_SEMIBOLD,
+                        Some(theme::SLATE_600),
+                        false
+                    ),
                 ]
                 .spacing(14)
                 .align_y(Center)
                 .width(Fill),
-                button(
-                    row![
-                        icons::icon(Icon::Layers, 14.0, None),
-                        text(self.active_profile_name())
-                            .size(12)
-                            .wrapping(Wrapping::None)
-                            .ellipsis(Ellipsis::End)
-                    ]
-                    .spacing(6)
-                    .align_y(Center)
-                )
-                .width(240)
-                .style(theme::secondary_button)
-                .padding([10, 14])
-                .on_press_maybe(
-                    (connected && self.snapshot.is_some()).then_some(Message::OpenProfiles)
-                ),
-                button(icons::icon(Icon::Languages, 16.0, None))
-                    .padding(10)
+                button(icons::icon(Icon::Layers, 14.0, Some(theme::PRIMARY_TEXT)))
+                    .padding(theme::HEADER_ICON_PADDING)
+                    .height(theme::HEADER_ICON_HEIGHT)
                     .style(theme::secondary_button)
-                    .on_press_maybe(self.snapshot.is_some().then_some(Message::OpenLanguages)),
-                button(
-                    row![
-                        icons::icon(Icon::Power, 14.0, None),
-                        text(
-                            self.language.text(if self.pending_filter.is_some() {
-                                "Updating…"
-                            } else if self
-                                .snapshot
-                                .as_ref()
-                                .is_some_and(|snapshot| snapshot.filter_enabled)
-                            {
-                                "ON"
-                            } else {
-                                "OFF"
-                            })
-                        )
-                        .font(theme::UI_FONT_BOLD)
-                    ]
-                    .spacing(6)
-                    .align_y(Center)
-                )
-                .padding([8, 14])
+                    .on_press_maybe(
+                        (connected && self.snapshot.is_some()).then_some(Message::OpenProfiles)
+                    ),
+                button(icons::icon(
+                    Icon::Languages,
+                    14.0,
+                    Some(theme::PRIMARY_TEXT)
+                ))
+                .padding(theme::HEADER_ICON_PADDING)
+                .height(theme::HEADER_ICON_HEIGHT)
+                .style(theme::secondary_button)
+                .on_press_maybe(self.snapshot.is_some().then_some(Message::OpenLanguages)),
+                button(icons::icon(
+                    Icon::Power,
+                    14.0,
+                    Some(if filter_enabled {
+                        theme::PRIMARY_TEXT
+                    } else {
+                        theme::ICON_MUTED
+                    })
+                ))
+                .padding(theme::HEADER_ICON_PADDING)
+                .height(theme::HEADER_ICON_HEIGHT)
                 .style(theme::secondary_button)
                 .on_press_maybe(
-                    (self.connection.is_some()
-                        && self.snapshot.is_some()
-                        && self.pending_filter.is_none())
-                    .then_some(Message::ToggleFilter)
+                    (connected && self.snapshot.is_some() && self.pending_filter.is_none())
+                        .then_some(Message::ToggleFilter)
                 ),
             ]
             .spacing(theme::SECTION_GAP)
@@ -929,6 +957,7 @@ impl SettingsApp {
             ..Padding::from(12)
         })
         .width(Fill)
+        .center_y(HEADER_HEIGHT)
         .style(|_theme| theme::card_style());
 
         let body = self.settings_view();
@@ -961,27 +990,210 @@ impl SettingsApp {
             })
     }
 
+    fn timing_preview(&self, timing: &TimingSettings) -> Element<'_, Message> {
+        let preview = &self.preview;
+        let (old, new) = preview.held();
+        let mode = [
+            SocdMode::Immediate,
+            SocdMode::PressDelay,
+            SocdMode::ReleaseDelay,
+        ][preview.example];
+        let (min, max) = match mode {
+            SocdMode::PressDelay => (
+                timing.socd_transition_min_micros,
+                timing.socd_transition_max_micros,
+            ),
+            SocdMode::ReleaseDelay => (
+                timing.preserved_overlap_min_micros,
+                timing.preserved_overlap_max_micros,
+            ),
+            _ => (0, 0),
+        };
+        let delay = preview::delay_label(min, max);
+        let key = |name: &'static str, arrow, active, accent| {
+            container(
+                column![
+                    text(name).size(18).font(theme::UI_FONT_BOLD),
+                    icons::icon(
+                        arrow,
+                        12.0,
+                        Some(if active { Color::WHITE } else { accent })
+                    )
+                ]
+                .spacing(4)
+                .align_x(Center),
+            )
+            .center_x(52)
+            .center_y(52)
+            .style(move |_| {
+                let style =
+                    theme::keycap(iced::widget::button::Status::Active, active, false, accent);
+                container::Style {
+                    text_color: Some(style.text_color),
+                    background: style.background,
+                    border: style.border,
+                    shadow: style.shadow,
+                    ..container::Style::default()
+                }
+            })
+        };
+        let state = match (old, new) {
+            (true, true) => "Game receives A + D",
+            (false, false) => "Game receives no direction",
+            (true, false) => "Game receives A",
+            (false, true) => "Game receives D",
+        };
+        let indicator: Element<'_, Message> = match (old, new) {
+            (true, false) => icons::icon(Icon::ArrowLeft, 24.0, Some(theme::PRIMARY_TEXT)),
+            (false, true) => icons::icon(Icon::ArrowRight, 24.0, Some(theme::PURPLE_600)),
+            (false, false) => dot(theme::INDIGO_600),
+            (true, true) => container(space::horizontal().width(18).height(3))
+                .style(|_| container::Style {
+                    background: Some(theme::VIOLET_500.into()),
+                    border: iced::Border::default().rounded(2),
+                    ..container::Style::default()
+                })
+                .into(),
+        };
+        let nav = |icon, action| {
+            button(icons::icon(icon, 18.0, Some(theme::ICON_MUTED)))
+                .padding(9)
+                .style(theme::nav_button)
+                .on_press(Message::Preview(action))
+        };
+        // The play pill fills with the example's accent while playing
+        // (reference: filled colored pill vs. outlined neutral pill).
+        let (pill_label, pill_value, pill_icon) = if preview.playing {
+            (
+                Color {
+                    a: 0.75,
+                    ..Color::WHITE
+                },
+                Color::WHITE,
+                Color::WHITE,
+            )
+        } else {
+            (theme::MUTED_TEXT, theme::BODY_TEXT, theme::MUTED_TEXT)
+        };
+        let content = column![
+            button(
+                row![
+                    text(self.language.text("Preview"))
+                        .size(10)
+                        .color(pill_label),
+                    text(mode_label(mode, self.language))
+                        .size(11)
+                        .font(theme::UI_FONT_BOLD)
+                        .color(pill_value),
+                    icons::icon(
+                        if preview.playing {
+                            Icon::Stop
+                        } else {
+                            Icon::Play
+                        },
+                        12.0,
+                        Some(pill_icon)
+                    ),
+                ]
+                .spacing(6)
+                .align_y(Center)
+            )
+            .padding([5, 12])
+            .style(move |theme_, status| {
+                theme::preview_pill(theme_, status, mode_color(mode), preview.playing)
+            })
+            .on_press(Message::Preview(preview::Action::Toggle)),
+            row![
+                key("A", Icon::ArrowLeft, old, theme::PRIMARY_TEXT),
+                column![
+                    container(indicator).center_x(60).center_y(26),
+                    container(text(delay).size(10))
+                        .padding([2, 6])
+                        .style(move |_| container::Style {
+                            background: Some(
+                                if preview.phase == 1 {
+                                    mode_color(mode)
+                                } else {
+                                    Color::from_rgb8(241, 245, 249)
+                                }
+                                .into()
+                            ),
+                            text_color: Some(if preview.phase == 1 {
+                                Color::WHITE
+                            } else {
+                                theme::MUTED_TEXT
+                            }),
+                            border: iced::Border::default().rounded(8),
+                            ..container::Style::default()
+                        })
+                ]
+                .spacing(4)
+                .align_x(Center),
+                key("D", Icon::ArrowRight, new, theme::PURPLE_600)
+            ]
+            .spacing(16)
+            .align_y(Center),
+            text(self.language.text(state))
+                .size(12)
+                .font(theme::UI_FONT_BOLD),
+            // Narrow example-position indicator: one slot per example, the
+            // selected one elongated in its own accent (reference dots).
+            row((0..3).map(|example| {
+                let selected = example == preview.example;
+                container(space::horizontal())
+                    .width(Length::Fixed(if selected { 20.0 } else { 6.0 }))
+                    .height(Length::Fixed(6.0))
+                    .style(move |_| {
+                        theme::example_dot(if selected {
+                            mode_color(
+                                [
+                                    SocdMode::Immediate,
+                                    SocdMode::PressDelay,
+                                    SocdMode::ReleaseDelay,
+                                ][example],
+                            )
+                        } else {
+                            Color::from_rgb8(0xcb, 0xd5, 0xe1)
+                        })
+                    })
+                    .into()
+            }))
+            .spacing(4),
+            if matches!(self.profiles, ProfileDialog::Closed) {
+                preview::clock(preview, Message::Preview(preview::Action::Tick))
+            } else {
+                space::vertical().height(1).into()
+            },
+        ]
+        .spacing(10)
+        .align_x(Center)
+        .width(Fill);
+        container(
+            row![
+                nav(Icon::ChevronLeft, preview::Action::Previous),
+                content,
+                nav(Icon::ChevronRight, preview::Action::Next)
+            ]
+            .spacing(8)
+            .align_y(Center),
+        )
+        .padding(12)
+        .width(Fill)
+        .style(|_| theme::slot_style())
+        .into()
+    }
+
     fn load_profile(&mut self, slot: u8) {
         self.error = None;
         self.profiles = ProfileDialog::Loading;
         self.send(UiCommand::LoadProfile(slot));
     }
 
-    fn active_profile_name(&self) -> String {
-        self.snapshot.as_ref().map_or_else(
-            || self.language.text("Profiles").into(),
-            |snapshot| {
-                let bank = snapshot.saved.profile_bank();
-                format!(
-                    "{} {}  ·  {}",
-                    self.language.text("Profile"),
-                    bank.active + 1,
-                    bank.slots[usize::from(bank.active)].name
-                )
-            },
-        )
-    }
-
+    /// The profile and language menus share one panel anchored below the
+    /// header's right edge, like the reference dropdowns. Iced has no
+    /// absolute positioning, so the anchor is a fixed offset from the page
+    /// corner. A transparent backdrop closes the panel on an outside press;
+    /// the panel itself is opaque so hovers never leak to the page beneath.
     fn profile_dialog(&self) -> Element<'_, Message> {
         let Some(snapshot) = &self.snapshot else {
             return space::horizontal().width(0).into();
@@ -989,162 +1201,347 @@ impl SettingsApp {
         if matches!(self.profiles, ProfileDialog::Closed) {
             return space::horizontal().width(0).into();
         }
-        let bank = snapshot.saved.profile_bank();
-        let mut body = column![
-            text(
-                self.language
-                    .text(if matches!(self.profiles, ProfileDialog::Languages) {
-                        "Language"
-                    } else {
-                        "Profiles"
-                    })
-            )
-            .size(22)
-            .font(theme::UI_FONT_BOLD)
+        let languages = matches!(self.profiles, ProfileDialog::Languages);
+        let in_flight = matches!(
+            self.profiles,
+            ProfileDialog::Loading | ProfileDialog::Renaming
+        );
+        // The reference nests the heading and its subtitle in one column *beside*
+        // the close button, so the 36px button and the 34px of text both sit on
+        // the row rather than stacking. Keeping the subtitle inside this column
+        // is what stops the button from adding its own height to the header.
+        let mut titles = column![
+            text(self.language.text(if languages {
+                "Language"
+            } else {
+                "Profile Slots"
+            }))
+            .size(14)
+            .font(theme::UI_FONT_BOLD),
         ]
-        .spacing(16);
-        match &self.profiles {
-            ProfileDialog::Languages => {
-                for language in Language::ALL {
-                    body = body.push(
-                        button(icon_label(
-                            if self.language == language {
-                                Icon::Check
-                            } else {
-                                Icon::Languages
-                            },
-                            language.name(),
-                            self.language,
-                        ))
-                        .style(theme::secondary_button)
-                        .on_press(Message::SelectLanguage(language)),
-                    );
-                }
-            }
-            ProfileDialog::List => {
-                body = body.push(text(self.language.text("Load a slot to activate it immediately. Apply saves edits to the active slot.")).size(12).color(theme::MUTED_TEXT));
-                for (index, profile) in bank.slots.iter().enumerate() {
-                    let slot = index as u8;
-                    body = body.push(
-                        container(
-                            row![
-                                column![
-                                    text(format!(
-                                        "{}  ·  {}{}",
-                                        index + 1,
-                                        profile.name,
-                                        if bank.active == slot {
-                                            "  — Active"
-                                        } else {
-                                            ""
-                                        }
-                                    ))
-                                    .font(theme::UI_FONT_BOLD),
-                                    text(mode_label(profile.timing.mode, self.language))
-                                        .size(12)
-                                        .color(theme::MUTED_TEXT),
-                                ]
-                                .spacing(4)
-                                .width(Fill),
-                                button(icon_label(Icon::Edit, "Rename", self.language))
-                                    .style(theme::secondary_button)
-                                    .on_press(Message::EditProfileName(slot)),
-                                button(icon_label(Icon::Layers, "Load", self.language))
-                                    .style(theme::primary_button)
-                                    .on_press(Message::LoadProfile(slot)),
-                            ]
-                            .spacing(10)
-                            .align_y(Center),
-                        )
-                        .padding(14)
-                        .style(|_| theme::group_style()),
-                    );
-                }
-            }
-            ProfileDialog::Confirm(slot) => {
-                body = body
-                    .push(text(format!(
-                        "Load profile {} and discard unapplied changes?",
-                        slot + 1
-                    )))
-                    .push(
-                        text(
-                            self.language
-                                .text("The saved slot will become active immediately."),
-                        )
-                        .size(12)
-                        .color(theme::MUTED_TEXT),
-                    )
-                    .push(
-                        button(icon_label(
-                            Icon::Layers,
-                            "Discard edits and load",
-                            self.language,
-                        ))
-                        .style(theme::primary_button)
-                        .on_press(Message::ConfirmProfile(*slot)),
-                    );
-            }
-            ProfileDialog::Rename { name, .. } => {
-                body = body
-                    .push(text(self.language.text("Profile name · 1–64 characters")).size(12))
-                    .push(
-                        text_input("Profile name", name)
-                            .on_input(Message::ProfileNameChanged)
-                            .on_submit(Message::SaveProfileName),
-                    )
-                    .push(
-                        button(icon_label(Icon::Check, "Save name", self.language))
-                            .style(theme::primary_button)
-                            .on_press(Message::SaveProfileName),
-                    );
-            }
-            ProfileDialog::Loading => {
-                body = body.push(text(self.language.text("Loading and activating profile…")));
-            }
-            ProfileDialog::Renaming => {
-                body = body.push(text(self.language.text("Saving profile name…")));
-            }
-            ProfileDialog::Closed => {}
+        .spacing(theme::PROFILE_HEADER_GAP);
+        if !languages {
+            titles = titles.push(
+                text(
+                    self.language
+                        .text("Changes are saved when you click Apply."),
+                )
+                .size(11)
+                .color(theme::MUTED_TEXT),
+            );
         }
         if let Some(error) = &self.error {
-            body = body.push(
+            titles = titles.push(
                 text(self.language.text(error))
                     .size(12)
                     .color(theme::ERROR_TEXT),
             );
         }
-        if !matches!(
-            self.profiles,
-            ProfileDialog::Loading | ProfileDialog::Renaming
-        ) {
-            body = body.push(
-                button(icon_label(Icon::Close, "Close", self.language))
-                    .style(theme::secondary_button)
+        let mut header = row![
+            icons::icon(
+                if languages {
+                    Icon::Languages
+                } else {
+                    Icon::Layers
+                },
+                14.0,
+                Some(theme::PRIMARY_TEXT)
+            ),
+            titles,
+            space::horizontal().width(Fill),
+        ]
+        .spacing(8)
+        .align_y(Center);
+        // The close button is a borderless circle, not the outlined secondary
+        // button used elsewhere, and the reference sizes it on the box: `h-9 w-9`
+        // on the slot dialog and `h-7 w-7` on the language menu. The padding is
+        // all that is left for the icon once the box is fixed, so it is set to
+        // centre a 14px glyph in each rather than being inherited from a metric.
+        if !in_flight {
+            let (box_size, icon_size) = if languages {
+                (28.0, 12.0)
+            } else {
+                (36.0, 14.0)
+            };
+            header = header.push(
+                button(icons::icon(Icon::Close, icon_size, None))
+                    .style(theme::profile_close_button)
+                    .width(box_size)
+                    .height(box_size)
+                    .padding((box_size - icon_size) / 2.0)
                     .on_press(Message::CloseProfiles),
             );
         }
-        opaque(
-            container(
-                container(body)
-                    .width(600)
-                    .padding(24)
-                    .style(|_| theme::card_style()),
+        let header = container(header).padding(theme::PROFILE_HEADER_PADDING);
+        // The panel is a measured shell: the header block and the scroller keep
+        // the insets they are measured with, so the padding lives on them and
+        // not on `panel`.
+        let panel = container(column![
+            header,
+            container(self.profile_slots(snapshot, languages))
+                .padding(if languages {
+                    theme::LANGUAGE_SCROLLER_PADDING
+                } else {
+                    theme::PROFILE_SCROLLER_PADDING
+                })
+                .width(Fill),
+        ])
+        .width(if languages {
+            theme::LANGUAGE_PANEL_WIDTH
+        } else {
+            theme::PROFILE_PANEL_WIDTH
+        })
+        // Stands in for the border the panel strokes inside its own bounds, so
+        // the inner blocks inset from the drawn edge exactly as they do in the
+        // reference.
+        .padding(theme::PANEL_PADDING)
+        .style(|_| theme::profile_panel());
+        stack![
+            mouse_area(space::horizontal().width(Fill).height(Fill))
+                .on_press(Message::CloseProfiles),
+            container(opaque(panel))
+                .align_right(Fill)
+                .height(Fill)
+                .padding(Padding {
+                    top: PROFILE_PANEL_TOP,
+                    right: theme::PAGE_PADDING,
+                    ..Padding::ZERO
+                }),
+        ]
+        .into()
+    }
+
+    /// The panel's scroller: the language rows, or one card per profile slot.
+    /// Four slots is the whole bank (`ProfileBank::slots` is a `[_; 4]`), so the
+    /// reference's `max-h` and its overflow never engage and no scroll padding is
+    /// copied for a scrollbar that cannot appear.
+    fn profile_slots<'a>(
+        &'a self,
+        snapshot: &'a UiSnapshot,
+        languages: bool,
+    ) -> Element<'a, Message> {
+        let body: Element<'a, Message> = if languages {
+            let mut rows = column![].spacing(theme::LANGUAGE_ROW_GAP);
+            for language in Language::ALL {
+                let selected = self.language == language;
+                rows = rows.push(
+                    button(
+                        row![
+                            container(hover_text::label(
+                                language.name(),
+                                12.0,
+                                theme::UI_FONT_BOLD,
+                                None,
+                                false
+                            ))
+                            .width(Fill),
+                            if selected {
+                                icons::icon(Icon::Check, 12.0, Some(theme::PRIMARY_TEXT))
+                            } else {
+                                space::horizontal().width(12).into()
+                            },
+                        ]
+                        .spacing(6)
+                        .align_y(Center),
+                    )
+                    .width(Fill)
+                    .padding([8, 10])
+                    .style(if selected {
+                        theme::active_option
+                    } else {
+                        theme::language_option
+                    })
+                    .on_press(Message::SelectLanguage(language)),
+                );
+            }
+            rows.into()
+        } else if matches!(self.profiles, ProfileDialog::Loading) {
+            text(self.language.text("Loading and activating profile…")).into()
+        } else if matches!(self.profiles, ProfileDialog::Renaming) {
+            text(self.language.text("Saving profile name…")).into()
+        } else {
+            let bank = snapshot.saved.profile_bank();
+            let mut cards = column![].spacing(theme::SLOT_GAP);
+            for (index, profile) in bank.slots.iter().enumerate() {
+                let slot = index as u8;
+                cards = cards.push(self.profile_slot_card(
+                    slot,
+                    profile,
+                    bank.active == slot,
+                    snapshot,
+                ));
+            }
+            cards.into()
+        };
+        body
+    }
+
+    /// One slot in the profile panel: a mode-tinted card with the name box
+    /// (which doubles as the rename target) on row one and the axis-paired
+    /// keycap chips plus mode label on row two. Row two groups chips by axis
+    /// pair (vertical pair, then horizontal pair) like the reference and the
+    /// timeline, and is the load target for inactive slots; a pending load
+    /// covers the card via `stack` so the card never changes height.
+    fn profile_slot_card<'a>(
+        &'a self,
+        slot: u8,
+        profile: &ProfileSlot,
+        active: bool,
+        snapshot: &'a UiSnapshot,
+    ) -> Element<'a, Message> {
+        // The bank is an owned local copy, so everything the card shows is
+        // copied out here; no element may borrow the slot.
+        let profile_name = profile.name.clone();
+        let bindings = profile.bindings;
+        let mode = profile.timing.mode;
+        let renaming = matches!(&self.profiles, ProfileDialog::Rename { slot: editing, .. } if *editing == slot);
+        let confirming =
+            matches!(&self.profiles, ProfileDialog::Confirm(pending) if *pending == slot);
+        let name_row: Element<'a, Message> = if let ProfileDialog::Rename {
+            slot: editing,
+            name,
+        } = &self.profiles
+            && *editing == slot
+        {
+            row![
+                container(
+                    text_input(self.language.text("Profile name"), name)
+                        .on_input(Message::ProfileNameChanged)
+                        .on_submit(Message::SaveProfileName)
+                        .style(|theme_, status| {
+                            theme::value_input(theme_, status, theme::PRIMARY_TEXT, false)
+                        })
+                        .padding(VALUE_BOX_PADDING)
+                        .width(Fill),
+                )
+                .padding(theme::SLOT_NAME_PADDING)
+                .width(Fill)
+                .style(|_| theme::pill_style(false)),
+                button(icons::icon(Icon::Check, 12.0, Some(Color::WHITE)))
+                    .style(theme::primary_button)
+                    .padding(6)
+                    .on_press(Message::SaveProfileName),
+            ]
+            .spacing(6)
+            .align_y(Center)
+            .into()
+        } else {
+            button(
+                row![
+                    hover_text::label(profile_name, 12.0, theme::UI_FONT_BOLD, None, false),
+                    icons::icon(Icon::Edit, 12.0, Some(theme::ICON_MUTED)),
+                ]
+                .spacing(6)
+                .align_y(Center),
             )
-            .center_x(Fill)
-            .center_y(Fill)
-            .padding(20)
-            .style(|_| container::Style {
-                background: Some(
-                    Color {
-                        a: 0.35,
-                        ..Color::BLACK
-                    }
-                    .into(),
+            .style(theme::profile_name_button)
+            .padding(theme::SLOT_NAME_PADDING)
+            .on_press(Message::EditProfileName(slot))
+            .into()
+        };
+        // Reference pairs chips by axis (vertical pair, then horizontal
+        // pair) with a divider between the pairs; the mode label hugs
+        // the right edge. Bindings are stored vertical-first,
+        // vertical-second, horizontal-first, horizontal-second.
+        let chips = row![
+            row![
+                profile_chip(bindings[0], snapshot),
+                profile_chip(bindings[1], snapshot),
+            ]
+            .spacing(4)
+            .align_y(Center),
+            // Reference draws the pair divider as a left border on the second
+            // group rather than a rule, and puts 8px of space on *both* sides of
+            // it: `ml-2 pl-2` is 8 + 8 around a 1px edge, so the divider sits on
+            // the row's own 8px spacing. Its height is the chips' height, not the
+            // row's -- a `rule::vertical` would fill and inflate the card.
+            container(space::horizontal().width(1.0))
+                .height(theme::CHIP_HEIGHT)
+                .style(|_| theme::pair_divider()),
+            row![
+                profile_chip(bindings[2], snapshot),
+                profile_chip(bindings[3], snapshot),
+            ]
+            .spacing(4)
+            .align_y(Center),
+            space::horizontal().width(Fill),
+            text(mode_label(mode, self.language))
+                .size(10)
+                .font(theme::UI_FONT_BOLD)
+                .color(mode_label_color(mode)),
+        ]
+        .spacing(8)
+        .align_y(Center);
+        // The load target is the keycap row itself, so it takes the row's height
+        // rather than grown padding. Padding here would make an inactive card
+        // taller than the active one, which the reference's own row button does
+        // not do -- it carries no padding classes at all.
+        let chips: Element<'a, Message> = if active || renaming || confirming {
+            chips.into()
+        } else {
+            button(chips)
+                .width(Fill)
+                .padding(Padding::ZERO)
+                .height(theme::CHIP_HEIGHT)
+                .style(theme::ghost_button)
+                .on_press(Message::LoadProfile(slot))
+                .into()
+        };
+        let card_body = column![name_row, chips].spacing(theme::SLOT_ROW_GAP);
+        let content: Element<'a, Message> = if confirming {
+            stack![
+                container(card_body)
+                    .padding(theme::SLOT_CARD_PADDING)
+                    .width(Fill),
+                opaque(
+                    container(
+                        row![
+                            column![
+                                text(self.language.text("Load this slot?"))
+                                    .size(12)
+                                    .font(theme::UI_FONT_BOLD),
+                                text(
+                                    self.language
+                                        .text("Unapplied draft changes will be discarded.")
+                                )
+                                .size(11)
+                                .color(theme::MUTED_TEXT),
+                            ]
+                            .spacing(2)
+                            .width(Fill),
+                            button(text(self.language.text("Cancel")).size(12))
+                                .style(theme::secondary_button)
+                                .padding([6, 12])
+                                .on_press(Message::OpenProfiles),
+                            button(
+                                text(self.language.text("Load"))
+                                    .size(12)
+                                    .font(theme::UI_FONT_BOLD)
+                            )
+                            .style(theme::primary_button)
+                            .padding([6, 12])
+                            .on_press(Message::ConfirmProfile(slot)),
+                        ]
+                        .spacing(8)
+                        .align_y(Center),
+                    )
+                    .padding(12)
+                    .width(Fill)
+                    .height(Fill)
+                    .style(|_| theme::profile_confirm_overlay())
                 ),
-                ..Default::default()
-            }),
-        )
+            ]
+            .into()
+        } else {
+            container(card_body)
+                .padding(theme::SLOT_CARD_PADDING)
+                .width(Fill)
+                .into()
+        };
+        container(content)
+            .width(Fill)
+            .style(move |_| theme::tinted_slot(mode_color(mode), active))
+            .into()
     }
 
     fn settings_view(&self) -> Element<'_, Message> {
@@ -1157,29 +1554,39 @@ impl SettingsApp {
             column![
                 row![
                     section_title(Icon::Keyboard, "Key mappings", self.language).width(Fill),
-                    button(icon_label(Icon::Restore, "Restore defaults", self.language))
-                        .style(theme::secondary_button)
-                        .on_press(Message::RestoreMappingDefaults),
+                    button(icon_label(
+                        Icon::Restore,
+                        "Restore mapping defaults",
+                        self.language,
+                    ))
+                    .style(theme::secondary_button)
+                    .on_press(Message::RestoreMappingDefaults),
                 ]
                 .align_y(Center),
                 text(
                     self.language
-                        .text("Hardware scan codes the SOCD filter uses.")
+                        .text("Hardware scan codes the SOCD filter uses")
                 )
                 .size(12)
                 .color(theme::MUTED_TEXT),
+                // The reference shows an indigo capture banner between the
+                // header and the stage. A zero-height placeholder keeps the
+                // column's child indices stable while it is hidden, as the
+                // mode-conditional timing groups do.
+                if snapshot.capture_slot.is_some() {
+                    rebind_banner(self.language)
+                } else {
+                    space::vertical().height(0).into()
+                },
                 mapping_pad(snapshot, self.monitor.timeline(), self.language),
-                icon_label(
-                    Icon::Edit,
-                    "Click a keycap to rebind; click again to cancel.",
-                    self.language
-                ),
-                text(
-                    self.language
-                        .text("Modifiers like Shift, Ctrl, and Alt are not captured.")
-                )
-                .size(12)
-                .color(theme::MUTED_TEXT),
+                // The assignment status sits in a footer below the inset,
+                // hugging the right edge (reference layout).
+                rule::horizontal(1).style(theme::table_rule),
+                row![
+                    space::horizontal().width(Fill),
+                    assignment_status(&duplicate_slots(&snapshot.draft.bindings), self.language),
+                ]
+                .align_y(Center),
             ]
             .spacing(theme::SECTION_GAP),
         )
@@ -1187,13 +1594,20 @@ impl SettingsApp {
         .width(Fill)
         .style(|_| theme::card_style());
 
+        // Zero-height placeholders keep child indices stable across mode
+        // changes: the page is diffed positionally, so an unmounted group
+        // would hand its state slot to the next widget.
         let timing_card = container(
             column![
                 row![
                     section_title(Icon::Timer, "Input timings", self.language).width(Fill),
-                    button(icon_label(Icon::Restore, "Restore defaults", self.language))
-                        .style(theme::secondary_button)
-                        .on_press(Message::RestoreTimingDefaults),
+                    button(icon_label(
+                        Icon::Restore,
+                        "Restore timing defaults",
+                        self.language,
+                    ))
+                    .style(theme::secondary_button)
+                    .on_press(Message::RestoreTimingDefaults),
                 ]
                 .align_y(Center),
                 text(
@@ -1205,41 +1619,52 @@ impl SettingsApp {
                 container(
                     column![
                         mode_selector(timing.mode, self.language),
-                        rate_group(timing, &self.inputs, &self.editing, self.language),
-                        duration_range(
-                            TimingField::TransitionMinimum,
-                            TimingField::TransitionMaximum,
-                            self.language.text("New Key Press Delay"),
-                            timing,
-                            &self.inputs,
-                            &self.editing,
-                            theme::PRIMARY_TEXT
-                        ),
-                        duration_range(
-                            TimingField::PreservedMinimum,
-                            TimingField::PreservedMaximum,
-                            self.language.text("Previous Key Release Delay"),
-                            timing,
-                            &self.inputs,
-                            &self.editing,
-                            theme::RELEASE_TEXT
-                        ),
-                        container(
-                            column![
-                                text(self.language.text("How it works"))
-                                    .size(12)
-                                    .font(theme::UI_FONT_BOLD),
-                                text(mode_description(timing.mode, self.language))
-                                    .size(12)
-                                    .color(theme::MUTED_TEXT),
-                            ]
-                            .spacing(8)
-                        )
-                        .padding(12)
-                        .width(Fill)
-                        .style(|_| theme::slot_style()),
+                        if timing.mode == SocdMode::Immediate {
+                            self.timing_preview(timing)
+                        } else {
+                            space::vertical().height(0).into()
+                        },
+                        if timing.mode == SocdMode::RandomMix {
+                            rate_group(timing, &self.inputs, &self.editing, self.language)
+                        } else {
+                            space::vertical().height(0).into()
+                        },
+                        if matches!(timing.mode, SocdMode::PressDelay | SocdMode::RandomMix) {
+                            duration_range(
+                                TimingField::TransitionMinimum,
+                                TimingField::TransitionMaximum,
+                                self.language.text("New Key Press Delay"),
+                                timing,
+                                &self.inputs,
+                                &self.editing,
+                                theme::PRIMARY_TEXT,
+                            )
+                        } else {
+                            space::vertical().height(0).into()
+                        },
+                        if matches!(timing.mode, SocdMode::ReleaseDelay | SocdMode::RandomMix) {
+                            duration_range(
+                                TimingField::PreservedMinimum,
+                                TimingField::PreservedMaximum,
+                                self.language.text("Previous Key Release Delay"),
+                                timing,
+                                &self.inputs,
+                                &self.editing,
+                                theme::VIOLET_600,
+                            )
+                        } else {
+                            space::vertical().height(0).into()
+                        },
+                        // Absent in Random Mix, where the ratio and both
+                        // groups already fill the card (reference: mt-auto is
+                        // not expressible here; the group is intrinsic-height).
+                        if timing.mode == SocdMode::RandomMix {
+                            space::vertical().height(0).into()
+                        } else {
+                            mechanism_steps(timing.mode, timing, self.language)
+                        },
                     ]
-                    .spacing(12)
+                    .spacing(12),
                 )
                 .padding(theme::GROUP_PADDING)
                 .width(Fill)
@@ -1278,17 +1703,22 @@ impl SettingsApp {
         let dirty = self.is_dirty();
         let revert = if dirty {
             button(icon_label(Icon::Revert, "Revert", self.language))
+                .padding(theme::BUTTON_PADDING)
                 .style(theme::secondary_button)
                 .on_press(Message::Revert)
         } else {
-            button(icon_label(Icon::Revert, "Revert", self.language)).style(theme::secondary_button)
+            button(icon_label(Icon::Revert, "Revert", self.language))
+                .padding(theme::BUTTON_PADDING)
+                .style(theme::secondary_button)
         };
         let apply = if dirty {
-            button(icon_label(Icon::ArrowRight, "Apply", self.language))
+            button(icon_label(Icon::Check, "Apply", self.language))
+                .padding(theme::BUTTON_PADDING_WIDE)
                 .style(theme::primary_button)
                 .on_press(Message::Apply)
         } else {
-            button(icon_label(Icon::ArrowRight, "Apply", self.language))
+            button(icon_label(Icon::Check, "Apply", self.language))
+                .padding(theme::BUTTON_PADDING_WIDE)
                 .style(theme::primary_button)
         };
         // Error and notice feedback lives in this bar as plain text rather
@@ -1304,19 +1734,29 @@ impl SettingsApp {
                     "Restore all defaults",
                     self.language
                 ))
+                .padding(theme::BUTTON_PADDING)
                 .style(theme::secondary_button)
                 .on_press(Message::RestoreAllDefaults),
+                if dirty {
+                    container(icon_label(
+                        Icon::Edit,
+                        "Unsaved Draft Changes",
+                        self.language,
+                    ))
+                    .padding(theme::BUTTON_PADDING)
+                    .style(|_| theme::dirty_badge())
+                    .into()
+                } else {
+                    Element::from(space::horizontal().width(0))
+                },
                 feedback,
-                // Extra breathing room before Revert, mirroring the widened
-                // dot-to-status gap in the header.
-                space::horizontal().width(Length::Fixed(8.0)),
                 revert,
                 apply,
             ]
             .spacing(theme::ROW_GAP)
             .align_y(Center),
         )
-        .padding(theme::CARD_PADDING)
+        .padding(16.0)
         .width(Fill)
         .style(|_theme| theme::card_style());
 
@@ -1328,47 +1768,56 @@ impl SettingsApp {
     /// widget (see `settings_actions`).
     fn feedback_element(&self) -> Element<'_, Message> {
         match (&self.error, &self.notice) {
-            (Some(error), _) => iced::widget::tooltip(
-                row![
-                    icons::icon(Icon::Warning, 14.0, Some(theme::ERROR_TEXT)),
-                    text(self.language.text(error))
-                        .size(theme::BODY_TEXT_SIZE)
-                        .font(theme::UI_FONT_BOLD)
-                        .color(theme::ERROR_TEXT)
-                        .width(Fill)
-                        .align_x(Alignment::Right)
-                        .wrapping(Wrapping::None)
-                        .ellipsis(Ellipsis::End)
-                ]
-                .spacing(6)
-                .align_y(Center)
-                .width(Fill),
-                text(self.language.text(error)),
-                iced::widget::tooltip::Position::Top,
-            )
+            (Some(error), _) => row![
+                icons::icon(Icon::Warning, 14.0, Some(theme::ERROR_TEXT)),
+                text(self.language.text(error))
+                    .size(12)
+                    .font(theme::UI_FONT_SEMIBOLD)
+                    .color(theme::RED_600)
+                    .width(Fill)
+                    .align_x(Alignment::Right)
+                    .wrapping(Wrapping::None)
+                    .ellipsis(Ellipsis::End)
+            ]
+            .spacing(6)
+            .align_y(Center)
+            .width(Fill)
             .into(),
-            (None, Some(notice)) => text(self.language.text(notice))
-                .size(theme::BODY_TEXT_SIZE)
-                .font(theme::UI_FONT_BOLD)
-                .color(theme::OK_TEXT)
-                .width(Fill)
-                .align_x(Alignment::Right)
-                .wrapping(Wrapping::None)
-                .ellipsis(Ellipsis::End)
-                .into(),
-            (None, None) => container(icon_label(
-                if self.is_dirty() {
-                    Icon::Edit
-                } else {
-                    Icon::Check
-                },
-                if self.is_dirty() {
-                    "Unsaved draft changes"
-                } else {
-                    "Synchronized"
-                },
-                self.language,
+            (None, Some(notice)) => row![
+                icons::icon(Icon::Check, 14.0, Some(theme::OK_TEXT)),
+                text(self.language.text(notice))
+                    .size(12)
+                    .font(theme::UI_FONT_SEMIBOLD)
+                    .color(theme::EMERALD_600)
+                    .width(Fill)
+                    .align_x(Alignment::Right)
+                    .wrapping(Wrapping::None)
+                    .ellipsis(Ellipsis::End)
+            ]
+            .spacing(6)
+            .align_y(Center)
+            .width(Fill)
+            .into(),
+            (None, None) if self.is_dirty() => container(hover_text::label(
+                self.language.text("Click Apply to commit draft edits."),
+                12.0,
+                theme::UI_FONT_ITALIC,
+                Some(theme::ICON_MUTED),
+                false,
             ))
+            .width(Fill)
+            .align_right(Fill)
+            .into(),
+            (None, None) => container(
+                row![
+                    icons::icon(Icon::Check, 14.0, Some(theme::OK_TEXT)),
+                    text(self.language.text("Synchronized"))
+                        .size(12)
+                        .color(theme::EMERALD_SYNC),
+                ]
+                .spacing(4)
+                .align_y(Center),
+            )
             .width(Fill)
             .align_right(Fill)
             .into(),
@@ -1390,88 +1839,52 @@ impl SettingsApp {
             self.monitor,
             MonitorState::Stopped | MonitorState::Recording(_)
         );
-        let source = if snapshot.measurement_active || !snapshot.filter_enabled {
-            "Physical input"
+        // A stopped timeline collapses to its header and control; the graph
+        // mounts only while recording. The subtitle carries the Starting /
+        // Stopping lifecycle the toggle itself cannot express. The graph
+        // carries its own keycaps, ruler, and needle, so no separate label
+        // column or scale row is needed (reference canvas).
+        let recording = matches!(self.monitor, MonitorState::Recording(_));
+        let subtitle = if ready {
+            "Shows how long each key is held and where it overlaps its opposite, live."
         } else {
-            "Filter output"
+            label
         };
-        let decision = timeline.map_or_else(
-            || self.language.text("No input yet").into(),
-            |timeline| match timeline.decision {
-                crate::protocol::MonitorDecision::Immediate => {
-                    self.language.text("Immediate").into()
-                }
-                crate::protocol::MonitorDecision::PressDelayed { delay_micros } => {
-                    format!(
-                        "{} · {} ms",
-                        self.language.text("Press delay"),
-                        format_ms(delay_micros)
-                    )
-                }
-                crate::protocol::MonitorDecision::ReleaseDelayed { delay_micros } => {
-                    format!(
-                        "{} · {} ms",
-                        self.language.text("Release delay"),
-                        format_ms(delay_micros)
-                    )
-                }
-            },
-        );
-        let labels = column(snapshot.keys.iter().map(|key| {
-            container(text(&key.name).size(12).font(theme::UI_FONT_BOLD))
-                .height(36)
-                .center_y(30)
-                .into()
-        }))
-        .width(60);
-        container(
+        let header = row![
             column![
-                row![
-                    column![
-                        section_title(Icon::Target, "Key Input Timeline", self.language),
-                        text(self.language.text(
-                            "Last 1 second · mapped keys only · memory cleared when stopped"
-                        ))
-                        .size(12)
-                        .color(theme::MUTED_TEXT)
-                    ]
-                    .spacing(4)
-                    .width(Fill),
-                    button(icon_label(
-                        if matches!(self.monitor, MonitorState::Recording(_)) {
-                            Icon::Stop
-                        } else {
-                            Icon::Play
-                        },
-                        label,
-                        self.language
-                    ))
-                    .style(theme::secondary_button)
-                    .on_press_maybe(ready.then_some(Message::ToggleMonitor))
-                ]
-                .align_y(Center),
-                row![
-                    text(self.language.text(source))
-                        .size(12)
-                        .font(theme::UI_FONT_BOLD)
-                        .width(Fill),
-                    text(decision).size(12).color(theme::PRIMARY_TEXT)
-                ],
-                row![labels, timeline::graph(timeline)].spacing(12),
-                row![
-                    text(self.language.text("−1000 ms")).size(11),
-                    space::horizontal(),
-                    text(self.language.text("−500 ms")).size(11),
-                    space::horizontal(),
-                    text(self.language.text("Now")).size(11)
-                ],
+                section_title(Icon::Target, "Key Input Timeline", self.language),
+                text(self.language.text(subtitle))
+                    .size(12)
+                    .color(theme::MUTED_TEXT)
             ]
-            .spacing(12),
-        )
-        .padding(theme::CARD_PADDING)
-        .width(Fill)
-        .style(|_| theme::card_style())
-        .into()
+            .spacing(4)
+            .width(Fill),
+            toggler(recording)
+                .on_toggle_maybe(ready.then_some(|_| Message::ToggleMonitor))
+                .size(24)
+                .style(theme::monitor_toggler),
+        ]
+        .spacing(12)
+        .align_y(Center);
+        let mut card = column![header].spacing(12);
+        if recording {
+            let names = [
+                snapshot.keys[0].name.as_str(),
+                snapshot.keys[1].name.as_str(),
+                snapshot.keys[2].name.as_str(),
+                snapshot.keys[3].name.as_str(),
+            ];
+            card = card.push(
+                container(timeline::graph(timeline, names))
+                    .clip(true)
+                    .style(|_| theme::graph_frame()),
+            );
+        }
+        container(card)
+            .padding(theme::CARD_PADDING)
+            .width(Fill)
+            .style(|_| theme::card_style())
+            .into()
     }
 
     fn measurement_section(&self) -> Element<'_, Message> {
@@ -1483,85 +1896,81 @@ impl SettingsApp {
         } else {
             "Start measurement"
         };
-        let summary = container(
+        let button_style = if snapshot.measurement_active {
+            theme::warning_button
+        } else {
+            theme::primary_button
+        };
+        let is_open = self.session_details_open || snapshot.measurement_active;
+        let measurement = snapshot.measurement.unwrap_or_default();
+
+        let header = row![
             column![
-                row![
-                    column![
-                        section_title(Icon::Chart, "Input timing measurement", self.language),
-                        text(
-                            self.language
-                                .text("Records your mapped key-pair timing for this session.")
-                        )
-                        .size(12)
-                        .color(theme::MUTED_TEXT),
-                    ]
-                    .width(Fill)
-                    .spacing(4),
-                    button(icon_label(Icon::Restore, "Reset session", self.language))
-                        .style(theme::secondary_button)
-                        .on_press(Message::ResetMeasurement),
-                    button(icon_label(
-                        if snapshot.measurement_active {
-                            Icon::Stop
-                        } else {
-                            Icon::Play
-                        },
-                        button_label,
-                        self.language
-                    ))
-                    .style(theme::primary_button)
-                    .on_press(Message::ToggleMeasurement),
-                ]
-                .align_y(Center),
-                {
-                    let stats: Element<_> = match snapshot.measurement {
-                        Some(measurement) => row![
-                            stat_box(
-                                self.language.text("Physical key edges"),
-                                measurement.observed_event_count.to_string(),
-                                None,
-                                None,
-                            ),
-                            stat_box(
-                                self.language.text("Valid paired samples"),
-                                measurement.sample_count.to_string(),
-                                Some(theme::PRIMARY_TEXT),
-                                None,
-                            ),
-                            stat_box(
-                                "Physical overlap share",
-                                percentage_value(
-                                    measurement.overlap_count,
-                                    measurement.sample_count
-                                ),
-                                Some(theme::WARN_TEXT),
-                                (measurement.sample_count != 0).then_some("%"),
-                            ),
-                            stat_box(
-                                self.language.text("Indistinguishable share"),
-                                percentage_value(
-                                    measurement.near_simultaneous_count,
-                                    measurement.sample_count,
-                                ),
-                                Some(theme::ERROR_TEXT),
-                                (measurement.sample_count != 0).then_some("%"),
-                            ),
-                        ]
-                        .spacing(theme::ROW_GAP)
-                        .into(),
-                        None => text(self.language.text("No measurement results yet.")).into(),
-                    };
-                    stats
-                },
+                section_title(Icon::Chart, "Input timing measurement", self.language),
+                text(
+                    self.language
+                        .text("Records your mapped key-pair timing for this session.")
+                )
+                .size(12)
+                .color(theme::MUTED_TEXT),
             ]
-            .spacing(theme::SECTION_GAP),
-        )
-        .padding(theme::CARD_PADDING)
-        .width(Fill)
-        .style(|_theme| theme::card_style());
+            .width(Fill)
+            .spacing(4),
+            button(icon_label(Icon::Restore, "Reset session", self.language))
+                .style(theme::secondary_button)
+                .on_press(Message::ResetMeasurement),
+            button(icon_label(
+                if snapshot.measurement_active {
+                    Icon::Stop
+                } else {
+                    Icon::Play
+                },
+                button_label,
+                self.language,
+            ))
+            .style(button_style)
+            .on_press(Message::ToggleMeasurement),
+        ]
+        .align_y(Center);
+
+        let mut summary_col = column![header];
+        if is_open {
+            let stats = row![
+                stat_box(
+                    self.language.text("Physical key edges"),
+                    measurement.observed_event_count.to_string(),
+                    theme::BODY_TEXT,
+                ),
+                stat_box(
+                    self.language.text("Valid paired samples"),
+                    measurement.sample_count.to_string(),
+                    theme::INDIGO_600,
+                ),
+                stat_box(
+                    self.language.text("Physical overlap share"),
+                    percentage_value(measurement.overlap_count, measurement.sample_count,),
+                    theme::WARN_TEXT,
+                ),
+                stat_box(
+                    self.language.text("Indistinguishable share"),
+                    percentage_value(
+                        measurement.near_simultaneous_count,
+                        measurement.sample_count,
+                    ),
+                    theme::RED_600,
+                ),
+            ]
+            .spacing(theme::ROW_GAP);
+            summary_col = summary_col.push(stats);
+        }
+
+        let summary = container(summary_col.spacing(theme::SECTION_GAP))
+            .padding(theme::CARD_PADDING)
+            .width(Fill)
+            .style(|_theme| theme::card_style());
 
         let mut content = column![summary].spacing(theme::SECTION_GAP);
-        if let Some(measurement) = snapshot.measurement {
+        if is_open {
             content = content.push(latencies_card(measurement, self.language));
             content = content.push(recommendations_card(measurement, self.language));
         }
@@ -1582,9 +1991,26 @@ fn icon_label(
     label: impl Into<String>,
     language: Language,
 ) -> Element<'static, Message> {
+    // Restore affordances use the reference's slate-600 ink; other action
+    // icons inherit the button text color so hover states keep working.
+    let ink = matches!(name, Icon::Restore).then_some(theme::ICON_SECONDARY);
     row![
-        icons::icon(name, 14.0, None),
+        icons::icon(name, 14.0, ink),
         text(language.text(&label.into()).to_owned()).size(12)
+    ]
+    .spacing(6)
+    .align_y(Center)
+    .into()
+}
+
+fn trailing_icon_label(
+    name: Icon,
+    label: impl Into<String>,
+    language: Language,
+) -> Element<'static, Message> {
+    row![
+        text(language.text(&label.into()).to_owned()).size(12),
+        icons::icon(name, 14.0, None)
     ]
     .spacing(6)
     .align_y(Center)
@@ -1615,6 +2041,40 @@ fn dot(color: Color) -> Element<'static, Message> {
         .into()
 }
 
+/// One D-pad direction's display identity: its capture slot, sub-legend,
+/// arrow, and accent color.
+struct Direction {
+    slot: KeySlot,
+    label: &'static str,
+    arrow: Icon,
+    accent: Color,
+}
+
+const UP: Direction = Direction {
+    slot: KeySlot::VerticalFirst,
+    label: "UP",
+    arrow: Icon::ArrowUp,
+    accent: Color::from_rgb8(0x25, 0x63, 0xeb),
+};
+const DOWN: Direction = Direction {
+    slot: KeySlot::VerticalSecond,
+    label: "DOWN",
+    arrow: Icon::ArrowDown,
+    accent: Color::from_rgb8(0x7c, 0x3a, 0xed),
+};
+const LEFT: Direction = Direction {
+    slot: KeySlot::HorizontalFirst,
+    label: "LEFT",
+    arrow: Icon::ArrowLeft,
+    accent: Color::from_rgb8(0x63, 0x66, 0xf1),
+};
+const RIGHT: Direction = Direction {
+    slot: KeySlot::HorizontalSecond,
+    label: "RIGHT",
+    arrow: Icon::ArrowRight,
+    accent: Color::from_rgb8(0x93, 0x33, 0xea),
+};
+
 fn mapping_pad<'a>(
     snapshot: &'a UiSnapshot,
     timeline: Option<&Timeline>,
@@ -1622,152 +2082,268 @@ fn mapping_pad<'a>(
 ) -> Element<'a, Message> {
     let duplicates = duplicate_slots(&snapshot.draft.bindings);
     let up = keycap(
-        "UP",
-        Icon::ArrowUp,
-        KeySlot::VerticalFirst,
+        &UP,
         snapshot,
         duplicates[0],
         timeline.is_some_and(|timeline| timeline.held(KeySlot::VerticalFirst)),
         language,
     );
     let down = keycap(
-        "DOWN",
-        Icon::ArrowDown,
-        KeySlot::VerticalSecond,
+        &DOWN,
         snapshot,
         duplicates[1],
         timeline.is_some_and(|timeline| timeline.held(KeySlot::VerticalSecond)),
         language,
     );
     let left = keycap(
-        "LEFT",
-        Icon::ArrowLeft,
-        KeySlot::HorizontalFirst,
+        &LEFT,
         snapshot,
         duplicates[2],
         timeline.is_some_and(|timeline| timeline.held(KeySlot::HorizontalFirst)),
         language,
     );
     let right = keycap(
-        "RIGHT",
-        Icon::ArrowRight,
-        KeySlot::HorizontalSecond,
+        &RIGHT,
         snapshot,
         duplicates[3],
         timeline.is_some_and(|timeline| timeline.held(KeySlot::HorizontalSecond)),
         language,
     );
-    let hint = if snapshot.capture_slot.is_some() {
-        "Press a key to assign it"
-    } else {
-        "Click a keycap to rebind"
-    };
+    // No `Fill` height may appear in this subtree. `Container::diff` and
+    // `Column::diff` stack a child's height into their own `Length`, so a
+    // single fill here turns the whole card into a fill-height child of the
+    // body row. That row compresses its cross axis, and the scrollable body
+    // gives it no bounded height to distribute, so the card resolves to zero
+    // height and paints nothing. The reference's `justify-between` has no
+    // intrinsic equivalent; the column's spacing carries the separation.
     container(
         column![
-            text(language.text(hint)).size(12).color(theme::MUTED_TEXT),
-            container(up).center_x(Fill),
             row![
-                left,
-                container(text(language.text("+")).size(40).color(theme::MUTED_TEXT))
-                    .width(80)
-                    .height(80)
-                    .center_x(80)
-                    .center_y(80),
-                right
-            ]
-            .spacing(12)
-            .align_y(Center),
-            container(down).center_x(Fill),
-            row![
-                icons::icon(
-                    if duplicates.contains(&true) {
-                        Icon::Warning
-                    } else {
-                        Icon::Check
-                    },
-                    14.0,
-                    Some(if duplicates.contains(&true) {
-                        theme::ERROR_TEXT
-                    } else {
-                        theme::OK_TEXT
-                    })
-                ),
-                text(language.text(if duplicates.contains(&true) {
-                    "Duplicate key bindings detected."
-                } else {
-                    "All keys uniquely assigned."
-                }))
-                .size(12)
-                .color(if duplicates.contains(&true) {
-                    theme::ERROR_TEXT
-                } else {
-                    theme::OK_TEXT
-                })
+                icons::icon(Icon::Edit, 12.0, Some(theme::MUTED_TEXT)),
+                text(language.text("Click keycap to rebind"))
+                    .size(11)
+                    .color(theme::MUTED_TEXT),
             ]
             .spacing(6)
             .align_y(Center),
+            container(up).center_x(Fill),
+            row![left, dpad_center_tile(timeline), right]
+                .spacing(16)
+                .align_y(Center),
+            container(down).center_x(Fill),
         ]
-        .spacing(12)
+        .spacing(16)
         .align_x(Center),
     )
-    .padding(theme::GROUP_PADDING)
+    .padding(20.0)
     .width(Fill)
-    .style(|_| theme::group_style())
+    .style(|_| theme::stage_style())
+    .into()
+}
+
+/// The capture-mode banner from the reference: an indigo bar naming the
+/// prompt with an explicit ESC cancel. The reference pulses the bar; the
+/// port keeps it still, as with the paused-by-default preview, so no
+/// repaint loop outlives the capture it decorates.
+fn rebind_banner<'a>(language: Language) -> Element<'a, Message> {
+    container(
+        row![
+            dot(Color::WHITE),
+            text(language.text("Press a new key on your keyboard..."))
+                .size(12)
+                .font(theme::UI_FONT_BOLD)
+                .color(Color::WHITE)
+                .width(Fill),
+            button(
+                text(language.text("ESC Cancel"))
+                    .size(11)
+                    .font(theme::UI_FONT_BOLD),
+            )
+            .style(theme::banner_cancel_button)
+            .padding([4, 10])
+            .on_press(Message::CancelCapture),
+        ]
+        .spacing(10)
+        .align_y(Center),
+    )
+    .padding([10, 16])
+    .width(Fill)
+    .style(|_| theme::rebind_banner_style())
+    .into()
+}
+
+/// The D-pad's center tile: a dashed guide ring, a resting dot, and the
+/// moving dot that shifts toward the winning direction (diagonals travel
+/// less far, as in the reference). Iced has no absolute positioning, so
+/// the dot's offset rides on the padding of its full-size wrapper.
+///
+/// The dot follows engine output only. While the filter is off or
+/// measurement runs, the timeline carries physical input, where both
+/// opposing keys can be down with nothing resolving them, so the dot rests.
+fn dpad_center_tile(timeline: Option<&Timeline>) -> Element<'static, Message> {
+    let resolved = timeline.filter(|timeline| !timeline.physical);
+    let (x, y) = resolved.map_or((0, 0), |timeline| {
+        let x = match timeline.winner(KeySlot::HorizontalFirst, KeySlot::HorizontalSecond) {
+            Some(KeySlot::HorizontalFirst) => -1,
+            Some(_) => 1,
+            None => 0,
+        };
+        let y = match timeline.winner(KeySlot::VerticalFirst, KeySlot::VerticalSecond) {
+            Some(KeySlot::VerticalFirst) => -1,
+            Some(_) => 1,
+            None => 0,
+        };
+        (x, y)
+    });
+    let diagonal = x != 0 && y != 0;
+    let reach = if diagonal { 13.0 } else { 18.0 };
+    let active = x != 0 || y != 0;
+    let dot_color = if active {
+        mode_color(SocdMode::Immediate)
+    } else {
+        theme::ICON_MUTED
+    };
+    const DOT: f32 = 18.0;
+    const TILE: f32 = 80.0;
+    container(
+        stack![
+            container(icons::dashed_ring(48.0, theme::GUIDE_RING))
+                .center_x(Fill)
+                .center_y(Fill),
+            container(
+                container(space::horizontal().width(8).height(8)).style(|_| {
+                    theme::dot_style(Color {
+                        a: 0.6,
+                        ..Color::from_rgb8(0xcb, 0xd5, 0xe1)
+                    })
+                })
+            )
+            .center_x(Fill)
+            .center_y(Fill),
+            container(
+                container(space::horizontal().width(DOT).height(DOT))
+                    .style(move |_| theme::dot_style(dot_color))
+            )
+            .padding(Padding {
+                top: (TILE - DOT) / 2.0 + y as f32 * reach,
+                left: (TILE - DOT) / 2.0 + x as f32 * reach,
+                ..Padding::ZERO
+            })
+            .width(Fill)
+            .height(Fill),
+        ]
+        .width(Fill)
+        .height(Fill),
+    )
+    .width(TILE)
+    .height(TILE)
+    .style(|_| theme::dpad_center())
     .into()
 }
 
 fn keycap<'a>(
-    label: &'static str,
-    arrow: Icon,
-    slot: KeySlot,
+    direction: &Direction,
     snapshot: &'a UiSnapshot,
     duplicate: bool,
     pressed: bool,
     language: Language,
 ) -> Element<'a, Message> {
+    let slot = direction.slot;
+    let accent = direction.accent;
     let key = &snapshot.keys[key_slot_index(slot)];
     let selected = snapshot.capture_slot == Some(slot);
-    let accent = if matches!(slot, KeySlot::VerticalFirst | KeySlot::VerticalSecond) {
-        Color::from_rgb8(37, 99, 235)
+    let active = selected || pressed;
+    let name: &str = if selected { "…" } else { &key.name };
+    let length = name.chars().count();
+    // The reference's normal-key letter scale.
+    let size = if length <= 2 {
+        18.0
+    } else if length <= 4 {
+        14.0
     } else {
-        theme::PRIMARY_TEXT
+        11.0
     };
-    let name = if selected { "…" } else { &key.name };
-    iced::widget::tooltip(
-        button(
-            column![
-                row![
-                    text(language.text(label)).size(10).width(Fill),
-                    icons::icon(arrow, 12.0, None)
-                ],
-                container(
-                    text(name)
-                        .size(if name.chars().count() > 4 { 13 } else { 24 })
-                        .font(theme::UI_FONT_BOLD)
-                        .wrapping(Wrapping::None)
-                        .ellipsis(Ellipsis::End)
+    button(
+        column![
+            row![
+                text(language.text(direction.label))
+                    .size(10)
+                    .font(theme::UI_FONT_BOLD)
+                    .color(if active {
+                        Color::from_rgba(1.0, 1.0, 1.0, 0.8)
+                    } else {
+                        theme::ICON_MUTED
+                    })
+                    .width(Fill),
+                icons::icon(
+                    direction.arrow,
+                    12.0,
+                    if active { None } else { Some(accent) }
                 )
-                .center_x(Fill)
-                .center_y(Fill),
-            ]
-            .spacing(4),
-        )
-        .width(80)
-        .height(80)
-        .padding(10)
-        .style(move |_, state| theme::keycap(state, selected || pressed, duplicate, accent))
-        .on_press(if selected {
-            Message::CancelCapture
-        } else {
-            Message::Capture(slot)
-        }),
-        text(&key.name),
-        iced::widget::tooltip::Position::Top,
+            ],
+            container(hover_text::label(
+                name,
+                size,
+                theme::UI_FONT_BLACK,
+                None,
+                true
+            ))
+            .center_x(Fill)
+            .center_y(Fill),
+        ]
+        .spacing(4),
     )
+    .width(80)
+    .height(80)
+    .padding(10)
+    .style(move |_, state| theme::keycap(state, active, duplicate, accent))
+    .on_press(if selected {
+        Message::CancelCapture
+    } else {
+        Message::Capture(slot)
+    })
     .into()
 }
 
-/// A shared pair of numeric editors and a two-handle native range rail.
+/// The unique/duplicate assignment status, rendered in the mapping card's
+/// footer below the inset (reference: bottom-right, outside the stage).
+fn assignment_status<'a>(duplicates: &[bool; 4], language: Language) -> Element<'a, Message> {
+    let duplicate = duplicates.contains(&true);
+    row![
+        icons::icon(
+            if duplicate {
+                Icon::Warning
+            } else {
+                Icon::Check
+            },
+            14.0,
+            Some(if duplicate {
+                theme::ERROR_TEXT
+            } else {
+                theme::GREEN_CHECK
+            })
+        ),
+        text(language.text(if duplicate {
+            "Duplicate key bindings detected."
+        } else {
+            "All keys uniquely assigned."
+        }))
+        .size(11)
+        .color(if duplicate {
+            theme::RED_600
+        } else {
+            theme::EMERALD_700
+        })
+    ]
+    .spacing(6)
+    .align_y(Center)
+    .into()
+}
+
+/// One duration group in the reference's two-row grouping: a label row
+/// whose right side is a pill holding both numeric editors, with the
+/// two-handle rail directly below. Mounted only in modes that use it, so
+/// it is always editable; `update` still gates stray slider drags.
 fn duration_range<'a>(
     minimum: TimingField,
     maximum: TimingField,
@@ -1777,33 +2353,41 @@ fn duration_range<'a>(
     editing: &[bool; 5],
     accent: Color,
 ) -> Element<'a, Message> {
-    let enabled = minimum.is_editable(timing);
     let min = minimum.micros(timing).expect("duration field") as f32 / 1000.0;
     let max = maximum.micros(timing).expect("duration field") as f32 / 1000.0;
     let invalid = minimum.pair_invalid(timing);
+    // Reference inputs are `w-8` sans-bold at `text-xs`; the pill owns the
+    // chrome, so the boxes stay borderless and transparent over it.
     let editor = |field: TimingField| {
         value_box(
             field,
             inputs.buffer(field),
-            enabled,
             editing[field.index()],
-            enabled && (invalid || parse_ms_text(inputs.buffer(field)).is_none()),
-            56.0,
+            invalid || parse_ms_text(inputs.buffer(field)).is_none(),
+            32.0,
+            accent,
         )
     };
     container(
         column![
-            text(label)
-                .size(12)
-                .font(theme::UI_FONT_BOLD)
-                .color(if enabled { accent } else { theme::MUTED_TEXT }),
             row![
-                editor(minimum),
-                text("–").color(theme::MUTED_TEXT),
-                editor(maximum),
-                text("ms").size(12).color(theme::MUTED_TEXT)
+                dot(accent),
+                text(label).size(12).font(theme::UI_FONT_BOLD),
+                space::horizontal().width(Fill),
+                container(
+                    row![
+                        editor(minimum),
+                        text("~").size(12).color(accent),
+                        editor(maximum),
+                        text("ms").size(12).color(accent),
+                    ]
+                    .spacing(4)
+                    .align_y(Center),
+                )
+                .padding([1, 6])
+                .style(move |_| theme::pill_style(invalid)),
             ]
-            .spacing(6)
+            .spacing(8)
             .align_y(Center),
             widgets::range_slider(
                 min,
@@ -1813,18 +2397,58 @@ fn duration_range<'a>(
                 } else {
                     0.0
                 },
-                enabled,
+                true,
                 accent,
                 move |is_min, value| {
                     Message::TimingSliderChanged(if is_min { minimum } else { maximum }, value)
                 }
             ),
         ]
-        .spacing(6),
+        .spacing(8),
     )
     .padding(12)
     .width(Fill)
     .style(|_| theme::slot_style())
+    .into()
+}
+
+/// One keycap chip in a profile slot card. The reference draws this as a plain
+/// `<kbd>` holding the key's label -- no arrow glyph -- which is why its chip is
+/// ~19px wide where the arrow-plus-name version came to ~41px and pushed the
+/// card past the width the panel is measured against. The wire supplies display
+/// names for the current mapping only, so other physical keys still show their
+/// explicit SC:xx or E0:xx scan code; long labels scroll on hover instead of
+/// using a tooltip.
+fn profile_chip<'a>(
+    physical: crate::core::PhysicalKey,
+    snapshot: &'a UiSnapshot,
+) -> Element<'a, Message> {
+    let name = snapshot
+        .keys
+        .iter()
+        .find(|key| key.physical == physical)
+        .map(|key| key.name.clone())
+        .unwrap_or_else(|| {
+            format!(
+                "{}{:02X}",
+                if physical.extended { "E0:" } else { "SC:" },
+                physical.scan_code
+            )
+        });
+    container(
+        text(name)
+            .size(10.0)
+            .font(theme::UI_FONT_BOLD)
+            .color(theme::CHIP_TEXT),
+    )
+    // The reference gets its 16px chip from a `leading-none` line plus `py-0.5`,
+    // but iced's default line box for the same 10px label is taller than the
+    // line itself, so fixing the box and centring the line inside it reproduces
+    // the drawn size without clipping the glyphs.
+    .height(theme::CHIP_HEIGHT)
+    .padding(theme::CHIP_PADDING)
+    .align_y(Center)
+    .style(|_| theme::chip_style())
     .into()
 }
 
@@ -1834,94 +2458,76 @@ fn duration_range<'a>(
 fn mode_selector(selected: SocdMode, language: Language) -> Element<'static, Message> {
     let mut segments = row![].spacing(4);
     for mode in SocdMode::ALL {
+        // 12px bold at iced's default 1.3 line height is the reference's 16px
+        // line, which is what makes a segment 28px rather than 26px tall.
         let segment = button(
             text(mode_label(mode, language))
-                .size(11)
+                .size(12)
+                .font(theme::UI_FONT_BOLD)
                 .width(Fill)
                 .align_x(Alignment::Center),
         )
         .width(Fill)
-        .padding(theme::ROW_GAP)
+        .padding(theme::MODE_PADDING)
         .on_press(Message::ModeSelected(mode));
-        segments = segments.push(segment.style(move |_, status| {
-            theme::mode_button(status, mode == selected, mode_color(mode))
-        }));
+        segments = segments
+            .push(segment.style(move |_, status| theme::mode_button(status, mode == selected)));
     }
-    let current = SocdMode::ALL
-        .iter()
-        .position(|mode| *mode == selected)
-        .expect("all modes are listed");
-    container(
-        column![
-            segments,
-            row![
-                button(icons::icon(Icon::ChevronLeft, 14.0, None))
-                    .style(theme::secondary_button)
-                    .on_press(Message::ModeSelected(SocdMode::ALL[(current + 3) % 4])),
-                space::horizontal(),
-                text(mode_label(selected, language))
-                    .size(12)
-                    .color(mode_color(selected)),
-                space::horizontal(),
-                button(icons::icon(Icon::ChevronRight, 14.0, None))
-                    .style(theme::secondary_button)
-                    .on_press(Message::ModeSelected(SocdMode::ALL[(current + 1) % 4])),
-            ]
-            .spacing(4)
-            .align_y(Center),
-        ]
-        .spacing(8),
-    )
-    .padding(4)
-    .width(Fill)
-    .style(|_theme| theme::group_style())
-    .into()
+    container(segments)
+        .padding(4)
+        .width(Fill)
+        .style(|_theme| theme::group_style())
+        .into()
 }
 
-/// Split between the two delays for Random Mix. The stored rate is the
-/// release-delay share, so the press-delay share is shown as its mirror
-/// rather than stored twice.
+/// Split between the two delays for Random Mix, shown as one
+/// `press : release` pill on the title row. The stored rate is the
+/// release-delay share, so the press share is derived from it rather than
+/// stored twice, and only the release side is editable. Mounted only in
+/// Random Mix, so it is always editable.
 fn rate_group<'a>(
     timing: &TimingSettings,
     inputs: &'a TimingInputs,
     editing: &[bool; 5],
     language: Language,
 ) -> Element<'a, Message> {
-    let enabled = TimingField::PreservationRate.is_editable(timing);
     let press_share = 100u8.saturating_sub(timing.overlap_preservation_rate);
-    let title = text(language.text("Delay Mix Ratio"))
-        .size(12)
-        .font(theme::UI_FONT_BOLD);
-    let title = if enabled {
-        title
-    } else {
-        title.color(theme::MUTED_TEXT)
-    };
+    let invalid = parse_rate_text(&inputs.preservation_rate).is_none();
     container(
         column![
-            title,
             row![
-                text(format!("{} {press_share} %", language.text("Press delay")))
+                dot(theme::MIX_TEXT),
+                text(language.text("Delay Mix Ratio"))
                     .size(12)
-                    .color(theme::MUTED_TEXT),
-                space::horizontal(),
-                text(language.text("Release delay")).size(12),
-                rate_box(
-                    &inputs.preservation_rate,
-                    enabled,
-                    editing[TimingField::PreservationRate.index()],
-                ),
-                text(language.text("%")).size(12).color(theme::MUTED_TEXT),
+                    .font(theme::UI_FONT_BOLD),
+                space::horizontal().width(Fill),
+                container(
+                    row![
+                        text(format_rate(press_share))
+                            .size(12)
+                            .font(theme::UI_FONT_BOLD)
+                            .color(theme::MIX_TEXT),
+                        text(":").size(12).color(theme::MIX_TEXT),
+                        rate_box(
+                            &inputs.preservation_rate,
+                            editing[TimingField::PreservationRate.index()],
+                        ),
+                        text("%").size(12).color(theme::MIX_TEXT),
+                    ]
+                    .spacing(4)
+                    .align_y(Center),
+                )
+                .padding([1, 6])
+                .style(move |_| theme::pill_style(invalid)),
             ]
-            .spacing(6)
+            .spacing(8)
             .align_y(Center),
             slider(1.0..=99.0, press_share as f32, Message::MixChanged)
                 .step(1.0)
-                .style(if enabled {
-                    theme::mixer_slider
-                } else {
-                    theme::muted_slider
-                }),
+                .style(theme::mixer_slider),
+            hover_text::body(
+                language.text("Each overlap randomly picks one of the two delays below.")
+            ),
         ]
         .spacing(theme::ROW_GAP),
     )
@@ -1933,10 +2539,20 @@ fn rate_group<'a>(
 
 const fn mode_color(mode: SocdMode) -> Color {
     match mode {
-        SocdMode::Immediate => Color::from_rgb(0.227, 0.333, 0.91),
-        SocdMode::PressDelay => theme::PRIMARY_TEXT,
-        SocdMode::ReleaseDelay => theme::RELEASE_TEXT,
+        SocdMode::Immediate => theme::IMMEDIATE_ACCENT,
+        SocdMode::PressDelay => theme::INDIGO_600,
+        SocdMode::ReleaseDelay => theme::VIOLET_600,
         SocdMode::RandomMix => theme::MIX_TEXT,
+    }
+}
+
+/// Mode label ink from the reference (`MODE_TEXT`): the release-delay label
+/// uses the darker `text-violet-700` while the card tint keeps the lighter
+/// violet. Every other mode labels in its own card color.
+const fn mode_label_color(mode: SocdMode) -> Color {
+    match mode {
+        SocdMode::ReleaseDelay => theme::RELEASE_LABEL,
+        mode => mode_color(mode),
     }
 }
 
@@ -1949,75 +2565,149 @@ fn mode_label(mode: SocdMode, language: Language) -> &'static str {
     })
 }
 
-fn mode_description(mode: SocdMode, language: Language) -> &'static str {
-    language.text(match mode {
-        SocdMode::Immediate => {
-            "On each opposing-key overlap, drop the previous direction and send the new one \
-             with no added delay."
-        }
-        SocdMode::PressDelay => {
-            "On each opposing-key overlap, release the previous direction immediately and \
-             press the new one after the configured delay."
-        }
-        SocdMode::RandomMix => {
-            "On each opposing-key overlap, randomly select press delay or release delay \
-             using the configured ratio."
-        }
-        SocdMode::ReleaseDelay => {
-            "On each opposing-key overlap, press the new direction immediately and release \
-             the previous one after the configured delay."
-        }
-    })
+/// The "How it works" block: the selected mode explained as numbered steps,
+/// with the configured range embedded in the wait step and the mode's own
+/// steps highlighted in its accent. Never mounted in Random Mix (the caller
+/// gates it), where the ratio and both groups already fill the card.
+fn mechanism_steps(
+    mode: SocdMode,
+    timing: &TimingSettings,
+    language: Language,
+) -> Element<'static, Message> {
+    let range = |min_micros: u32, max_micros: u32| {
+        format!(
+            "{:.1}~{:.1} ms",
+            min_micros as f32 / 1_000.0,
+            max_micros as f32 / 1_000.0
+        )
+    };
+    let step = |key: &str| language.text(key).to_owned();
+    let step_with_range = |key: &str, range: String| language.text(key).replace("{range}", &range);
+    let steps: Vec<(String, bool)> = match mode {
+        SocdMode::Immediate => vec![
+            (step("Detect an opposite-direction overlap."), false),
+            (step("Release the previous key output immediately."), false),
+            (step("Send the new key immediately. 0 ms added delay"), true),
+        ],
+        SocdMode::PressDelay => vec![
+            (step("Detect an opposite-direction overlap."), false),
+            (step("Release the previous key output immediately."), false),
+            (
+                step_with_range(
+                    "Wait a random time within {range}. This gap sends no input",
+                    range(
+                        timing.socd_transition_min_micros,
+                        timing.socd_transition_max_micros,
+                    ),
+                ),
+                true,
+            ),
+            (step("Send the new key once the wait ends."), true),
+        ],
+        SocdMode::ReleaseDelay => vec![
+            (step("Detect an opposite-direction overlap."), false),
+            (step("Send the new key immediately."), false),
+            (
+                step_with_range(
+                    "Wait a random time within {range}. The overlap stays live",
+                    range(
+                        timing.preserved_overlap_min_micros,
+                        timing.preserved_overlap_max_micros,
+                    ),
+                ),
+                true,
+            ),
+            (
+                step("Release the previous key output once the wait ends."),
+                true,
+            ),
+        ],
+        SocdMode::RandomMix => vec![],
+    };
+    let accent = mode_color(mode);
+    container(
+        column![
+            row![
+                dot(theme::MUTED_TEXT),
+                text(language.text("How it works"))
+                    .size(11)
+                    .font(theme::UI_FONT_BOLD),
+            ]
+            .spacing(6)
+            .align_y(Center),
+            column(
+                steps
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, (label, accented))| {
+                        row![
+                            container(
+                                text(format!("{}", index + 1))
+                                    .size(9)
+                                    .font(theme::UI_FONT_BOLD)
+                            )
+                            .center_x(16)
+                            .center_y(16)
+                            .style(move |_| {
+                                theme::step_badge(if accented { Some(accent) } else { None })
+                            }),
+                            text(label).size(11).color(theme::MUTED_TEXT),
+                        ]
+                        .spacing(8)
+                        .align_y(Center)
+                        .into()
+                    })
+            )
+            .spacing(6),
+        ]
+        .spacing(8),
+    )
+    .padding(12)
+    .width(Fill)
+    .style(|_| theme::slot_style())
+    .into()
 }
 
-/// One millisecond slider row. Every value in the row is derived from `field`,
-/// so a row cannot display one field while acting on another.
-fn rate_box<'a>(buffer: &'a str, enabled: bool, editing: bool) -> Element<'a, Message> {
-    // Out-of-range numbers clamp into 1-100 on commit, so only genuinely
-    // unparseable text counts as invalid here.
-    let invalid = enabled && parse_rate_text(buffer).is_none();
+/// The release-share editor in the mix pill. Out-of-range numbers clamp
+/// into 1-100 on commit, so only genuinely unparseable text is invalid.
+/// Sized like the duration editors (`w-8` in the reference).
+fn rate_box<'a>(buffer: &'a str, editing: bool) -> Element<'a, Message> {
     value_box(
         TimingField::PreservationRate,
         buffer,
-        enabled,
         editing,
-        invalid,
-        56.0,
+        parse_rate_text(buffer).is_none(),
+        32.0,
+        theme::RELEASE_TEXT,
     )
 }
 
-/// The press-to-edit value box shared by the millisecond rows and the rate
+/// The press-to-edit value box shared by the duration pills and the rate
 /// box: a facade until the user activates it, then the live input, already
 /// focused and selected. Any fix to the swap (focus ordering, selection,
 /// styling) lands here once instead of drifting between two copies.
 fn value_box<'a>(
     field: TimingField,
     buffer: &'a str,
-    enabled: bool,
     editing: bool,
     invalid: bool,
     width: f32,
+    accent: Color,
 ) -> Element<'a, Message> {
-    if enabled && !editing {
-        return value_facade(buffer, field, width, invalid);
+    if !editing {
+        return value_facade(buffer, field, width, invalid, accent);
     }
-    let mut live = text_input("", buffer)
-        .font(theme::MONO_FONT)
+    text_input("", buffer)
+        .font(theme::UI_FONT_BOLD)
+        .size(12.0)
         .align_x(Alignment::Center)
         .padding(VALUE_BOX_PADDING)
-        .style(if invalid {
-            theme::value_input_error
-        } else {
-            theme::value_input
-        })
+        .style(move |theme_, status| theme::value_input(theme_, status, accent, invalid))
         .id(value_box_id(field))
-        .width(Length::Fixed(width));
-    if enabled {
-        live = live
-            .on_input(move |input| Message::TimingTextChanged(field, input))
-            .on_submit(Message::TimingTextSubmitted(field));
-    }
-    live.into()
+        .width(Length::Fixed(width))
+        .on_input(move |input| Message::TimingTextChanged(field, input))
+        .on_submit(Message::TimingTextSubmitted(field))
+        .into()
 }
 
 /// Press-to-edit lookalike for an untouched value box. It mirrors the live
@@ -2028,18 +2718,16 @@ fn value_facade<'a>(
     field: TimingField,
     width: f32,
     invalid: bool,
+    accent: Color,
 ) -> Element<'a, Message> {
     button(
         text(buffer)
-            .font(theme::MONO_FONT)
+            .font(theme::UI_FONT_BOLD)
+            .size(12.0)
             .width(Fill)
             .align_x(Alignment::Center),
     )
-    .style(if invalid {
-        theme::facade_button_error
-    } else {
-        theme::facade_button
-    })
+    .style(move |theme_, status| theme::facade_button(theme_, status, accent, invalid))
     .padding(VALUE_BOX_PADDING)
     .width(Length::Fixed(width))
     .on_press(Message::ValueBoxActivated(field))
@@ -2073,69 +2761,75 @@ fn duplicate_slots(bindings: &[crate::core::PhysicalKey; 4]) -> [bool; 4] {
     })
 }
 
-fn stat_box(
-    label: &'static str,
-    value: String,
-    color: Option<Color>,
-    unit: Option<&'static str>,
-) -> Element<'static, Message> {
-    let value_color = color.unwrap_or(theme::MUTED_TEXT);
+fn stat_box(label: &'static str, value: String, value_color: Color) -> Element<'static, Message> {
     let number: Element<'static, Message> = text(value)
-        .font(theme::MONO_FONT)
-        .size(STAT_VALUE_SIZE)
+        .font(theme::UI_FONT_BOLD)
+        .size(19.0)
         .color(value_color)
         .into();
-    // The unit shares the value color at label size: at full size its tall
-    // glyphs (notably `%`) read larger than the digits. Leading and trailing
-    // flexible space centers the group; uniform spacing doubles as the
-    // number-unit gap.
-    let mut bottom = row![space::horizontal(), number];
-    if let Some(unit) = unit {
-        bottom = bottom.push(text(unit).size(theme::BODY_TEXT_SIZE).color(value_color));
-    }
-    let bottom: Element<'static, Message> = bottom.push(space::horizontal()).spacing(4).into();
+    let bottom: Element<'static, Message> = row![space::horizontal(), number, space::horizontal()]
+        .align_y(Center)
+        .width(Fill)
+        .into();
     container(
         column![
-            text(label)
-                .size(theme::BODY_TEXT_SIZE)
-                .width(Fill)
-                .align_x(Alignment::Center),
+            hover_text::label(
+                label,
+                11.0,
+                theme::UI_FONT_BOLD,
+                Some(theme::BODY_TEXT),
+                true,
+            ),
             space::vertical(),
             bottom,
         ]
-        .height(Fill),
+        .height(Fill)
+        .align_x(Alignment::Center),
     )
     .padding(Padding {
-        top: 14.0,
+        top: 12.0,
         right: 10.0,
-        bottom: 14.0,
+        bottom: 12.0,
         left: 10.0,
     })
     .width(Fill)
-    .height(Length::Fixed(84.0))
+    .height(Length::Fixed(76.0))
     .style(|_theme| theme::group_style())
     .into()
 }
 
-/// Horizontal stat tile for the recommendations card: label on the left with
-/// a small indent, value hugging the right edge.
-fn stat_inline(label: &'static str, value: String, color: Color) -> Element<'static, Message> {
+/// One recommendation tile in the suggestions card: the delay name and its
+/// hint stacked on the left, the value hugging the right edge (reference:
+/// the hint lives inside the tile). The monospace value gets the same
+/// one-sided optical nudge as the value boxes, plus a right inset so it
+/// never touches the tile edge.
+fn suggestion_tile<'a>(
+    label: &'static str,
+    hint: &'static str,
+    value: String,
+    available: bool,
+    language: Language,
+) -> Element<'a, Message> {
     container(
         row![
-            container(text(label).size(theme::BODY_TEXT_SIZE))
-                .width(Fill)
-                .padding(Padding {
-                    left: 4.0,
-                    ..Padding::default()
-                }),
-            // The monospace value renders high next to the UI-font label, so
-            // it gets the same one-sided optical nudge as the value boxes,
-            // plus a right inset so it never touches the tile edge.
+            column![
+                text(language.text(label))
+                    .size(12)
+                    .font(theme::UI_FONT_BOLD)
+                    .color(theme::BODY_TEXT),
+                text(language.text(hint)).size(11).color(theme::MUTED_TEXT),
+            ]
+            .spacing(2)
+            .width(Fill),
             container(
                 text(value)
-                    .font(theme::MONO_FONT)
-                    .size(STAT_VALUE_SIZE)
-                    .color(color)
+                    .font(theme::UI_FONT_BOLD)
+                    .size(if available { 17.0 } else { 13.0 })
+                    .color(if available {
+                        theme::PRIMARY_TEXT
+                    } else {
+                        theme::ICON_MUTED
+                    })
                     .align_x(Alignment::Right),
             )
             .padding(Padding {
@@ -2146,7 +2840,7 @@ fn stat_inline(label: &'static str, value: String, color: Color) -> Element<'sta
         ]
         .align_y(Center),
     )
-    .padding(10)
+    .padding(14)
     .width(Fill)
     .style(|_theme| theme::group_style())
     .into()
@@ -2159,66 +2853,85 @@ fn latencies_card(
     container(
         column![
             section_title(Icon::Measurement, "Measured Input Transitions", language),
-            text(
-                language
-                    .text("Live counts from this session, values freeze when measurement stops.")
-            )
-            .size(12)
-            .color(theme::MUTED_TEXT),
+            text(language.text("Updates live while measuring"))
+                .size(12)
+                .color(theme::MUTED_TEXT),
             container(
                 column![
                     table_row([
                         heading(
                             language.text("INPUT PATTERN"),
                             Length::Fixed(PATTERN_COLUMN),
-                            Alignment::Left
+                            Alignment::Left,
                         ),
-                        heading(language.text("SAMPLES"), Fill, Alignment::Right),
-                        heading(language.text("MEDIAN"), Fill, Alignment::Right),
-                        heading(language.text("P10"), Fill, Alignment::Right),
-                        heading(language.text("P90"), Fill, Alignment::Right),
+                        heading(
+                            language.text("SAMPLES"),
+                            Length::Fixed(SAMPLES_COLUMN),
+                            Alignment::Right,
+                        ),
+                        heading("P10", Fill, Alignment::Right),
+                        heading("P50", Fill, Alignment::Right),
+                        heading("P90", Fill, Alignment::Right),
                         heading(language.text("MIN"), Fill, Alignment::Right),
                         heading(language.text("MAX"), Fill, Alignment::Right),
                     ]),
                     table_hrule(),
                     table_row(pattern_figures(
                         language.text("Neutral transition"),
-                        theme::PRIMARY_TEXT,
+                        theme::EMERALD_500,
                         measurement.transition_count,
                         [
-                            duration(measurement.transition_median_micros),
-                            duration(measurement.transition_p10_micros),
-                            duration(measurement.transition_p90_micros),
-                            duration(measurement.transition_min_micros),
-                            duration(measurement.transition_max_micros),
+                            duration_stat(measurement.transition_p10_micros),
+                            duration_stat(measurement.transition_median_micros),
+                            duration_stat(measurement.transition_p90_micros),
+                            duration_stat(measurement.transition_min_micros),
+                            duration_stat(measurement.transition_max_micros),
                         ],
                     )),
                     table_hrule(),
                     table_row(pattern_figures(
                         language.text("Physical overlap"),
-                        theme::WARN_TEXT,
+                        theme::AMBER_500,
                         measurement.overlap_count,
                         [
-                            duration(measurement.overlap_median_micros),
-                            duration(measurement.overlap_p10_micros),
-                            duration(measurement.overlap_p90_micros),
-                            duration(measurement.overlap_min_micros),
-                            duration(measurement.overlap_max_micros),
+                            duration_stat(measurement.overlap_p10_micros),
+                            duration_stat(measurement.overlap_median_micros),
+                            duration_stat(measurement.overlap_p90_micros),
+                            duration_stat(measurement.overlap_min_micros),
+                            duration_stat(measurement.overlap_max_micros),
                         ],
                     )),
                     table_hrule(),
-                    table_row(pattern_figures(
-                        language.text("Indistinguishable"),
-                        theme::ERROR_TEXT,
-                        measurement.near_simultaneous_count,
-                        [
-                            "<1 ms".into(),
-                            "—".into(),
-                            "—".into(),
-                            "—".into(),
-                            "—".into(),
-                        ],
-                    )),
+                    // The indistinguishable row carries its explanation in
+                    // place of the figures, like the reference's colspan.
+                    row![
+                        row![
+                            dot(theme::RED_500),
+                            text(language.text("Indistinguishable"))
+                                .font(theme::UI_FONT_BOLD)
+                                .color(theme::BODY_TEXT)
+                        ]
+                        .spacing(6)
+                        .align_y(Center)
+                        .width(Length::Fixed(PATTERN_COLUMN)),
+                        figure(
+                            measurement.near_simultaneous_count.to_string(),
+                            theme::BODY_TEXT,
+                            Length::Fixed(SAMPLES_COLUMN),
+                            false,
+                        ),
+                        text(
+                            language
+                                .text("Unclear input order (<1 ms), excluded from timing ranges.")
+                        )
+                        .size(11)
+                        .color(theme::MUTED_TEXT)
+                        .width(Fill)
+                        .align_x(Alignment::Right),
+                    ]
+                    .spacing(6)
+                    .align_y(Center)
+                    .width(Fill),
                 ]
                 .spacing(theme::ROW_GAP),
             )
@@ -2238,6 +2951,20 @@ fn recommendations_card(
     measurement: MeasurementSnapshot,
     language: Language,
 ) -> Element<'static, Message> {
+    let has_suggestions =
+        measurement.recommended_transition.is_some() || measurement.recommended_overlap.is_some();
+    let apply_button = button(trailing_icon_label(
+        Icon::ArrowForward,
+        "Apply suggestions",
+        language,
+    ))
+    .style(theme::primary_button);
+    let apply_action = if has_suggestions {
+        apply_button.on_press(Message::ApplyRecommendations)
+    } else {
+        apply_button
+    };
+
     container(
         column![
             row![
@@ -2251,25 +2978,23 @@ fn recommendations_card(
                 ]
                 .width(Fill)
                 .spacing(4),
-                button(icon_label(
-                    Icon::ArrowForward,
-                    "Apply suggestions",
-                    language
-                ))
-                .style(theme::primary_button)
-                .on_press(Message::ApplyRecommendations),
+                apply_action,
             ]
             .align_y(Center),
             row![
-                stat_inline(
-                    language.text("SOCD Transition Delay"),
+                suggestion_tile(
+                    language.text("New Key Press Delay"),
+                    language.text("Based on neutral transitions"),
                     timing_range(measurement.recommended_transition),
-                    theme::OK_TEXT,
+                    measurement.recommended_transition.is_some(),
+                    language,
                 ),
-                stat_inline(
-                    language.text("Preserved Overlap Duration"),
+                suggestion_tile(
+                    language.text("Previous Key Release Delay"),
+                    language.text("Based on physical overlaps"),
                     timing_range(measurement.recommended_overlap),
-                    theme::OK_TEXT,
+                    measurement.recommended_overlap.is_some(),
+                    language,
                 ),
             ]
             .spacing(theme::ROW_GAP),
@@ -2283,48 +3008,110 @@ fn recommendations_card(
 }
 
 const PATTERN_COLUMN: f32 = 150.0;
-
-/// Statistic value size. The bottom-row suffix shares it so both sit on one
-/// baseline instead of looking like separate lines.
-const STAT_VALUE_SIZE: f32 = 18.0;
+const SAMPLES_COLUMN: f32 = 70.0;
 
 /// Table header shares the card title color instead of the muted tone.
 fn heading(label: &'static str, width: Length, align: Alignment) -> Element<'static, Message> {
-    text(label).size(11).width(width).align_x(align).into()
+    text(label)
+        .size(11)
+        .font(theme::UI_FONT_BOLD)
+        .color(theme::BODY_TEXT)
+        .width(width)
+        .align_x(align)
+        .into()
 }
 
 /// One table row: seven cells sharing the same widths and spacing, so
 /// columns line up down the table.
 fn table_row(cells: [Element<'static, Message>; 7]) -> Element<'static, Message> {
-    let [pattern, samples, median, p10, p90, minimum, maximum] = cells;
-    row![pattern, samples, median, p10, p90, minimum, maximum]
+    let [pattern, samples, p10, p50, p90, minimum, maximum] = cells;
+    row![pattern, samples, p10, p50, p90, minimum, maximum]
         .spacing(6)
         .align_y(Center)
         .width(Fill)
         .into()
 }
 
-/// Pattern label plus sample count plus median / P10 / P90 / minimum /
-/// maximum figures, in table-cell order.
+/// Pattern label plus sample count plus P10 / P50 / P90 / minimum /
+/// maximum figures, in table-cell order; P50 is the highlighted column.
 fn pattern_figures(
     label: &'static str,
     color: Color,
     count: u32,
-    figures: [String; 5],
+    figures: [(String, bool); 5],
 ) -> [Element<'static, Message>; 7] {
-    let [median, p10, p90, minimum, maximum] = figures;
+    let [
+        (p10, has_p10),
+        (p50, has_p50),
+        (p90, has_p90),
+        (minimum, has_min),
+        (maximum, has_max),
+    ] = figures;
+    let base_color = theme::BODY_TEXT;
     [
-        row![dot(color), text(label)]
-            .spacing(6)
-            .align_y(Center)
-            .width(Length::Fixed(PATTERN_COLUMN))
-            .into(),
-        figure(count.to_string(), None),
-        figure(median, Some(theme::PRIMARY_TEXT)),
-        figure(p10, None),
-        figure(p90, None),
-        figure(minimum, None),
-        figure(maximum, None),
+        row![
+            dot(color),
+            text(label)
+                .font(theme::UI_FONT_BOLD)
+                .color(theme::BODY_TEXT)
+        ]
+        .spacing(6)
+        .align_y(Center)
+        .width(Length::Fixed(PATTERN_COLUMN))
+        .into(),
+        figure(
+            count.to_string(),
+            base_color,
+            Length::Fixed(SAMPLES_COLUMN),
+            false,
+        ),
+        figure(
+            p10,
+            if has_p10 {
+                base_color
+            } else {
+                theme::MUTED_TEXT
+            },
+            Length::Fill,
+            false,
+        ),
+        // The P50 column is highlighted in the row's own accent and bold.
+        figure(
+            p50,
+            if has_p50 { color } else { theme::MUTED_TEXT },
+            Length::Fill,
+            has_p50,
+        ),
+        figure(
+            p90,
+            if has_p90 {
+                base_color
+            } else {
+                theme::MUTED_TEXT
+            },
+            Length::Fill,
+            false,
+        ),
+        figure(
+            minimum,
+            if has_min {
+                base_color
+            } else {
+                theme::MUTED_TEXT
+            },
+            Length::Fill,
+            false,
+        ),
+        figure(
+            maximum,
+            if has_max {
+                base_color
+            } else {
+                theme::MUTED_TEXT
+            },
+            Length::Fill,
+            false,
+        ),
     ]
 }
 
@@ -2334,14 +3121,25 @@ fn table_hrule() -> Element<'static, Message> {
 
 /// Numeric table cell: right-aligned so decimal places line up. The pattern
 /// label column stays left-aligned.
-fn figure(value: String, color: Option<Color>) -> Element<'static, Message> {
+fn figure(value: String, color: Color, width: Length, bold: bool) -> Element<'static, Message> {
     text(value)
         .size(12)
-        .font(theme::MONO_FONT)
-        .color(color.unwrap_or(theme::MUTED_TEXT))
-        .width(Fill)
+        .font(if bold {
+            theme::UI_FONT_BOLD
+        } else {
+            theme::MONO_FONT
+        })
+        .color(color)
+        .width(width)
         .align_x(Alignment::Right)
         .into()
+}
+
+fn duration_stat(micros: Option<u64>) -> (String, bool) {
+    micros.map_or_else(
+        || ("-".into(), false),
+        |value| (format!("{:.1} ms", value as f64 / 1_000.0), true),
+    )
 }
 
 fn disconnected_view(error: Option<&String>, language: Language) -> Element<'_, Message> {
@@ -2459,13 +3257,6 @@ fn commit_text<T: Copy>(
     }
 }
 
-fn duration(micros: Option<u64>) -> String {
-    micros.map_or_else(
-        || "—".into(),
-        |value| format!("{:.1} ms", value as f64 / 1_000.0),
-    )
-}
-
 fn timing_range(range: Option<crate::protocol::TimingRange>) -> String {
     range.map_or_else(
         // Two lines by construction: the tile is too narrow for the full
@@ -2484,9 +3275,9 @@ fn timing_range(range: Option<crate::protocol::TimingRange>) -> String {
 
 fn percentage_value(count: u32, total: u32) -> String {
     if total == 0 {
-        "—".into()
+        "-".into()
     } else {
-        format!("{:.1}", f64::from(count) * 100.0 / f64::from(total))
+        format!("{:.1}%", f64::from(count) * 100.0 / f64::from(total))
     }
 }
 
@@ -2628,9 +3419,9 @@ mod tests {
     }
 
     #[test]
-    fn disabled_slider_drags_leave_the_draft_untouched() {
-        // The muted slider still emits drags while its group is off; the
-        // update arms must drop them so a gray control stays inert.
+    fn drags_for_a_hidden_group_leave_the_draft_untouched() {
+        // A drag queued before the mode switch arrives after its slider is
+        // unmounted; the update arm must drop it so the hidden value stays put.
         let mut app = super::SettingsApp::new();
         app.set_snapshot(baseline_snapshot());
         let _ = app.update(super::Message::ModeSelected(SocdMode::PressDelay));

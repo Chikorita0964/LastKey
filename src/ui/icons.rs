@@ -7,7 +7,7 @@ use iced::{
         layout, mouse, renderer,
         widget::{Tree, tree},
     },
-    widget::canvas::{Cache, Frame, LineCap, LineJoin, Path, Stroke, path::Arc},
+    widget::canvas::{Cache, Frame, LineCap, LineDash, LineJoin, Path, Stroke, path::Arc},
 };
 use std::{cell::Cell, f32::consts::PI};
 
@@ -50,7 +50,7 @@ struct Icon {
 #[derive(Default)]
 struct State {
     cache: Cache,
-    key: Cell<Option<(Name, Color)>>,
+    key: Cell<Option<(Name, Color, Size)>>,
 }
 impl<Message> Widget<Message, Theme, iced::Renderer> for Icon {
     fn tag(&self) -> tree::Tag {
@@ -83,6 +83,8 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for Icon {
         let bounds = layout.bounds();
         let color = self.color.unwrap_or(style.text_color);
         // Rectangular icons use the existing quad renderer; curves use cached Canvas geometry.
+        // The cache key includes the drawn size: geometry is baked in pixels,
+        // so reusing one size's tessellation at another size softens edges.
         if self.name == Name::Stop {
             quad(renderer, bounds, color, 0.2, 0.2, 0.6, 0.6);
             return;
@@ -96,11 +98,78 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for Icon {
         }
         let state = tree.state.downcast_ref::<State>();
         // Inherit the parent's live text color, including hover, focus, and disabled button states.
-        if state.key.replace(Some((self.name, color))) != Some((self.name, color)) {
+        let size = bounds.size();
+        if state.key.replace(Some((self.name, color, size))) != Some((self.name, color, size)) {
+            state.cache.clear();
+        }
+        let geometry = state
+            .cache
+            .draw(renderer, size, |frame| draw_icon(frame, self.name, color));
+        renderer.with_translation(Vector::new(bounds.x, bounds.y), |renderer| {
+            renderer.draw_geometry(geometry)
+        });
+    }
+}
+/// A 1 px dashed circle: the D-pad's resting guide. A quad border cannot dash,
+/// so this is canvas geometry, cached on its color the same way the icons are.
+pub fn dashed_ring<'a, Message: 'a>(size: f32, color: Color) -> Element<'a, Message> {
+    Element::new(Ring { size, color })
+}
+struct Ring {
+    size: f32,
+    color: Color,
+}
+#[derive(Default)]
+struct RingState {
+    cache: Cache,
+    color: Cell<Option<Color>>,
+}
+impl<Message> Widget<Message, Theme, iced::Renderer> for Ring {
+    fn tag(&self) -> tree::Tag {
+        tree::Tag::of::<RingState>()
+    }
+    fn state(&self) -> tree::State {
+        tree::State::new(RingState::default())
+    }
+    fn size(&self) -> Size<Length> {
+        Size::new(self.size.into(), self.size.into())
+    }
+    fn layout(
+        &mut self,
+        _: &mut Tree,
+        _: &iced::Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
+        layout::atomic(limits, self.size, self.size)
+    }
+    fn draw(
+        &self,
+        tree: &Tree,
+        renderer: &mut iced::Renderer,
+        _: &Theme,
+        _: &renderer::Style,
+        layout: Layout<'_>,
+        _: mouse::Cursor,
+        _: &Rectangle,
+    ) {
+        let bounds = layout.bounds();
+        let state = tree.state.downcast_ref::<RingState>();
+        if state.color.replace(Some(self.color)) != Some(self.color) {
             state.cache.clear();
         }
         let geometry = state.cache.draw(renderer, bounds.size(), |frame| {
-            draw_icon(frame, self.name, color)
+            // Inset by half the stroke so the ring stays inside its bounds.
+            let radius = (bounds.width.min(bounds.height) - 1.0) / 2.0;
+            frame.stroke(
+                &Path::circle(frame.center(), radius),
+                Stroke {
+                    line_dash: LineDash {
+                        segments: &[3.0, 3.0],
+                        offset: 0,
+                    },
+                    ..Stroke::default().with_color(self.color).with_width(1.0)
+                },
+            );
         });
         renderer.with_translation(Vector::new(bounds.x, bounds.y), |renderer| {
             renderer.draw_geometry(geometry)
@@ -247,6 +316,8 @@ fn draw_icon(frame: &mut Frame, name: Name, color: Color) {
             line(frame, &[(0.25, 0.25), (0.15, 0.45), (0.4, 0.55)], false);
         }
         Name::Play => {
+            // Reference insets the triangle by the 0.15 padding plus a
+            // small margin, matching the canvas `p + s * 0.08` origin.
             frame.fill(
                 &Path::new(|p| {
                     p.move_to(point(0.23, 0.15));
@@ -283,21 +354,25 @@ fn draw_icon(frame: &mut Frame, name: Name, color: Color) {
             line(frame, &[(0.22, 0.57), (0.5, 0.85), (0.78, 0.57)], false);
         }
         Name::ChevronLeft | Name::ChevronRight => {
-            let (a, b) = if name == Name::ChevronLeft {
-                (0.65, 0.35)
-            } else {
+            // Reference chevrons are tall: half-width 0.15, half-height
+            // 0.38 around the center, stroked heavier than body icons.
+            let (tip, base) = if name == Name::ChevronLeft {
                 (0.35, 0.65)
+            } else {
+                (0.65, 0.35)
             };
             let p = Path::new(|p| {
-                p.move_to(point(a, 0.12));
-                p.line_to(point(b, 0.5));
-                p.line_to(point(a, 0.88));
+                p.move_to(point(base, 0.12));
+                p.line_to(point(tip, 0.5));
+                p.line_to(point(base, 0.88));
             });
             frame.stroke(&p, stroke.with_width((s * 0.11).max(1.8)));
         }
         Name::Target => {
+            // Reference target: outer ring at the padded radius with a
+            // filled center at 35% of that radius.
             arc(frame, 0.5, 0.5, 0.35, 0., 2. * PI);
-            frame.fill(&Path::circle(point(0.5, 0.5), s * 0.1225), color);
+            frame.fill(&Path::circle(point(0.5, 0.5), s * 0.35 * 0.35), color);
         }
         Name::Layers => {
             let paths: &[(&[(f32, f32)], bool)] = &[

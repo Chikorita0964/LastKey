@@ -89,10 +89,25 @@ struct RangeSlider<'a, Message> {
     on_change: Box<dyn Fn(bool, f32) -> Message + 'a>,
 }
 
+/// Drag state for the two-handle rail. The reference jumps the grabbed
+/// handle to the pointer on press (unless grabbed within 12 px, where the
+/// grab offset is preserved), then drags the moving handle while the other
+/// stays anchored. Handles may cross: the pair is re-sorted on every move,
+/// so a merged pair can be pulled apart in either direction.
 #[derive(Default)]
 struct RangeState {
-    dragging_minimum: Option<bool>,
+    dragging: Option<RangeDrag>,
 }
+
+#[derive(Clone, Copy)]
+struct RangeDrag {
+    anchor: f32,
+    offset: f32,
+}
+
+/// Pixel distance within which a press keeps its grab offset instead of
+/// jumping the handle to the pointer (reference behavior).
+const GRAB_RADIUS_PX: f32 = 12.0;
 
 impl<Message> Widget<Message, Theme, iced::Renderer> for RangeSlider<'_, Message> {
     fn tag(&self) -> tree::Tag {
@@ -124,10 +139,15 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for RangeSlider<'_, Message
     ) {
         let state = tree.state.downcast_mut::<RangeState>();
         if !self.enabled {
-            state.dragging_minimum = None;
+            state.dragging = None;
             return;
         }
         let bounds = layout.bounds();
+        let track = (bounds.width - 16.0).max(1.0);
+        let to_value = |x: f32| ((x - bounds.x - 8.0) / track * 20.0).clamp(0.0, 20.0);
+        let to_rounded = |x: f32| {
+            (((x - bounds.x - 8.0) / track * 200.0).round() / 10.0).clamp(self.floor, 20.0)
+        };
         let position = match event {
             Event::Touch(touch::Event::FingerPressed { position, .. })
             | Event::Touch(touch::Event::FingerMoved { position, .. }) => Some(*position),
@@ -137,22 +157,43 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for RangeSlider<'_, Message
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
             | Event::Touch(touch::Event::FingerPressed { .. }) => {
                 if let Some(point) = position.filter(|point| bounds.contains(*point)) {
-                    let value = ((point.x - bounds.x - 8.0) / (bounds.width - 16.0).max(1.0)
-                        * 20.0)
-                        .clamp(0.0, 20.0);
+                    let value = to_value(point.x);
                     let minimum = self.minimum.min(20.0);
                     let maximum = self.maximum.min(20.0);
-                    state.dragging_minimum = Some(if minimum == maximum {
+                    let select_minimum = if minimum == maximum {
                         value <= minimum
                     } else {
                         (value - minimum).abs() <= (value - maximum).abs()
-                    });
+                    };
+                    let (selected, anchor) = if select_minimum {
+                        (minimum, maximum)
+                    } else {
+                        (maximum, minimum)
+                    };
+                    // Near-thumb grabs drag by offset; far presses jump.
+                    let offset = if (value - selected).abs() * track / 20.0 <= GRAB_RADIUS_PX {
+                        value - selected
+                    } else {
+                        0.0
+                    };
+                    state.dragging = Some(RangeDrag { anchor, offset });
+                    // Pressing far from either thumb jumps it immediately,
+                    // like the reference pointer-down handler.
+                    let jumped = to_rounded(point.x - offset * track / 20.0);
+                    let (minimum, maximum) = if jumped <= anchor {
+                        (jumped, anchor)
+                    } else {
+                        (anchor, jumped)
+                    };
+                    shell.publish((self.on_change)(true, minimum));
+                    shell.publish((self.on_change)(false, maximum));
+                    shell.capture_event();
                 }
             }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
             | Event::Touch(touch::Event::FingerLifted { .. } | touch::Event::FingerLost { .. })
             | Event::Window(window::Event::Unfocused) => {
-                if state.dragging_minimum.take().is_some() {
+                if state.dragging.take().is_some() {
                     shell.capture_event();
                 }
                 return;
@@ -161,19 +202,17 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for RangeSlider<'_, Message
             | Event::Touch(touch::Event::FingerMoved { .. }) => {}
             _ => return,
         }
-        if let Some(is_minimum) = state.dragging_minimum
+        if let Some(drag) = state.dragging
             && let Some(point) = position
         {
-            let value = (((point.x - bounds.x - 8.0) / (bounds.width - 16.0).max(1.0) * 200.0)
-                .round()
-                / 10.0)
-                .clamp(self.floor, 20.0);
-            let value = if is_minimum {
-                value.min(self.maximum)
+            let moved = to_rounded(point.x - drag.offset * track / 20.0);
+            let (minimum, maximum) = if moved <= drag.anchor {
+                (moved, drag.anchor)
             } else {
-                value.max(self.minimum)
+                (drag.anchor, moved)
             };
-            shell.publish((self.on_change)(is_minimum, value));
+            shell.publish((self.on_change)(true, minimum));
+            shell.publish((self.on_change)(false, maximum));
             shell.capture_event();
         }
     }
@@ -194,11 +233,13 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for RangeSlider<'_, Message
         let center = bounds.center_y();
         let muted = Color::from_rgb8(203, 213, 225);
         let accent = if self.enabled { self.accent } else { muted };
+        // Reference rail is `h-3` with a bordered track; thumbs are `w-4`
+        // white circles with a 3 px accent ring.
         for (start, width, color) in [
             (
                 bounds.x + 8.0,
                 (bounds.width - 16.0).max(0.0),
-                Color::from_rgb8(226, 232, 240),
+                Color::from_rgb8(241, 245, 249),
             ),
             (
                 x(self.minimum),
@@ -210,12 +251,12 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for RangeSlider<'_, Message
                 renderer::Quad {
                     bounds: Rectangle {
                         x: start,
-                        y: center - 5.0,
+                        y: center - 6.0,
                         width,
-                        height: 10.0,
+                        height: 12.0,
                     },
                     border: Border {
-                        radius: 5.0.into(),
+                        radius: 6.0.into(),
                         ..Border::default()
                     },
                     ..renderer::Quad::default()

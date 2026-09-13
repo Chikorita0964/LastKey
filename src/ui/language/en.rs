@@ -4,33 +4,59 @@
 //! against. A string missing here still renders as written.
 pub fn text(source: &str) -> Option<&'static str> {
     Some(match source {
+        "Play preview" => "Play preview",
+        "Pause preview" => "Pause preview",
+        "Unsaved Draft Changes" => "Unsaved Draft Changes",
+        "Click Apply to commit draft edits." => "Click Apply to commit draft edits.",
+        "Updates live while measuring" => "Updates live while measuring",
+        "Based on neutral transitions" => "Based on neutral transitions",
+        "Based on physical overlaps" => "Based on physical overlaps",
+        "Shows how long each key is held and where it overlaps its opposite, live." => {
+            "Shows how long each key is held and where it overlaps its opposite, live."
+        }
+        "Keyboard input capture is active" => "Keyboard input capture is active",
+        "Each overlap randomly picks one of the two delays below." => {
+            "Each overlap randomly picks one of the two delays below."
+        }
+        "Unclear input order (<1 ms), excluded from timing ranges." => {
+            "Unclear input order (<1 ms), excluded from timing ranges."
+        }
+        "Preview" => "Preview",
+        "Previous example" => "Previous example",
+        "Next example" => "Next example",
+        "Game receives A + D" => "Game receives A + D",
+        "Game receives no direction" => "Game receives no direction",
+        "Game receives A" => "Game receives A",
+        "Game receives D" => "Game receives D",
         "Key mappings" => "Key mappings",
         "Input timings" => "Input timings",
         "Key Input Timeline" => "Key Input Timeline",
         "Input timing measurement" => "Input timing measurement",
         "Measured Input Transitions" => "Measured Input Transitions",
         "Suggested delays" => "Suggested delays",
-        "Hardware scan codes the SOCD filter uses." => "Hardware scan codes the SOCD filter uses.",
+        "Hardware scan codes the SOCD filter uses" => "Hardware scan codes the SOCD filter uses",
         "How opposite-direction overlaps resolve." => "How opposite-direction overlaps resolve.",
-        "Restore defaults" => "Restore defaults",
+        "Restore mapping defaults" => "Restore mapping defaults",
+        "Restore timing defaults" => "Restore timing defaults",
         "Restore all defaults" => "Restore all defaults",
         "Revert" => "Revert",
         "Apply" => "Apply",
+        "Profile Slots" => "Profile Slots",
         "Profiles" => "Profiles",
         "Profile" => "Profile",
         "Language" => "Language",
         "Rename" => "Rename",
         "Load" => "Load",
+        "Cancel" => "Cancel",
         "Close" => "Close",
-        "Save name" => "Save name",
-        "Discard edits and load" => "Discard edits and load",
-        "Profile name · 1–64 characters" => "Profile name · 1–64 characters",
         "Profile name" => "Profile name",
+        "Changes are saved when you click Apply." => "Changes are saved when you click Apply.",
         "Load a slot to activate it immediately. Apply saves edits to the active slot." => {
             "Load a slot to activate it immediately. Apply saves edits to the active slot."
         }
-        "The saved slot will become active immediately." => {
-            "The saved slot will become active immediately."
+        "Load this slot?" => "Load this slot?",
+        "Unapplied draft changes will be discarded." => {
+            "Unapplied draft changes will be discarded."
         }
         "Loading and activating profile…" => "Loading and activating profile…",
         "Saving profile name…" => "Saving profile name…",
@@ -38,14 +64,8 @@ pub fn text(source: &str) -> Option<&'static str> {
         "Profile renamed." => "Profile renamed.",
         "Active" => "Active",
         "Updating…" => "Updating…",
-        "ON" => "ON",
-        "OFF" => "OFF",
-        "Click a keycap to rebind; click again to cancel." => {
-            "Click a keycap to rebind; click again to cancel."
-        }
-        "Modifiers like Shift, Ctrl, and Alt are not captured." => {
-            "Modifiers like Shift, Ctrl, and Alt are not captured."
-        }
+        "Enable the SOCD filter" => "Enable the SOCD filter",
+        "Disable the SOCD filter" => "Disable the SOCD filter",
         "All keys uniquely assigned." => "All keys uniquely assigned.",
         "Duplicate key bindings detected." => "Duplicate key bindings detected.",
         "UP" => "UP",
@@ -62,17 +82,8 @@ pub fn text(source: &str) -> Option<&'static str> {
         "Release delay" => "Release delay",
         "New Key Press Delay" => "New Key Press Delay",
         "Previous Key Release Delay" => "Previous Key Release Delay",
-        "Start timeline" => "Start timeline",
-        "Stop timeline" => "Stop timeline",
         "Starting…" => "Starting…",
         "Stopping…" => "Stopping…",
-        "No input yet" => "No input yet",
-        "Filter output" => "Filter output",
-        "Physical input" => "Physical input",
-        "Last 1 second · mapped keys only · memory cleared when stopped" => {
-            "Last 1 second · mapped keys only · memory cleared when stopped"
-        }
-        "Now" => "Now",
         "Start measurement" => "Start measurement",
         "Stop measurement" => "Stop measurement",
         "Reset session" => "Reset session",
@@ -82,13 +93,10 @@ pub fn text(source: &str) -> Option<&'static str> {
         "No measurement results yet." => "No measurement results yet.",
         "Physical key edges" => "Physical key edges",
         "Valid paired samples" => "Valid paired samples",
+        "Physical overlap share" => "Physical overlap share",
         "Indistinguishable share" => "Indistinguishable share",
-        "Live counts from this session, values freeze when measurement stops." => {
-            "Live counts from this session, values freeze when measurement stops."
-        }
         "INPUT PATTERN" => "INPUT PATTERN",
         "SAMPLES" => "SAMPLES",
-        "MEDIAN" => "MEDIAN",
         "MIN" => "MIN",
         "MAX" => "MAX",
         "Neutral transition" => "Neutral transition",
@@ -98,9 +106,6 @@ pub fn text(source: &str) -> Option<&'static str> {
             "Based on P10-P50 input timings, excluding indistinguishable inputs."
         }
         "Apply suggestions" => "Apply suggestions",
-        "SOCD Transition Delay" => "SOCD Transition Delay",
-        "Preserved Overlap Duration" => "Preserved Overlap Duration",
-        "Unsaved draft changes" => "Unsaved draft changes",
         "Synchronized" => "Synchronized",
         "Settings are synchronized with the runtime." => {
             "Settings are synchronized with the runtime."
@@ -118,20 +123,27 @@ pub fn text(source: &str) -> Option<&'static str> {
         "Recommendations written to the draft. Select Apply when ready." => {
             "Recommendations written to the draft. Select Apply when ready."
         }
-        "On each opposing-key overlap, drop the previous direction and send the new one with no added delay." => {
-            "On each opposing-key overlap, drop the previous direction and send the new one with no added delay."
+        "Detect an opposite-direction overlap." => "Detect an opposite-direction overlap.",
+        "Release the previous key output immediately." => {
+            "Release the previous key output immediately."
         }
-        "On each opposing-key overlap, release the previous direction immediately and press the new one after the configured delay." => {
-            "On each opposing-key overlap, release the previous direction immediately and press the new one after the configured delay."
+        "Send the new key immediately. 0 ms added delay" => {
+            "Send the new key immediately. 0 ms added delay"
         }
-        "On each opposing-key overlap, randomly select press delay or release delay using the configured ratio." => {
-            "On each opposing-key overlap, randomly select press delay or release delay using the configured ratio."
+        "Send the new key immediately." => "Send the new key immediately.",
+        "Wait a random time within {range}. This gap sends no input" => {
+            "Wait a random time within {range}. This gap sends no input"
         }
-        "On each opposing-key overlap, press the new direction immediately and release the previous one after the configured delay." => {
-            "On each opposing-key overlap, press the new direction immediately and release the previous one after the configured delay."
+        "Send the new key once the wait ends." => "Send the new key once the wait ends.",
+        "Wait a random time within {range}. The overlap stays live" => {
+            "Wait a random time within {range}. The overlap stays live"
         }
-        "Click a keycap to rebind" => "Click a keycap to rebind",
-        "Press a key to assign it" => "Press a key to assign it",
+        "Release the previous key output once the wait ends." => {
+            "Release the previous key output once the wait ends."
+        }
+        "Click keycap to rebind" => "Click keycap to rebind",
+        "Press a new key on your keyboard..." => "Press a new key on your keyboard...",
+        "ESC Cancel" => "ESC Cancel",
         _ => return None,
     })
 }
