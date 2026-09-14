@@ -1,4 +1,4 @@
-#[cfg(feature = "iced-ui")]
+#[cfg(feature = "egui-ui")]
 use std::{fs, path::PathBuf};
 
 fn main() {
@@ -8,20 +8,20 @@ fn main() {
         resource
             .compile()
             .expect("failed to embed the LastKey application icon");
-        // The generated pixels are read only by `src/ui/app.rs`, which is
+        // The generated pixels are read only by `src/ui2/app.rs`, which is
         // behind the same feature, so the decode and its dependency belong
         // to it as well.
-        #[cfg(feature = "iced-ui")]
+        #[cfg(feature = "egui-ui")]
         extract_window_icon();
     }
 }
 
 /// Unpacks the 32x32 PNG layer from the application ICO and emits it as RGBA
-/// bytes for the Iced-native window icon (`iced::window::icon::from_rgba`).
-/// The checked-in ICO stores every layer PNG-compressed, so extraction is a
-/// byte slice plus a PNG decode. Build-time only, keeping the resident
-/// runtime dependency graph unchanged.
-#[cfg(feature = "iced-ui")]
+/// bytes for the window icon (`egui::IconData`). The checked-in ICO stores
+/// every layer PNG-compressed, so extraction is a byte slice plus a PNG
+/// decode. Build-time only, keeping the resident runtime dependency graph
+/// unchanged.
+#[cfg(feature = "egui-ui")]
 fn extract_window_icon() {
     const ICON_WIDTH: u32 = 32;
     const ICON_HEIGHT: u32 = 32;
@@ -70,7 +70,7 @@ fn extract_window_icon() {
 /// Returns the raw PNG bytes of the `size`x`size` layer in a PNG-compressed
 /// ICO file: a six-byte header, sixteen-byte directory entries, then the
 /// image blobs the entries point at.
-#[cfg(feature = "iced-ui")]
+#[cfg(feature = "egui-ui")]
 fn square_png_layer(ico: &[u8], size: u32) -> Option<&[u8]> {
     if ico.get(2..4) != Some(&[1, 0]) {
         return None;

@@ -7,7 +7,7 @@ iterating on a change, and the **full gate** you run once before committing.
 ## Scoped loop (while working)
 
 Run the smallest set that can fail because of what you touched. Compilation dominates the cost here,
-not the tests — switching feature sets rebuilds the world, and the `iced-ui` set drags in wgpu — so
+not the tests — switching feature sets rebuilds the world, and the `egui-ui` set drags in wgpu — so
 stay inside one feature set unless the change genuinely spans both.
 
 | Changed | Run |
@@ -18,7 +18,7 @@ stay inside one feature set unless the change genuinely spans both.
 | `src/settings.rs`, `src/protocol.rs` — the stored or wire **shape** | The full gate. Neither has a local blast radius |
 | `src/app/`, `src/platform/windows/` | `cargo test --lib` |
 | `src/platform/linux/` | `cargo check --target x86_64-unknown-linux-gnu` |
-| `src/ui/`, `src/ui/theme.rs` | `cargo test --no-default-features --features iced-ui --lib` |
+| `src/ui2/` | `cargo test --no-default-features --features egui-ui --lib` |
 | `build.rs`, dependency edits in `Cargo.toml` | `cargo tree --no-default-features -e normal` and one clean build |
 | Packaging scripts | `.github\scripts\Test-ReleaseFormDefault.ps1` |
 | Markdown only | Nothing. `git diff --check` at most |
@@ -32,19 +32,19 @@ it re-lints every target and rarely says anything new between two edits to the s
 cargo fmt --all -- --check
 cargo test --locked --all-targets
 cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked --no-default-features --features iced-ui --lib --bin lastkey-settings
-cargo clippy --locked --no-default-features --features iced-ui --all-targets -- -D warnings
+cargo test --locked --no-default-features --features egui-ui --lib --bin lastkey-settings
+cargo clippy --locked --no-default-features --features egui-ui --all-targets -- -D warnings
 cargo check --locked --target x86_64-unknown-linux-gnu --all-targets
 cargo tree --no-default-features -e normal
 git diff --check
 .github\scripts\Test-ReleaseFormDefault.ps1
 ```
 
-- **The `iced-ui` run is not optional after a `src/ui/` change.** `src/lib.rs` gates `pub mod ui`
+- **The `egui-ui` run is not optional after a `src/ui2/` change.** `src/lib.rs` gates `pub mod ui2`
   behind the feature, so the default run never compiles that module. Clippy with `--all-features`
   type-checks its tests but does not execute them.
 - Both Clippy configurations use `--all-targets` so test code is linted too. The default dependency
-  tree must stay free of Iced and wgpu. Test counts are deliberately not recorded here.
+  tree must stay free of egui and wgpu. Test counts are deliberately not recorded here.
 - Rebuilding fails with OS error 5 while the settings UI or the runtime holds `target\debug\*.exe`.
   Close it, run the `--lib` and integration targets (which do not link the binaries), or pass a
   separate `--target-dir`, which stays inside the `target/` ignore rule.

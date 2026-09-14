@@ -10,7 +10,7 @@ default-run = "lastkey"
 
 [features]
 default = []
-iced-ui = ["dep:iced", "dep:png"]
+egui-ui = ["dep:eframe", "dep:egui", "dep:png"]
 
 [[bin]]
 name = "lastkey"
@@ -19,7 +19,7 @@ path = "src/bin/lastkey.rs"
 [[bin]]
 name = "lastkey-settings"
 path = "src/bin/lastkey-settings.rs"
-required-features = ["iced-ui"]
+required-features = ["egui-ui"]
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
@@ -27,7 +27,9 @@ serde_json = "1.0"
 toml = "0.9"
 
 [target.'cfg(windows)'.dependencies]
-iced = { git = "https://github.com/iced-rs/iced.git", rev = "f8127c84dddf0b9e32c5e7dbb822911652f72665", default-features = false, features = ["sipper", "thread-pool", "wgpu", "advanced", "canvas"], optional = true }
+# `accesskit` is a default feature here; it is why the UI is egui and not iced.
+eframe = { version = "0.36.2", optional = true }
+egui = { version = "0.36.2", optional = true }
 tray-icon = "0.24.2"
 windows = { version = "0.62", features = [
     "Win32_Foundation",

@@ -22,8 +22,8 @@ jobs:
       - name: Default lint
         run: cargo clippy --all-targets -- -D warnings
       - name: Settings UI tests
-        run: cargo test --no-default-features --features iced-ui --lib --bin lastkey-settings
+        run: cargo test --no-default-features --features egui-ui --lib --bin lastkey-settings
       - name: Settings UI lint
-        run: cargo clippy --no-default-features --features iced-ui --all-targets -- -D warnings
+        run: cargo clippy --no-default-features --features egui-ui --all-targets -- -D warnings
       - name: Check Linux backend
         run: cargo check --target x86_64-unknown-linux-gnu --lib

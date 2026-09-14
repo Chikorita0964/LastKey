@@ -1,11 +1,11 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 #[cfg(windows)]
-fn main() -> iced::Result {
+fn main() -> eframe::Result {
     let Some(_single_instance) = SettingsSingleInstance::acquire() else {
         return Ok(());
     };
-    lastkey::ui::run()
+    lastkey::ui2::run()
 }
 
 #[cfg(windows)]

@@ -104,7 +104,7 @@ Open a **Visual Studio developer command prompt** in the project directory.
 
 ```bat
 cargo build --locked --release --target x86_64-pc-windows-msvc --bin lastkey
-cargo build --locked --release --target x86_64-pc-windows-msvc --no-default-features --features iced-ui --bin lastkey-settings
+cargo build --locked --release --target x86_64-pc-windows-msvc --no-default-features --features egui-ui --bin lastkey-settings
 ```
 
 Outputs: `target\x86_64-pc-windows-msvc\release\lastkey.exe` and `target\x86_64-pc-windows-msvc\release\lastkey-settings.exe`. Keep both files together; packaged builds name the second file `LastKey.Settings.exe`.
@@ -129,8 +129,8 @@ Use the settings window to choose four unique physical keys, configure transitio
 cargo fmt --all -- --check
 cargo test --all-targets
 cargo clippy --all-targets -- -D warnings
-cargo test --no-default-features --features iced-ui --lib --bin lastkey-settings
-cargo clippy --no-default-features --features iced-ui --lib --bin lastkey-settings -- -D warnings
+cargo test --no-default-features --features egui-ui --lib --bin lastkey-settings
+cargo clippy --no-default-features --features egui-ui --lib --bin lastkey-settings -- -D warnings
 ```
 
 ## Credits and license

@@ -4,5 +4,5 @@ pub mod platform;
 pub mod protocol;
 pub mod settings;
 
-#[cfg(all(windows, feature = "iced-ui"))]
-pub mod ui;
+#[cfg(all(windows, feature = "egui-ui"))]
+pub mod ui2;

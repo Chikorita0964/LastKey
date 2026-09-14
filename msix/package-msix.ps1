@@ -60,7 +60,7 @@ Push-Location $projectRoot
 try {
     & $cargo.Source build --locked --release --target $Target --bin lastkey
     if ($LASTEXITCODE -ne 0) { throw "LastKey runtime build failed with exit code $LASTEXITCODE." }
-    & $cargo.Source build --locked --release --target $Target --no-default-features --features iced-ui --bin lastkey-settings
+    & $cargo.Source build --locked --release --target $Target --no-default-features --features egui-ui --bin lastkey-settings
     if ($LASTEXITCODE -ne 0) { throw "LastKey settings build failed with exit code $LASTEXITCODE." }
 }
 finally { Pop-Location }
