@@ -6,6 +6,9 @@
 //! interactive node comes from the response: a custom-drawn widget is
 //! invisible to AccessKit, so `ui.interact` plus a labelled [`WidgetInfo`] is
 //! what lets `egui_kittest` and the inspection tools find the keycap by name.
+//!
+//! Every colour and shadow comes from [`super::theme`]; this module keeps only
+//! metrics that no theme owner defines.
 
 use std::sync::Arc;
 
@@ -34,14 +37,9 @@ const LEGEND_GAP: f32 = 4.0;
 /// The legend's arrow glyph, as `icons::icon(arrow, 12.0, ...)` drew it.
 const ARROW_SIZE: f32 = 12.0;
 /// How far a glow or drop shadow reaches past the keycap's own box: the
-/// widest `Shadow::blur` here is 8 (`theme::keycap`'s rebind ring), and
+/// widest `Shadow::blur` here is [`theme::KEYCAP_REBIND_GLOW_BLUR`], and
 /// epaint's penumbra extends half the blur in each direction.
 const SHADOW_REACH: f32 = 12.0;
-
-/// `theme::keycap`'s hover pair, which the Iced theme writes inline rather
-/// than as named constants (`hover:bg-slate-50`, `hover:border-indigo-400`).
-const HOVER_FILL: Color32 = Color32::from_rgb(0xf8, 0xfa, 0xfc);
-const HOVER_BORDER: Color32 = Color32::from_rgb(0x81, 0x8c, 0xf8);
 
 /// One D-pad direction's display identity: its capture slot, sub-legend,
 /// arrow, accent colour, and outer ring glow colour. Ported unchanged from the
@@ -94,19 +92,10 @@ pub const RIGHT: Direction = Direction {
     ring: Color32::from_rgb(0xd8, 0xb4, 0xfe),
 };
 
-/// The keycap's paint state. The Iced version decided this from the snapshot's
-/// capture slot and the live press set; the view layer still does, it just
-/// passes the answer in.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum KeycapMode {
-    /// At rest: white box, or the duplicate-key error tint.
-    Normal,
-    /// The bound key is physically down: accent fill, pressed shadow, white
-    /// bold label.
-    Pressed,
-    /// This slot is capturing: accent fill, 8px glow ring, `...` label.
-    Rebinding,
-}
+/// The keycap's paint state. [`super::theme::KeycapMode`] is the one owner
+/// (it came from the Iced `theme::keycap` style function); this re-export
+/// keeps the widget's own surface stable for the card and its tests.
+pub use super::theme::KeycapMode;
 
 /// Everything one keycap needs to draw itself this frame.
 #[derive(Clone, Copy, Debug)]
@@ -170,6 +159,11 @@ pub struct KeyDisplay {
 /// Splits a key name into at most two display lines and picks the size the
 /// longest line takes. Compound names (`Numpad 8`, `Arrow Up`, `Backspace`)
 /// are the case this exists for.
+///
+/// Lengths are counted in characters, never bytes: a name may carry non-ASCII
+/// text, and slicing a UTF-8 string at a byte offset that falls inside a
+/// character panics. The `starts_with` guards are ASCII prefixes, so their
+/// byte offsets are always char boundaries.
 pub fn format_key_for_display(key: &str) -> KeyDisplay {
     if key.is_empty() {
         return KeyDisplay {
@@ -178,21 +172,22 @@ pub fn format_key_for_display(key: &str) -> KeyDisplay {
         };
     }
     let upper = key.trim().to_ascii_uppercase();
-    let lines: Vec<String> = if upper.starts_with("ARROW") && upper.len() > 5 {
+    let chars = upper.chars().count();
+    let lines: Vec<String> = if upper.starts_with("ARROW") && chars > 5 {
         vec!["ARROW".to_string(), upper[5..].trim().to_string()]
-    } else if upper.starts_with("NUMPAD") && upper.len() > 6 {
+    } else if upper.starts_with("NUMPAD") && chars > 6 {
         vec!["NUMPAD".to_string(), upper[6..].trim().to_string()]
-    } else if upper.starts_with("NUM ") && upper.len() > 4 {
+    } else if upper.starts_with("NUM ") && chars > 4 {
         vec!["NUM".to_string(), upper[4..].trim().to_string()]
-    } else if upper.starts_with("PAGE") && upper.len() > 4 {
+    } else if upper.starts_with("PAGE") && chars > 4 {
         vec!["PAGE".to_string(), upper[4..].trim().to_string()]
     } else if upper == "BACKSPACE" {
         vec!["BACK".to_string(), "SPACE".to_string()]
     } else if upper == "CAPSLOCK" {
         vec!["CAPS".to_string(), "LOCK".to_string()]
-    } else if upper.starts_with("LEFT") && upper.len() > 4 {
+    } else if upper.starts_with("LEFT") && chars > 4 {
         vec!["LEFT".to_string(), upper[4..].trim().to_string()]
-    } else if upper.starts_with("RIGHT") && upper.len() > 5 {
+    } else if upper.starts_with("RIGHT") && chars > 5 {
         vec!["RIGHT".to_string(), upper[5..].trim().to_string()]
     } else if upper.contains(' ') {
         let parts: Vec<&str> = upper.split_whitespace().collect();
@@ -203,21 +198,27 @@ pub fn format_key_for_display(key: &str) -> KeyDisplay {
         } else {
             vec![upper.clone()]
         }
-    } else if upper.len() >= 7 {
+    } else if chars >= 7 {
         if let Some(pos) = upper.find(|c: char| c.is_ascii_digit())
             && pos > 0
         {
+            // `find` reports a byte index on a char boundary, so this split is
+            // safe for any preceding text.
             vec![upper[..pos].to_string(), upper[pos..].to_string()]
         } else {
-            let mid = upper.len().div_ceil(2);
-            vec![upper[..mid].to_string(), upper[mid..].to_string()]
+            let split = char_boundary_at_half(&upper);
+            vec![upper[..split].to_string(), upper[split..].to_string()]
         }
     } else {
         vec![upper.clone()]
     };
 
     if lines.len() > 1 {
-        let max_len = lines.iter().map(|line| line.len()).max().unwrap_or(0);
+        let max_len = lines
+            .iter()
+            .map(|line| line.chars().count())
+            .max()
+            .unwrap_or(0);
         let size = if max_len <= 4 {
             12.0
         } else if max_len <= 6 {
@@ -227,16 +228,24 @@ pub fn format_key_for_display(key: &str) -> KeyDisplay {
         };
         KeyDisplay { lines, size }
     } else {
-        let len = upper.len();
-        let size = if len <= 2 {
+        let size = if chars <= 2 {
             18.0
-        } else if len <= 4 {
+        } else if chars <= 4 {
             14.0
         } else {
             11.0
         };
         KeyDisplay { lines, size }
     }
+}
+
+/// The byte offset of the halfway character boundary, rounding up, so
+/// `text[..split]` and `text[split..]` are valid halves of `text`.
+fn char_boundary_at_half(text: &str) -> usize {
+    let half = text.chars().count().div_ceil(2);
+    text.char_indices()
+        .nth(half)
+        .map_or(text.len(), |(index, _)| index)
 }
 
 fn paint(
@@ -254,14 +263,14 @@ fn paint(
     let (fill, edge, shadow, ink) = match state.mode {
         KeycapMode::Rebinding => (
             direction.accent,
-            Color32::from_white_alpha(102),
-            glow(direction.ring, 8),
+            theme::KEYCAP_REBIND_EDGE,
+            glow(direction.ring, theme::KEYCAP_REBIND_GLOW_BLUR),
             Color32::WHITE,
         ),
         KeycapMode::Pressed => (
             direction.accent,
             direction.accent,
-            glow(direction.ring, 3),
+            glow(direction.ring, theme::KEYCAP_PRESSED_GLOW_BLUR),
             Color32::WHITE,
         ),
         KeycapMode::Normal => {
@@ -270,9 +279,9 @@ fn paint(
             } else if state.duplicate {
                 theme::ERROR_BG
             } else if hovered {
-                HOVER_FILL
+                theme::KEYCAP_HOVER_BG
             } else {
-                Color32::WHITE
+                theme::SURFACE
             };
             let ink = if held {
                 Color32::WHITE
@@ -286,11 +295,11 @@ fn paint(
             } else if held {
                 direction.accent
             } else if hovered {
-                HOVER_BORDER
+                theme::KEYCAP_HOVER_BORDER
             } else {
                 theme::BORDER
             };
-            (fill, edge, drop_shadow(), ink)
+            (fill, edge, theme::SHADOW_KEYCAP, ink)
         }
     };
 
@@ -308,14 +317,19 @@ fn paint(
     let content = rect.shrink(PADDING);
     let legend = Rect::from_min_size(content.min, Vec2::new(content.width(), LEGEND_HEIGHT));
     let legend_ink = if active {
+        // The Iced keycap's legend: `Color::from_rgba(1.0, 1.0, 1.0, 0.8)`.
         Color32::from_white_alpha(204)
     } else {
         theme::ICON_MUTED
     };
+    // Text is laid out with `PLACEHOLDER` so the paint-time colour below is
+    // what actually renders; a galley laid out with a real colour ignores the
+    // colour handed to `Painter::galley` (see `secondary_button`'s regression
+    // test in `mapping.rs`).
     let legend_galley = painter.layout_no_wrap(
         direction.label.to_owned(),
         FontId::proportional(LEGEND_SIZE),
-        legend_ink,
+        Color32::PLACEHOLDER,
     );
     stamp_galley(
         &painter,
@@ -396,9 +410,17 @@ fn paint_text_block(
     gap: f32,
     color: Color32,
 ) {
+    // `PLACEHOLDER` keeps the layout colour-neutral: the paint-time `color`
+    // below is the one that renders.
     let galleys: Vec<Arc<Galley>> = lines
         .iter()
-        .map(|line| painter.layout_no_wrap(line.clone(), FontId::proportional(size), color))
+        .map(|line| {
+            painter.layout_no_wrap(
+                line.clone(),
+                FontId::proportional(size),
+                Color32::PLACEHOLDER,
+            )
+        })
         .collect();
     let height: f32 = galleys.iter().map(|galley| galley.size().y).sum::<f32>()
         + gap * galleys.len().saturating_sub(1) as f32;
@@ -447,18 +469,8 @@ fn paint_arrow(painter: &Painter, rect: Rect, arrow: Arrow, color: Color32) {
     }
 }
 
-/// The Iced `theme::keycap` drop shadow: `offset (0, 1)`, `blur 2`, black 5%.
-fn drop_shadow() -> Shadow {
-    Shadow {
-        offset: [0, 1],
-        blur: 2,
-        spread: 0,
-        color: Color32::from_black_alpha(13),
-    }
-}
-
 /// The Iced pressed/rebinding ring: a zero-offset glow in the direction's own
-/// ring colour.
+/// ring colour, at the theme-owned blur for the state.
 fn glow(color: Color32, blur: u8) -> Shadow {
     Shadow {
         offset: [0, 0],
@@ -507,6 +519,32 @@ mod tests {
         let empty = format_key_for_display("");
         assert_eq!(empty.lines, vec!["-"]);
         assert_eq!(empty.size, 16.0);
+    }
+
+    #[test]
+    fn multi_byte_names_split_without_panicking() {
+        // Seven characters of three bytes each: a byte-based midpoint lands
+        // inside a character and panics.
+        let long = format_key_for_display("가나다라마바사");
+        assert_eq!(long.lines, vec!["가나다라", "마바사"]);
+        assert_eq!(long.size, 12.0);
+
+        // Five characters, fifteen bytes: below the seven-*character* split
+        // threshold even though it exceeds it in bytes.
+        let five = format_key_for_display("가나다라마");
+        assert_eq!(five.lines, vec!["가나다라마"]);
+        assert_eq!(five.size, 11.0);
+
+        // Two characters, four bytes: the size classification counts
+        // characters too, so this keeps the two-character size.
+        let short = format_key_for_display("F한");
+        assert_eq!(short.lines, vec!["F한"]);
+        assert_eq!(short.size, 18.0);
+
+        // A digit after multi-byte text splits on the digit's own char
+        // boundary.
+        let digit = format_key_for_display("가나다라마바4");
+        assert_eq!(digit.lines, vec!["가나다라마바", "4"]);
     }
 
     #[test]
