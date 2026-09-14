@@ -3,13 +3,17 @@
 //! specification until cutover.
 
 mod app;
+pub mod keycap;
 pub mod language;
+pub mod mapping;
 pub mod message;
 pub mod preview;
 pub mod state;
 #[cfg(test)]
 mod state_tests;
+pub mod theme;
 pub mod timeline;
+pub mod timing;
 
 pub use app::run;
 
