@@ -52,6 +52,12 @@ pub const IPC_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// Silence after which a session pump backs off to [`IPC_IDLE_POLL_INTERVAL`].
 pub const IPC_IDLE_AFTER: Duration = Duration::from_millis(250);
 
+/// Pump wait for a settings window that has lost focus. It draws no frames
+/// then, so it only needs to drain the pipe often enough that the runtime's
+/// writes never block — the filter engine runs in that other process and must
+/// not be slowed by a deactivated dialog.
+pub const IPC_SLEEP_POLL_INTERVAL: Duration = Duration::from_millis(500);
+
 /// Returns the pump wait for the time since the last sent or received
 /// message. Any traffic resets the session to the active interval, so the
 /// step is invisible to the user.

@@ -60,10 +60,15 @@ pub fn delay_label(min: u32, max: u32) -> String {
     }
 }
 
-/// The clock is mounted with the example, and only requests frames while visible.
-pub fn clock<'a, Message: Clone + 'a>(preview: &Preview, tick: Message) -> Element<'a, Message> {
+/// The clock is mounted with the example, and only requests frames while
+/// visible and while the window is awake.
+pub fn clock<'a, Message: Clone + 'a>(
+    preview: &Preview,
+    awake: bool,
+    tick: Message,
+) -> Element<'a, Message> {
     Element::new(Clock {
-        playing: preview.playing,
+        playing: preview.playing && awake,
         example: preview.example,
         tick,
     })

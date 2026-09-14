@@ -1,5 +1,9 @@
 use std::{
-    sync::mpsc as std_mpsc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc as std_mpsc,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -10,7 +14,9 @@ use iced::{
 };
 
 use crate::{
-    platform::windows::ipc::{PipeConnection, SETTINGS_PIPE_NAME, ipc_poll_interval},
+    platform::windows::ipc::{
+        IPC_SLEEP_POLL_INTERVAL, PipeConnection, SETTINGS_PIPE_NAME, ipc_poll_interval,
+    },
     protocol::{UiCommand, UiEvent},
 };
 
@@ -22,11 +28,23 @@ pub enum Event {
 }
 
 #[derive(Clone, Debug)]
-pub struct Connection(std_mpsc::Sender<UiCommand>);
+pub struct Connection {
+    commands: std_mpsc::Sender<UiCommand>,
+    awake: Arc<AtomicBool>,
+}
 
 impl Connection {
     pub fn send(&self, command: UiCommand) -> Result<(), String> {
-        self.0.send(command).map_err(|error| error.to_string())
+        self.commands
+            .send(command)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Lets the pump sleep while the window is deactivated. The command queue
+    /// still wakes it immediately, so a command sent on the way out is not
+    /// delayed by the longer wait.
+    pub fn set_awake(&self, awake: bool) {
+        self.awake.store(awake, Ordering::Relaxed);
     }
 }
 
@@ -65,7 +83,14 @@ fn run_connection_loop(event_sender: mpsc::UnboundedSender<Event>) {
             }
         };
         let (command_sender, command_receiver) = std_mpsc::channel();
-        if !publish(&event_sender, Event::Connected(Connection(command_sender))) {
+        let awake = Arc::new(AtomicBool::new(true));
+        if !publish(
+            &event_sender,
+            Event::Connected(Connection {
+                commands: command_sender,
+                awake: Arc::clone(&awake),
+            }),
+        ) {
             return;
         }
         let mut last_activity = Instant::now();
@@ -73,7 +98,11 @@ fn run_connection_loop(event_sender: mpsc::UnboundedSender<Event>) {
             // Wait on the outbound queue with a timeout so locally queued
             // commands leave immediately; only inbound discovery is bounded
             // by the poll interval.
-            let interval = ipc_poll_interval(last_activity.elapsed());
+            let interval = if awake.load(Ordering::Relaxed) {
+                ipc_poll_interval(last_activity.elapsed())
+            } else {
+                IPC_SLEEP_POLL_INTERVAL
+            };
             let mut pending = match command_receiver.recv_timeout(interval) {
                 Ok(command) => Some(command),
                 Err(std_mpsc::RecvTimeoutError::Timeout) => None,

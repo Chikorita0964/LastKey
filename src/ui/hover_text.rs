@@ -76,7 +76,7 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for Label {
         tree::State::new(State::default())
     }
     fn size(&self) -> Size<Length> {
-        Size::new(Length::Fill, Length::Fixed(self.size * 1.3))
+        Size::new(Length::Shrink, Length::Fixed(self.size * 1.3))
     }
     fn layout(
         &mut self,
@@ -84,11 +84,11 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for Label {
         renderer: &iced::Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
-        let node = layout::atomic(limits, Length::Fill, self.size * 1.3);
+        let height = self.size * 1.3;
         let state = tree.state.downcast_mut::<State>();
         let format = text::Text {
             content: self.content.as_str(),
-            bounds: Size::new(f32::INFINITY, self.size * 1.3),
+            bounds: Size::new(f32::INFINITY, height),
             size: self.size.into(),
             line_height: text::LineHeight::Relative(1.3),
             font: self.font,
@@ -100,6 +100,16 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for Label {
             hint_factor: renderer.hint_factor(),
         };
         let changed = state.full.update(format);
+        // The box is the text's own width, never the width offered. `Fill`
+        // would be resolved against the incoming `max` -- a row hands every
+        // child the same loose limits -- so a label beside a trailing icon
+        // would swallow the line and push that icon to the far edge. The
+        // incoming `max` still clamps the result, and the clip below still
+        // truncates, so a label wider than its parent behaves as before.
+        let natural = state.full.min_width();
+        let node = layout::sized(limits, Length::Shrink, height, |_| {
+            Size::new(natural, height)
+        });
         let changed = state.clipped.update(text::Text {
             bounds: node.bounds().size(),
             ellipsis: text::Ellipsis::End,
@@ -123,7 +133,12 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for Label {
         let state = tree.state.downcast_mut::<State>();
         let bounds = layout.bounds();
         let distance = (state.full.min_width() - bounds.width).max(0.0);
-        if distance <= 1.0 || !viewport.intersects(&bounds) {
+        // A deactivated window keeps no pointer, so the reveal snaps back and
+        // asks for no further frames.
+        if distance <= 1.0
+            || !viewport.intersects(&bounds)
+            || matches!(event, Event::Window(window::Event::Unfocused))
+        {
             state.motion = Motion::default();
             return;
         }

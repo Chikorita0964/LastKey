@@ -78,6 +78,12 @@ const WINDOW_SIZE: Size = Size::new(1040.0, 800.0);
 const HEADER_HEIGHT: f32 = 60.0;
 const PROFILE_PANEL_TOP: f32 = theme::PAGE_PADDING + HEADER_HEIGHT + 8.0;
 
+/// Stable widget id for the profile-name field. `Message::EditProfileName`
+/// returns a focus task against it, so the box is ready to type in as soon as
+/// it replaces the name box -- `Message::ProfileNameChanged` does not refocus,
+/// so a click never steals the caret back to the end.
+const PROFILE_NAME_INPUT_ID: Id = Id::new("profile-name-input");
+
 /// Stable id shared by settings and measurement in the single page.
 const SETTINGS_BODY_ID: &str = "settings-body";
 
@@ -99,6 +105,26 @@ struct SettingsApp {
     preview: Preview,
     pending_filter: Option<bool>,
     profiles: ProfileDialog,
+    /// The slot card the pointer is over, or `None`.
+    ///
+    /// The reference reaches its hover card class through CSS, which iced has
+    /// no equivalent of for a `container`: a widget's style closure receives
+    /// only its own interaction status, and a container has none. The card's
+    /// hover state therefore has to live in the app and be driven by the
+    /// `mouse_area` that already wraps the panel. It is one value rather than
+    /// a flag per slot because only one card can be under the pointer.
+    hovered_slot: Option<u8>,
+    /// The name box the pointer is over, or `None`.
+    ///
+    /// The pencil is the one control on a card whose ink cannot come from its
+    /// parent: `Button` hands a single `text_color` to every child, and the name
+    /// box needs two at rest (slate-900 name, slate-400 pencil) and one on hover
+    /// (both indigo-600). The box's hover therefore has to reach the app, the
+    /// same way the card's already does, and the icon -- whose colour is fixed
+    /// when it is built -- is coloured from it. It is the box's own hover rather
+    /// than the card's, because the reference hangs `hover:*` on the box, so
+    /// pointing at the keycaps leaves the box at rest.
+    hovered_name: Option<u8>,
     language: Language,
     snapshot: Option<UiSnapshot>,
     draft: Option<Settings>,
@@ -114,6 +140,12 @@ struct SettingsApp {
     /// box, so the next press selects all again, Explorer-style.
     editing: [bool; 5],
     session_details_open: bool,
+    pressed_keys: [bool; 4],
+    press_timestamps: [Option<std::time::Instant>; 4],
+    /// Whether the settings window holds focus. A deactivated window animates
+    /// nothing and lets its IPC pump sleep; the filter engine is a separate
+    /// process and keeps running either way.
+    focused: bool,
     status: String,
     /// Success notice shown as a toast until the next server snapshot.
     notice: Option<String>,
@@ -265,8 +297,34 @@ enum ProfileDialog {
         slot: u8,
         name: String,
     },
+    /// The rename is dispatched and the server has not answered yet. The slot
+    /// and the typed name travel with the state so the card can keep showing
+    /// what the user typed: the reference writes synchronously and so never has
+    /// an intermediate value to show, but a pipe round trip is at least one
+    /// frame, and rendering the stored name for that frame reads as the box
+    /// snapping backwards before it settles forward again.
+    Renaming {
+        slot: u8,
+        name: String,
+    },
     Loading,
-    Renaming,
+}
+
+/// What an empty rename box does when its edit ends. The reference drops a
+/// blank name rather than saving it (`if (!newName.trim()) return;`), so the
+/// stored name always survives; these are the two things that can then happen
+/// to the box itself.
+#[derive(Clone, Copy, Debug)]
+enum EmptyName {
+    /// Go back to the field so the restored name can be retyped. Used when the
+    /// edit ended because the press left the field but not the panel: the user
+    /// is still working in the list, and closing the box under them would lose
+    /// the edit they are in the middle of.
+    Reopen,
+    /// Close the box, leaving the card at rest on the stored name. Used when the
+    /// edit ended at the field's own control -- Enter, or the rename pencil --
+    /// which is the reference's behaviour for both.
+    Close,
 }
 
 #[derive(Clone, Debug)]
@@ -278,11 +336,19 @@ enum Message {
     OpenLanguages,
     SelectLanguage(Language),
     CloseProfiles,
+    SlotHovered(u8),
+    SlotUnhovered(u8),
     LoadProfile(u8),
     ConfirmProfile(u8),
     EditProfileName(u8),
     ProfileNameChanged(String),
     SaveProfileName,
+    /// Commit an open rename, if there is one. Sent by the panel's own press
+    /// path: a press that lands anywhere inside the panel other than the field
+    /// itself is the "click somewhere else" that ends an edit.
+    SaveProfileNameIfEditing,
+    /// The pointer entered or left a card's name box.
+    NameHovered(u8, bool),
     ToggleMonitor,
     Preview(preview::Action),
     CancelCapture,
@@ -294,7 +360,16 @@ enum Message {
     TimingTextChanged(TimingField, String),
     TimingTextSubmitted(TimingField),
     ValueBoxActivated(TimingField),
+    WindowFocused,
     WindowUnfocused,
+    KeyboardPressed {
+        key: iced::keyboard::Key,
+        physical: iced::keyboard::key::Physical,
+    },
+    KeyboardReleased {
+        key: iced::keyboard::Key,
+        physical: iced::keyboard::key::Physical,
+    },
     Apply,
     Revert,
     RestoreMappingDefaults,
@@ -312,6 +387,8 @@ impl SettingsApp {
             preview: Preview::default(),
             pending_filter: None,
             profiles: ProfileDialog::Closed,
+            hovered_slot: None,
+            hovered_name: None,
             language: Language::default(),
             snapshot: None,
             draft: None,
@@ -319,6 +396,9 @@ impl SettingsApp {
             pending_section: Some(requested_view()),
             editing: [false; 5],
             session_details_open: false,
+            pressed_keys: [false; 4],
+            press_timestamps: [None; 4],
+            focused: true,
             status: "Connecting to the LastKey runtime...".into(),
             notice: None,
             error: None,
@@ -336,7 +416,7 @@ impl SettingsApp {
     fn subscription(&self) -> Subscription<Message> {
         Subscription::batch([
             Subscription::run(ipc_client::connect).map(Message::Ipc),
-            iced::event::listen_with(window_unfocused),
+            iced::event::listen_with(runtime_event),
         ])
     }
 
@@ -349,12 +429,17 @@ impl SettingsApp {
                     | Message::SelectLanguage(_)
                     | Message::OpenProfiles
                     | Message::CloseProfiles
+                    | Message::SlotHovered(_)
+                    | Message::SlotUnhovered(_)
+                    | Message::NameHovered(..)
                     | Message::LoadProfile(_)
                     | Message::ConfirmProfile(_)
                     | Message::EditProfileName(_)
                     | Message::ProfileNameChanged(_)
                     | Message::SaveProfileName
+                    | Message::SaveProfileNameIfEditing
                     | Message::CancelCapture
+                    | Message::WindowFocused
                     | Message::WindowUnfocused
             )
         {
@@ -365,6 +450,8 @@ impl SettingsApp {
             Message::Preview(action) => self.preview.update(action),
             Message::Ipc(Event::Connected(connection)) => {
                 self.connection = Some(connection);
+                // A reconnect while deactivated starts asleep, not awake.
+                self.set_pump_awake(self.focused);
                 self.status = "Connected to the LastKey runtime.".into();
                 self.error = None;
                 self.send(UiCommand::RequestSnapshot);
@@ -389,46 +476,84 @@ impl SettingsApp {
                 self.profiles = ProfileDialog::List;
             }
             Message::CloseProfiles => {
-                if !matches!(
-                    self.profiles,
-                    ProfileDialog::Loading | ProfileDialog::Renaming
-                ) {
+                // Only a load holds the panel open now. A rename in flight does
+                // not: its command is already dispatched, the card list stays on
+                // screen for the whole round trip, and the answer only lands a
+                // notice -- so the close works the frame it is pressed.
+                if !matches!(self.profiles, ProfileDialog::Loading) {
+                    // Leaving the panel is still "somewhere else". The backdrop
+                    // and the close button are the two places a press lands
+                    // outside the panel's own surface -- both are cells a
+                    // `button` or a `mouse_area` claims for itself, so neither
+                    // reaches the panel's handler -- and both end an open edit
+                    // the same way the panel's surface does: by saving it. Only
+                    // Escape and a window deactivation drop it.
+                    //
+                    // The reference discards on its backdrop instead: the input
+                    // unmounts before the browser's blur can run, so the typed
+                    // name never reaches storage. That is the one exit this port
+                    // deliberately keeps instead of losing, since a press on
+                    // "somewhere else" reads as leaving the edit, not as
+                    // cancelling it, and cancelling has its own key.
+                    let commit = self.commit_profile_name(EmptyName::Close);
                     self.profiles = ProfileDialog::Closed;
+                    return commit;
                 }
             }
-            Message::LoadProfile(slot) => {
-                if self.is_dirty() {
-                    self.profiles = ProfileDialog::Confirm(slot);
-                } else {
-                    self.load_profile(slot);
+            // Only one card can be under the pointer, so entering a card
+            // replaces whatever was hovered and exiting only clears the card
+            // that is still current -- an exit delivered after a later enter
+            // must not cancel that enter.
+            Message::SlotHovered(slot) => {
+                self.hovered_slot = Some(slot);
+            }
+            Message::SlotUnhovered(slot) => {
+                if self.hovered_slot == Some(slot) {
+                    self.hovered_slot = None;
                 }
             }
+            Message::NameHovered(slot, hovered) => {
+                // Entering replaces whatever was highlighted: only one name box
+                // can be under the pointer. The release carries no identity to
+                // check, because the press that ends a highlight does not move
+                // the pointer -- the box was never left, so nothing reports an
+                // exit and the subscription releases it instead.
+                self.hovered_name = if hovered { Some(slot) } else { None };
+            }
+            Message::LoadProfile(slot) => self.load_or_confirm(slot),
             Message::ConfirmProfile(slot) => self.load_profile(slot),
             Message::EditProfileName(slot) => {
-                if let Some(snapshot) = &self.snapshot {
-                    let bank = snapshot.saved.profile_bank();
-                    if let Some(profile) = bank.slots.get(usize::from(slot)) {
-                        self.profiles = ProfileDialog::Rename {
-                            slot,
-                            name: profile.name.clone(),
-                        };
-                    }
-                }
+                let Some(profile) = self.snapshot.as_ref().and_then(|snapshot| {
+                    snapshot
+                        .saved
+                        .profile_bank()
+                        .slots
+                        .get(usize::from(slot))
+                        .cloned()
+                }) else {
+                    return Task::none();
+                };
+                self.profiles = ProfileDialog::Rename {
+                    slot,
+                    name: profile.name,
+                };
+                // Focus and select together so the box arrives ready to
+                // overwrite the old name: the field replaces the name box in
+                // place, and a caret at the end would make the first keystroke
+                // append instead of replace.
+                return Task::batch([
+                    operation::focus(PROFILE_NAME_INPUT_ID),
+                    operation::select_all(PROFILE_NAME_INPUT_ID),
+                ]);
             }
             Message::ProfileNameChanged(value) => {
                 if let ProfileDialog::Rename { name, .. } = &mut self.profiles {
                     *name = value;
                 }
             }
-            Message::SaveProfileName => {
-                if let ProfileDialog::Rename { slot, name } = &self.profiles {
-                    let command = UiCommand::RenameProfile {
-                        slot: *slot,
-                        name: name.clone(),
-                    };
-                    self.profiles = ProfileDialog::Renaming;
-                    self.send(command);
-                }
+            Message::SaveProfileName => return self.commit_profile_name(EmptyName::Close),
+            Message::SaveProfileNameIfEditing => {
+                return self.commit_profile_name(EmptyName::Reopen);
             }
             Message::ToggleFilter => {
                 if let Some(snapshot) = &self.snapshot
@@ -457,6 +582,8 @@ impl SettingsApp {
                 };
             }
             Message::CancelCapture => {
+                self.pressed_keys = [false; 4];
+                self.press_timestamps = [None; 4];
                 // Escape unwinds one layer at a time: a rename or confirm
                 // back to the slot list, the list or language menu to
                 // closed. In-flight loads and renames finish first, matching
@@ -468,7 +595,7 @@ impl SettingsApp {
                     ProfileDialog::List | ProfileDialog::Languages => {
                         self.profiles = ProfileDialog::Closed;
                     }
-                    ProfileDialog::Loading | ProfileDialog::Renaming => {}
+                    ProfileDialog::Loading | ProfileDialog::Renaming { .. } => {}
                     ProfileDialog::Closed => {
                         if self
                             .snapshot
@@ -488,6 +615,8 @@ impl SettingsApp {
                 self.send(UiCommand::RequestSnapshot);
             }
             Message::Capture(slot) => {
+                self.pressed_keys = [false; 4];
+                self.press_timestamps = [None; 4];
                 // Timing stays local until Apply; the answering Snapshot
                 // merges instead of replacing it (see set_snapshot).
                 self.send(UiCommand::BeginKeyCapture(slot));
@@ -539,8 +668,56 @@ impl SettingsApp {
                     operation::select_all(value_box_id(field)),
                 ]);
             }
+            Message::WindowFocused => {
+                self.focused = true;
+                self.set_pump_awake(true);
+            }
             Message::WindowUnfocused => {
-                // Rearming already ran in `track_box_focus`.
+                self.focused = false;
+                // The pump sleeps, not the engine: filtering lives in the
+                // runtime process and is untouched by this.
+                self.set_pump_awake(false);
+                self.pressed_keys = [false; 4];
+                self.press_timestamps = [None; 4];
+                // Deactivating the window ends an edit in flight the way Escape
+                // does: the box returns to the name it had and nothing is sent.
+                // The reference has no equivalent -- a browser blur commits --
+                // but an edit still open when the window is deactivated is far
+                // more likely to be interrupted than finished. Rearming the
+                // value boxes already ran in `track_box_focus`.
+                if self.cancel_profile_name() {
+                    return Task::batch([
+                        operation::focus(PROFILE_NAME_INPUT_ID),
+                        operation::select_all(PROFILE_NAME_INPUT_ID),
+                    ]);
+                }
+            }
+            Message::KeyboardPressed { key, physical } => {
+                if matches!(self.profiles, ProfileDialog::Rename { .. }) {
+                    return Task::none();
+                }
+                if let Some(snapshot) = &self.snapshot {
+                    if snapshot.capture_slot.is_some() {
+                        return Task::none();
+                    }
+                    for (i, display_key) in snapshot.keys.iter().enumerate() {
+                        if matches_key(&key, &physical, &display_key.name) && !self.pressed_keys[i]
+                        {
+                            self.pressed_keys[i] = true;
+                            self.press_timestamps[i] = Some(std::time::Instant::now());
+                        }
+                    }
+                }
+            }
+            Message::KeyboardReleased { key, physical } => {
+                if let Some(snapshot) = &self.snapshot {
+                    for (i, display_key) in snapshot.keys.iter().enumerate() {
+                        if matches_key(&key, &physical, &display_key.name) {
+                            self.pressed_keys[i] = false;
+                            self.press_timestamps[i] = None;
+                        }
+                    }
+                }
             }
             Message::Apply => {
                 // Gate order is explicit: typed text, then local rules, then
@@ -750,7 +927,7 @@ impl SettingsApp {
             }
             UiEvent::Snapshot(snapshot) => {
                 self.set_snapshot(snapshot);
-                if matches!(self.profiles, ProfileDialog::Renaming) {
+                if matches!(self.profiles, ProfileDialog::Renaming { .. }) {
                     self.profiles = ProfileDialog::List;
                     self.notice = Some("Profile renamed.".into());
                 }
@@ -767,6 +944,8 @@ impl SettingsApp {
                 self.error = None;
             }
             UiEvent::KeyCaptured { slot, key } => {
+                self.pressed_keys = [false; 4];
+                self.press_timestamps = [None; 4];
                 if let Some(draft) = self.draft.as_mut() {
                     draft.bindings[key_slot_index(slot)] = key.physical;
                 }
@@ -880,6 +1059,12 @@ impl SettingsApp {
             .and_then(|connection| connection.send(command));
         if let Err(error) = result {
             self.error = Some(error);
+        }
+    }
+
+    fn set_pump_awake(&self, awake: bool) {
+        if let Some(connection) = self.connection.as_ref() {
+            connection.set_awake(awake);
         }
     }
 
@@ -1026,8 +1211,18 @@ impl SettingsApp {
             .center_x(52)
             .center_y(52)
             .style(move |_| {
-                let style =
-                    theme::keycap(iced::widget::button::Status::Active, active, false, accent);
+                let mode = if active {
+                    theme::KeycapMode::Pressed
+                } else {
+                    theme::KeycapMode::Normal
+                };
+                let style = theme::keycap(
+                    iced::widget::button::Status::Active,
+                    mode,
+                    false,
+                    accent,
+                    accent,
+                );
                 container::Style {
                     text_color: Some(style.text_color),
                     background: style.background,
@@ -1160,7 +1355,11 @@ impl SettingsApp {
             }))
             .spacing(4),
             if matches!(self.profiles, ProfileDialog::Closed) {
-                preview::clock(preview, Message::Preview(preview::Action::Tick))
+                preview::clock(
+                    preview,
+                    self.focused,
+                    Message::Preview(preview::Action::Tick),
+                )
             } else {
                 space::vertical().height(1).into()
             },
@@ -1189,6 +1388,89 @@ impl SettingsApp {
         self.send(UiCommand::LoadProfile(slot));
     }
 
+    /// Loads a slot, or opens its confirm banner when the draft is dirty. Shared
+    /// by the keycap row and by the card's own press so the two cannot drift.
+    fn load_or_confirm(&mut self, slot: u8) {
+        if self.is_dirty() {
+            self.profiles = ProfileDialog::Confirm(slot);
+        } else {
+            self.load_profile(slot);
+        }
+    }
+
+    /// Sends an open rename to the server, or reopens the box on the stored name
+    /// when the field is empty. `on_empty` says what an empty field should do,
+    /// which is the one point where the three ways out of an edit differ.
+    ///
+    /// A blank name is never sent: `Settings::validate` rejects it as
+    /// `profile-rename-failed`, and the panel would surface an error for a box
+    /// that was simply left empty. Nothing is renamed and nothing is reported;
+    /// the stored name is what the box goes back to.
+    fn commit_profile_name(&mut self, on_empty: EmptyName) -> Task<Message> {
+        let ProfileDialog::Rename { slot, name } = &self.profiles else {
+            return Task::none();
+        };
+        let (slot, name) = (*slot, name.trim().to_owned());
+        if name.is_empty() {
+            let Some(stored) = self.stored_profile_name(slot) else {
+                return Task::none();
+            };
+            let reopen = match on_empty {
+                EmptyName::Reopen => true,
+                EmptyName::Close => false,
+            };
+            if reopen {
+                self.profiles = ProfileDialog::Rename { slot, name: stored };
+                // Writing the state alone would leave the dropped text on
+                // screen: the field's own buffer is only rewritten when its
+                // value changes, so it is focused and selected instead, which
+                // shows the restored name over the same buffer.
+                return Task::batch([
+                    operation::focus(PROFILE_NAME_INPUT_ID),
+                    operation::select_all(PROFILE_NAME_INPUT_ID),
+                ]);
+            }
+            self.profiles = ProfileDialog::List;
+            return Task::none();
+        }
+        self.profiles = ProfileDialog::Renaming {
+            slot,
+            name: name.clone(),
+        };
+        self.send(UiCommand::RenameProfile { slot, name });
+        Task::none()
+    }
+
+    /// Drops an open rename and puts the stored name back, without telling the
+    /// server. This is Escape, and a window that lost focus with an edit in
+    /// flight.
+    fn cancel_profile_name(&mut self) -> bool {
+        let ProfileDialog::Rename { slot, .. } = &self.profiles else {
+            return false;
+        };
+        let slot = *slot;
+        let Some(stored) = self.stored_profile_name(slot) else {
+            return false;
+        };
+        self.profiles = ProfileDialog::Rename { slot, name: stored };
+        true
+    }
+
+    /// The name the server last reported for a slot.
+    fn stored_profile_name(&self, slot: u8) -> Option<String> {
+        self.snapshot.as_ref().and_then(|snapshot| {
+            // `profile_bank` builds the default bank when the settings carry
+            // none, so the bank is a value rather than a borrow out of
+            // `snapshot`; the name is copied out of it here.
+            snapshot
+                .saved
+                .profile_bank()
+                .slots
+                .get(usize::from(slot))
+                .map(|profile| profile.name.clone())
+        })
+    }
+
     /// The profile and language menus share one panel anchored below the
     /// header's right edge, like the reference dropdowns. Iced has no
     /// absolute positioning, so the anchor is a fixed offset from the page
@@ -1202,10 +1484,11 @@ impl SettingsApp {
             return space::horizontal().width(0).into();
         }
         let languages = matches!(self.profiles, ProfileDialog::Languages);
-        let in_flight = matches!(
-            self.profiles,
-            ProfileDialog::Loading | ProfileDialog::Renaming
-        );
+        // Only a load hides the close button. It is the one state that replaces
+        // the body with a line of progress copy, so the button would be left on
+        // its own; a rename keeps the whole list on screen and the button with
+        // it. Hiding it for the length of a round trip was half of the flicker.
+        let in_flight = matches!(self.profiles, ProfileDialog::Loading);
         // The reference nests the heading and its subtitle in one column *beside*
         // the close button, so the 36px button and the 34px of text both sit on
         // the row rather than stacking. Keeping the subtitle inside this column
@@ -1299,14 +1582,23 @@ impl SettingsApp {
         stack![
             mouse_area(space::horizontal().width(Fill).height(Fill))
                 .on_press(Message::CloseProfiles),
-            container(opaque(panel))
-                .align_right(Fill)
-                .height(Fill)
-                .padding(Padding {
-                    top: PROFILE_PANEL_TOP,
-                    right: theme::PAGE_PADDING,
-                    ..Padding::ZERO
-                }),
+            // The panel surface carries the same commit as the cards do, for the
+            // presses that land on the panel but not on a card: the header's
+            // blank space, the scroller's padding, the gaps between cards. A
+            // press on any of those is still "somewhere else" as far as the
+            // field is concerned. It sits *inside* `opaque` rather than outside,
+            // because `opaque` swallows the press as it passes and a handler
+            // wrapped around it would never see one.
+            container(opaque(
+                mouse_area(panel).on_press(Message::SaveProfileNameIfEditing)
+            ))
+            .align_right(Fill)
+            .height(Fill)
+            .padding(Padding {
+                top: PROFILE_PANEL_TOP,
+                right: theme::PAGE_PADDING,
+                ..Padding::ZERO
+            }),
         ]
         .into()
     }
@@ -1357,9 +1649,11 @@ impl SettingsApp {
             rows.into()
         } else if matches!(self.profiles, ProfileDialog::Loading) {
             text(self.language.text("Loading and activating profile…")).into()
-        } else if matches!(self.profiles, ProfileDialog::Renaming) {
-            text(self.language.text("Saving profile name…")).into()
         } else {
+            // A rename in flight renders here too, through the same card list:
+            // swapping the list out for a line of progress copy and back is the
+            // panel flickering, and the panel has nothing to report that the
+            // card itself cannot say by showing the committed name.
             let bank = snapshot.saved.profile_bank();
             let mut cards = column![].spacing(theme::SLOT_GAP);
             for (index, profile) in bank.slots.iter().enumerate() {
@@ -1367,7 +1661,7 @@ impl SettingsApp {
                 cards = cards.push(self.profile_slot_card(
                     slot,
                     profile,
-                    bank.active == slot,
+                    self.slot_state(slot, bank.active),
                     snapshot,
                 ));
             }
@@ -1376,66 +1670,142 @@ impl SettingsApp {
         body
     }
 
+    /// The state a slot card paints in. The loaded slot always wins: the
+    /// reference's active class has no hover variant, so an active card looks
+    /// the same under the pointer as away from it.
+    fn slot_state(&self, slot: u8, active_slot: u8) -> theme::SlotState {
+        if slot == active_slot {
+            theme::SlotState::Active
+        } else if self.hovered_slot == Some(slot) {
+            theme::SlotState::Hovered
+        } else {
+            theme::SlotState::Idle
+        }
+    }
+
     /// One slot in the profile panel: a mode-tinted card with the name box
     /// (which doubles as the rename target) on row one and the axis-paired
     /// keycap chips plus mode label on row two. Row two groups chips by axis
     /// pair (vertical pair, then horizontal pair) like the reference and the
     /// timeline, and is the load target for inactive slots; a pending load
     /// covers the card via `stack` so the card never changes height.
+    ///
+    /// `state` is the card's interaction state, not just whether it is loaded:
+    /// the reference paints three different card classes and the hover one is
+    /// the whole-card emphasis the pointer is meant to give.
     fn profile_slot_card<'a>(
         &'a self,
         slot: u8,
         profile: &ProfileSlot,
-        active: bool,
+        state: theme::SlotState,
         snapshot: &'a UiSnapshot,
     ) -> Element<'a, Message> {
+        let active = state == theme::SlotState::Active;
         // The bank is an owned local copy, so everything the card shows is
         // copied out here; no element may borrow the slot.
         let profile_name = profile.name.clone();
         let bindings = profile.bindings;
         let mode = profile.timing.mode;
-        let renaming = matches!(&self.profiles, ProfileDialog::Rename { slot: editing, .. } if *editing == slot);
+        let ink = theme::slot_ink(state);
+        // The card is inert while its own rename is open *and* while that rename
+        // is in flight: the round trip is short, but a press landing in it must
+        // not turn the commit into a load.
+        let renaming = matches!(
+            &self.profiles,
+            ProfileDialog::Rename { slot: editing, .. }
+                | ProfileDialog::Renaming { slot: editing, .. }
+                if *editing == slot
+        );
         let confirming =
             matches!(&self.profiles, ProfileDialog::Confirm(pending) if *pending == slot);
-        let name_row: Element<'a, Message> = if let ProfileDialog::Rename {
+        // The name the server has not echoed back yet, if this is the card that
+        // sent it.
+        let pending = match &self.profiles {
+            ProfileDialog::Renaming { slot: saving, name } if *saving == slot => {
+                Some(name.as_str())
+            }
+            _ => None,
+        };
+        // The name box's own hover, which the pencil cannot take from its
+        // button: the button shares one `text_color` with every child, and the
+        // box needs two inks at rest and one on hover. Read here, in the app,
+        // rather than in the style closure, because this is where the icon is
+        // built and a widget's colour is fixed at construction. The field and
+        // the in-flight box have no hover of their own -- neither is the
+        // reference's `group/slot` box -- so a card that is editing reports its
+        // pencil in the resting ink.
+        let name_hovered = self.hovered_name == Some(slot) && !renaming;
+        let name_ink = theme::slot_ink_hovering(state, name_hovered);
+        let name_row: Element<'a, Message> = if let Some(pending) = pending {
+            // The committed box, not the live field: the field would take the
+            // next keystroke into a write that has already left. It draws the
+            // same contents as the resting box -- name *and* pencil -- because
+            // dropping the pencil shortens the box by 16px and the text would
+            // jump sideways and back on either side of the round trip.
+            button(
+                row![
+                    hover_text::label(pending.to_owned(), 12.0, theme::UI_FONT_BOLD, None, false),
+                    icons::icon(Icon::Edit, 12.0, Some(ink.pencil)),
+                ]
+                .spacing(theme::SLOT_NAME_GAP)
+                .align_y(Center),
+            )
+            .style(theme::profile_name_button(state))
+            .padding(theme::SLOT_NAME_PADDING)
+            .into()
+        } else if let ProfileDialog::Rename {
             slot: editing,
             name,
         } = &self.profiles
             && *editing == slot
         {
-            row![
-                container(
-                    text_input(self.language.text("Profile name"), name)
-                        .on_input(Message::ProfileNameChanged)
-                        .on_submit(Message::SaveProfileName)
-                        .style(|theme_, status| {
-                            theme::value_input(theme_, status, theme::PRIMARY_TEXT, false)
-                        })
-                        .padding(VALUE_BOX_PADDING)
-                        .width(Fill),
-                )
-                .padding(theme::SLOT_NAME_PADDING)
-                .width(Fill)
-                .style(|_| theme::pill_style(false)),
-                button(icons::icon(Icon::Check, 12.0, Some(Color::WHITE)))
-                    .style(theme::primary_button)
-                    .padding(6)
-                    .on_press(Message::SaveProfileName),
-            ]
-            .spacing(6)
-            .align_y(Center)
-            .into()
+            // The box becomes the field in place: same white fill, same radius,
+            // same left inset as the name box, so the name does not move when it
+            // turns editable -- only the edge changes, to the accent, which is
+            // how the reference marks the editing state. The field carries its
+            // own chrome rather than sitting in a styled container, because both
+            // would draw a border and the box would show two.
+            //
+            // `Shrink`, never `Fill`: `TextInput` defaults to `Fill`, and a row
+            // hands every child the same loose limits, so `Fill` would resolve
+            // against the row's whole width -- the box would not hug the name and
+            // would not grow with it. This is the one place the field departs
+            // from the reference, which pins its input to a fixed `w-28`: here
+            // the box takes the text's own width and extends to the right as the
+            // name is typed. Enter saves and Escape cancels; the check button is
+            // gone because the field itself is now the control.
+            text_input(self.language.text("Profile name"), name)
+                .id(PROFILE_NAME_INPUT_ID)
+                .on_input(Message::ProfileNameChanged)
+                .on_submit(Message::SaveProfileName)
+                .size(12.0)
+                .font(theme::UI_FONT_BOLD)
+                .width(Length::Shrink)
+                .padding(theme::SLOT_NAME_INPUT_PADDING)
+                .style(theme::profile_name_input)
+                .into()
         } else {
             button(
                 row![
                     hover_text::label(profile_name, 12.0, theme::UI_FONT_BOLD, None, false),
-                    icons::icon(Icon::Edit, 12.0, Some(theme::ICON_MUTED)),
+                    // The pencil's own ink, not the button's `currentColor`: the
+                    // button's text colour is the name's, which is one slate step
+                    // darker than the pencil's. Both are the same indigo while
+                    // the box is hovered, which is what `name_ink` folds in.
+                    icons::icon(Icon::Edit, 12.0, Some(name_ink.pencil)),
                 ]
-                .spacing(6)
+                .spacing(theme::SLOT_NAME_GAP)
                 .align_y(Center),
             )
-            .style(theme::profile_name_button)
+            .style(theme::profile_name_button(state))
             .padding(theme::SLOT_NAME_PADDING)
+            // The press is published when it happens rather than when it is
+            // released. A `button` holds the press it receives -- and the card's
+            // own target is checked only after its content has had the event --
+            // so the box never lets a press through to the card. That is what
+            // keeps the click that opens an edit from also loading the slot,
+            // which the box would otherwise do: it sits inside the card, and the
+            // card selects on press.
             .on_press(Message::EditProfileName(slot))
             .into()
         };
@@ -1445,10 +1815,10 @@ impl SettingsApp {
         // vertical-second, horizontal-first, horizontal-second.
         let chips = row![
             row![
-                profile_chip(bindings[0], snapshot),
-                profile_chip(bindings[1], snapshot),
+                profile_chip(bindings[0], snapshot, ink),
+                profile_chip(bindings[1], snapshot, ink),
             ]
-            .spacing(4)
+            .spacing(theme::CHIP_GAP)
             .align_y(Center),
             // Reference draws the pair divider as a left border on the second
             // group rather than a rule, and puts 8px of space on *both* sides of
@@ -1456,38 +1826,43 @@ impl SettingsApp {
             // the row's own 8px spacing. Its height is the chips' height, not the
             // row's -- a `rule::vertical` would fill and inflate the card.
             container(space::horizontal().width(1.0))
-                .height(theme::CHIP_HEIGHT)
-                .style(|_| theme::pair_divider()),
+                .height(theme::CHIP_SIZE)
+                .style(move |_| theme::pair_divider(ink)),
             row![
-                profile_chip(bindings[2], snapshot),
-                profile_chip(bindings[3], snapshot),
+                profile_chip(bindings[2], snapshot, ink),
+                profile_chip(bindings[3], snapshot, ink),
             ]
-            .spacing(4)
+            .spacing(theme::CHIP_GAP)
             .align_y(Center),
             space::horizontal().width(Fill),
             text(mode_label(mode, self.language))
                 .size(10)
                 .font(theme::UI_FONT_BOLD)
-                .color(mode_label_color(mode)),
+                .color(theme::slot_mode_ink(mode, state)),
         ]
         .spacing(8)
         .align_y(Center);
-        // The load target is the keycap row itself, so it takes the row's height
-        // rather than grown padding. Padding here would make an inactive card
-        // taller than the active one, which the reference's own row button does
-        // not do -- it carries no padding classes at all.
-        let chips: Element<'a, Message> = if active || renaming || confirming {
-            chips.into()
-        } else {
-            button(chips)
-                .width(Fill)
-                .padding(Padding::ZERO)
-                .height(theme::CHIP_HEIGHT)
-                .style(theme::ghost_button)
-                .on_press(Message::LoadProfile(slot))
-                .into()
-        };
-        let card_body = column![name_row, chips].spacing(theme::SLOT_ROW_GAP);
+        // The row carries no control of its own. It used to be a `button`
+        // because the reference has one here, but the reference's button is a
+        // *release* target and the card's own handler is a press target, and a
+        // press that changes what the pointer is over cancels the release that
+        // would have followed. Two targets on one card therefore cost the row
+        // its press instead of giving the card a second way in, so the card is
+        // the only one -- which is also what the reference amounts to, since
+        // its row button wraps the whole row and calls the same handler as the
+        // card does.
+        // The banner covers the whole card, so a rename box under it would show
+        // through only as a sliver: the field takes its text's own width and the
+        // banner's copy is far wider. The rename is not lost -- it stays in the
+        // state and comes back with the box when the banner goes, whether that
+        // is a Cancel or a Load -- but drawing it where the banner cannot cover
+        // it would read as two states at once.
+        let banner_over_rename = confirming && renaming;
+        let mut card_body = column![].spacing(theme::SLOT_ROW_GAP);
+        if !banner_over_rename {
+            card_body = card_body.push(name_row);
+        }
+        let card_body = card_body.push(chips);
         let content: Element<'a, Message> = if confirming {
             stack![
                 container(card_body)
@@ -1538,10 +1913,43 @@ impl SettingsApp {
                 .width(Fill)
                 .into()
         };
-        container(content)
-            .width(Fill)
-            .style(move |_| theme::tinted_slot(mode_color(mode), active))
-            .into()
+        // The card's hover lives on a `mouse_area` rather than on the card
+        // itself, because a `container` has no interaction status to style
+        // against. `on_enter`/`on_exit` also fire for the child controls --
+        // buttons report through their own status, not through this -- so the
+        // two handlers just name the card under the pointer.
+        let mut card = mouse_area(
+            container(content)
+                .width(Fill)
+                .style(move |_| theme::tinted_slot(theme::slot_tint(mode, state))),
+        )
+        .on_enter(Message::SlotHovered(slot))
+        .on_exit(Message::SlotUnhovered(slot));
+        // The whole card is the load target, as it is in the reference, where
+        // only the rename box excludes itself. The press is published when it
+        // happens rather than when it is released, because an open rename
+        // commits on this same press and the card it commits for is the one this
+        // press selects; a release-time press would depend on the card under the
+        // pointer at release still being this one, which the rename it just
+        // committed can change.
+        //
+        // The two inner controls shield the card: the name box is a `button` and
+        // the field captures its own press, so a press that reaches here was on
+        // the card itself. A loaded card is not a target -- it is already the
+        // one in force -- and neither is a card wearing its own confirm banner,
+        // whose two buttons are the only controls on it. Pressing those buttons
+        // still works: the banner's `opaque` shell captures their presses before
+        // this area sees them.
+        if !active && !confirming {
+            card = card
+                .on_press(if renaming {
+                    Message::SaveProfileNameIfEditing
+                } else {
+                    Message::LoadProfile(slot)
+                })
+                .interaction(iced::mouse::Interaction::Pointer);
+        }
+        card.into()
     }
 
     fn settings_view(&self) -> Element<'_, Message> {
@@ -1553,7 +1961,17 @@ impl SettingsApp {
         let mappings = container(
             column![
                 row![
-                    section_title(Icon::Keyboard, "Key mappings", self.language).width(Fill),
+                    column![
+                        section_title(Icon::Keyboard, "Key mappings", self.language),
+                        text(
+                            self.language
+                                .text("Hardware scan codes the SOCD filter uses")
+                        )
+                        .size(12)
+                        .color(theme::MUTED_TEXT),
+                    ]
+                    .spacing(2)
+                    .width(Fill),
                     button(icon_label(
                         Icon::Restore,
                         "Restore mapping defaults",
@@ -1563,12 +1981,6 @@ impl SettingsApp {
                     .on_press(Message::RestoreMappingDefaults),
                 ]
                 .align_y(Center),
-                text(
-                    self.language
-                        .text("Hardware scan codes the SOCD filter uses")
-                )
-                .size(12)
-                .color(theme::MUTED_TEXT),
                 // The reference shows an indigo capture banner between the
                 // header and the stage. A zero-height placeholder keeps the
                 // column's child indices stable while it is hidden, as the
@@ -1578,7 +1990,13 @@ impl SettingsApp {
                 } else {
                     space::vertical().height(0).into()
                 },
-                mapping_pad(snapshot, self.monitor.timeline(), self.language),
+                mapping_pad(
+                    snapshot,
+                    &self.pressed_keys,
+                    &self.press_timestamps,
+                    self.monitor.timeline(),
+                    self.language,
+                ),
                 // The assignment status sits in a footer below the inset,
                 // hugging the right edge (reference layout).
                 rule::horizontal(1).style(theme::table_rule),
@@ -1600,7 +2018,17 @@ impl SettingsApp {
         let timing_card = container(
             column![
                 row![
-                    section_title(Icon::Timer, "Input timings", self.language).width(Fill),
+                    column![
+                        section_title(Icon::Timer, "Input timings", self.language),
+                        text(
+                            self.language
+                                .text("How opposite-direction overlaps resolve.")
+                        )
+                        .size(12)
+                        .color(theme::MUTED_TEXT),
+                    ]
+                    .spacing(2)
+                    .width(Fill),
                     button(icon_label(
                         Icon::Restore,
                         "Restore timing defaults",
@@ -1610,12 +2038,6 @@ impl SettingsApp {
                     .on_press(Message::RestoreTimingDefaults),
                 ]
                 .align_y(Center),
-                text(
-                    self.language
-                        .text("How opposite-direction overlaps resolve.")
-                )
-                .size(12)
-                .color(theme::MUTED_TEXT),
                 container(
                     column![
                         mode_selector(timing.mode, self.language),
@@ -1875,7 +2297,7 @@ impl SettingsApp {
                 snapshot.keys[3].name.as_str(),
             ];
             card = card.push(
-                container(timeline::graph(timeline, names))
+                container(timeline::graph(timeline, names, self.focused))
                     .clip(true)
                     .style(|_| theme::graph_frame()),
             );
@@ -1996,7 +2418,9 @@ fn icon_label(
     let ink = matches!(name, Icon::Restore).then_some(theme::ICON_SECONDARY);
     row![
         icons::icon(name, 14.0, ink),
-        text(language.text(&label.into()).to_owned()).size(12)
+        text(language.text(&label.into()).to_owned())
+            .size(12)
+            .font(theme::UI_FONT_BOLD)
     ]
     .spacing(6)
     .align_y(Center)
@@ -2009,7 +2433,9 @@ fn trailing_icon_label(
     language: Language,
 ) -> Element<'static, Message> {
     row![
-        text(language.text(&label.into()).to_owned()).size(12),
+        text(language.text(&label.into()).to_owned())
+            .size(12)
+            .font(theme::UI_FONT_BOLD),
         icons::icon(name, 14.0, None)
     ]
     .spacing(6)
@@ -2042,41 +2468,378 @@ fn dot(color: Color) -> Element<'static, Message> {
 }
 
 /// One D-pad direction's display identity: its capture slot, sub-legend,
-/// arrow, and accent color.
+/// arrow, accent color, and outer ring glow color.
 struct Direction {
     slot: KeySlot,
     label: &'static str,
     arrow: Icon,
     accent: Color,
+    ring: Color,
 }
 
 const UP: Direction = Direction {
     slot: KeySlot::VerticalFirst,
     label: "UP",
     arrow: Icon::ArrowUp,
-    accent: Color::from_rgb8(0x25, 0x63, 0xeb),
+    accent: theme::IMMEDIATE_ACCENT,
+    ring: Color::from_rgb8(0x93, 0xc5, 0xfd),
 };
 const DOWN: Direction = Direction {
     slot: KeySlot::VerticalSecond,
     label: "DOWN",
     arrow: Icon::ArrowDown,
-    accent: Color::from_rgb8(0x7c, 0x3a, 0xed),
+    accent: theme::VIOLET_600,
+    ring: Color::from_rgb8(0xc4, 0xb5, 0xfd),
 };
 const LEFT: Direction = Direction {
     slot: KeySlot::HorizontalFirst,
     label: "LEFT",
     arrow: Icon::ArrowLeft,
-    accent: Color::from_rgb8(0x63, 0x66, 0xf1),
+    accent: theme::INDIGO_600,
+    ring: Color::from_rgb8(0xa5, 0xb4, 0xfc),
 };
 const RIGHT: Direction = Direction {
     slot: KeySlot::HorizontalSecond,
     label: "RIGHT",
     arrow: Icon::ArrowRight,
-    accent: Color::from_rgb8(0x93, 0x33, 0xea),
+    accent: theme::MIX_TEXT,
+    ring: Color::from_rgb8(0xd8, 0xb4, 0xfe),
 };
+
+fn resolve_dpad(
+    pressed_keys: &[bool; 4],
+    press_timestamps: &[Option<std::time::Instant>; 4],
+    timeline: Option<&Timeline>,
+) -> (f32, f32, bool) {
+    if let Some(timeline) = timeline.filter(|timeline| !timeline.physical) {
+        let x = match timeline.winner(KeySlot::HorizontalFirst, KeySlot::HorizontalSecond) {
+            Some(KeySlot::HorizontalFirst) => -1,
+            Some(_) => 1,
+            None => 0,
+        };
+        let y = match timeline.winner(KeySlot::VerticalFirst, KeySlot::VerticalSecond) {
+            Some(KeySlot::VerticalFirst) => -1,
+            Some(_) => 1,
+            None => 0,
+        };
+        let diagonal = x != 0 && y != 0;
+        let reach = if diagonal { 13.0 } else { 18.0 };
+        return (x as f32 * reach, y as f32 * reach, x != 0 || y != 0);
+    }
+
+    let is_up = pressed_keys[0] || timeline.is_some_and(|t| t.held(KeySlot::VerticalFirst));
+    let is_down = pressed_keys[1] || timeline.is_some_and(|t| t.held(KeySlot::VerticalSecond));
+    let is_left = pressed_keys[2] || timeline.is_some_and(|t| t.held(KeySlot::HorizontalFirst));
+    let is_right = pressed_keys[3] || timeline.is_some_and(|t| t.held(KeySlot::HorizontalSecond));
+
+    let mut x = 0;
+    if is_left && is_right {
+        let t_left = press_timestamps[2];
+        let t_right = press_timestamps[3];
+        x = match (t_left, t_right) {
+            (Some(l), Some(r)) if r >= l => 1,
+            (Some(_), Some(_)) => -1,
+            _ => 1,
+        };
+    } else if is_left {
+        x = -1;
+    } else if is_right {
+        x = 1;
+    }
+
+    let mut y = 0;
+    if is_up && is_down {
+        let t_up = press_timestamps[0];
+        let t_down = press_timestamps[1];
+        y = match (t_up, t_down) {
+            (Some(u), Some(d)) if d >= u => 1,
+            (Some(_), Some(_)) => -1,
+            _ => 1,
+        };
+    } else if is_up {
+        y = -1;
+    } else if is_down {
+        y = 1;
+    }
+
+    let diagonal = x != 0 && y != 0;
+    let reach = if diagonal { 13.0 } else { 18.0 };
+    let active = x != 0 || y != 0;
+    (x as f32 * reach, y as f32 * reach, active)
+}
+
+fn dpad_center_tile(
+    pressed_keys: &[bool; 4],
+    press_timestamps: &[Option<std::time::Instant>; 4],
+    timeline: Option<&Timeline>,
+) -> Element<'static, Message> {
+    let (shift_x, shift_y, active) = resolve_dpad(pressed_keys, press_timestamps, timeline);
+    icons::dpad_tile(shift_x, shift_y, active)
+}
+
+struct KeyDisplayFormat {
+    lines: Vec<String>,
+    size: f32,
+    font: iced::Font,
+}
+
+fn format_key_for_display(key: &str) -> KeyDisplayFormat {
+    if key.is_empty() {
+        return KeyDisplayFormat {
+            lines: vec!["-".to_string()],
+            size: 16.0,
+            font: theme::UI_FONT_BOLD,
+        };
+    }
+    let upper = key.trim().to_ascii_uppercase();
+    let lines: Vec<String> = if upper.starts_with("ARROW") && upper.len() > 5 {
+        vec!["ARROW".to_string(), upper[5..].trim().to_string()]
+    } else if upper.starts_with("NUMPAD") && upper.len() > 6 {
+        vec!["NUMPAD".to_string(), upper[6..].trim().to_string()]
+    } else if upper.starts_with("NUM ") && upper.len() > 4 {
+        vec!["NUM".to_string(), upper[4..].trim().to_string()]
+    } else if upper.starts_with("PAGE") && upper.len() > 4 {
+        vec!["PAGE".to_string(), upper[4..].trim().to_string()]
+    } else if upper == "BACKSPACE" {
+        vec!["BACK".to_string(), "SPACE".to_string()]
+    } else if upper == "CAPSLOCK" {
+        vec!["CAPS".to_string(), "LOCK".to_string()]
+    } else if upper.starts_with("LEFT") && upper.len() > 4 {
+        vec!["LEFT".to_string(), upper[4..].trim().to_string()]
+    } else if upper.starts_with("RIGHT") && upper.len() > 5 {
+        vec!["RIGHT".to_string(), upper[5..].trim().to_string()]
+    } else if upper.contains(' ') {
+        let parts: Vec<&str> = upper.split_whitespace().collect();
+        if parts.len() == 2 {
+            vec![parts[0].to_string(), parts[1].to_string()]
+        } else if parts.len() > 2 {
+            vec![parts[0].to_string(), parts[1..].join(" ")]
+        } else {
+            vec![upper.clone()]
+        }
+    } else if upper.len() >= 7 {
+        if let Some(pos) = upper.find(|c: char| c.is_ascii_digit()) {
+            if pos > 0 {
+                vec![upper[..pos].to_string(), upper[pos..].to_string()]
+            } else {
+                let mid = upper.len().div_ceil(2);
+                vec![upper[..mid].to_string(), upper[mid..].to_string()]
+            }
+        } else {
+            let mid = upper.len().div_ceil(2);
+            vec![upper[..mid].to_string(), upper[mid..].to_string()]
+        }
+    } else {
+        vec![upper.clone()]
+    };
+
+    if lines.len() > 1 {
+        let max_len = lines.iter().map(|l| l.len()).max().unwrap_or(0);
+        let size = if max_len <= 4 {
+            12.0
+        } else if max_len <= 6 {
+            11.0
+        } else {
+            9.5
+        };
+        KeyDisplayFormat {
+            lines,
+            size,
+            font: theme::UI_FONT_BLACK,
+        }
+    } else {
+        let len = upper.len();
+        let size = if len <= 2 {
+            18.0
+        } else if len <= 4 {
+            14.0
+        } else {
+            11.0
+        };
+        KeyDisplayFormat {
+            lines,
+            size,
+            font: if len <= 4 {
+                theme::UI_FONT_BLACK
+            } else {
+                theme::UI_FONT_BOLD
+            },
+        }
+    }
+}
+
+fn keycap<'a>(
+    direction: &Direction,
+    snapshot: &'a UiSnapshot,
+    duplicate: bool,
+    pressed: bool,
+    language: Language,
+) -> Element<'a, Message> {
+    let slot = direction.slot;
+    let accent = direction.accent;
+    let ring = direction.ring;
+    let key = &snapshot.keys[key_slot_index(slot)];
+    let selected = snapshot.capture_slot == Some(slot);
+    let mode = if selected {
+        theme::KeycapMode::Rebinding
+    } else if pressed {
+        theme::KeycapMode::Pressed
+    } else {
+        theme::KeycapMode::Normal
+    };
+    let active = matches!(
+        mode,
+        theme::KeycapMode::Rebinding | theme::KeycapMode::Pressed
+    );
+
+    let center_content: Element<'a, Message> = if selected {
+        text("...")
+            .size(18)
+            .font(theme::UI_FONT_BLACK)
+            .color(Color::WHITE)
+            .into()
+    } else {
+        let fmt = format_key_for_display(&key.name);
+        let text_color = if active { Some(Color::WHITE) } else { None };
+        if fmt.lines.len() > 1 {
+            column(
+                fmt.lines
+                    .into_iter()
+                    .map(|line| hover_text::label(line, fmt.size, fmt.font, text_color, true)),
+            )
+            .spacing(1)
+            .align_x(Center)
+            .into()
+        } else {
+            hover_text::label(
+                fmt.lines.into_iter().next().unwrap_or_default(),
+                fmt.size,
+                fmt.font,
+                text_color,
+                true,
+            )
+        }
+    };
+
+    button(
+        column![
+            row![
+                text(language.text(direction.label))
+                    .size(10)
+                    .font(theme::UI_FONT_BOLD)
+                    .color(if active {
+                        Color::from_rgba(1.0, 1.0, 1.0, 0.8)
+                    } else {
+                        theme::ICON_MUTED
+                    })
+                    .width(Fill),
+                icons::icon(
+                    direction.arrow,
+                    12.0,
+                    if active { None } else { Some(accent) }
+                )
+            ],
+            container(center_content).center_x(Fill).center_y(Fill),
+        ]
+        .spacing(4),
+    )
+    .width(80)
+    .height(80)
+    .padding(10)
+    .style(move |_, state| theme::keycap(state, mode, duplicate, accent, ring))
+    .on_press(if selected {
+        Message::CancelCapture
+    } else {
+        Message::Capture(slot)
+    })
+    .into()
+}
+
+fn matches_key(
+    key: &iced::keyboard::Key,
+    physical: &iced::keyboard::key::Physical,
+    target_name: &str,
+) -> bool {
+    let clean_target = target_name
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .collect::<String>()
+        .to_ascii_uppercase();
+
+    if clean_target.is_empty() {
+        return false;
+    }
+
+    if let iced::keyboard::Key::Character(c) = key
+        && (c.eq_ignore_ascii_case(target_name) || c.eq_ignore_ascii_case(&clean_target))
+    {
+        return true;
+    }
+
+    if let iced::keyboard::Key::Named(named) = key {
+        match named {
+            iced::keyboard::key::Named::ArrowUp => {
+                if clean_target.contains("UP") {
+                    return true;
+                }
+            }
+            iced::keyboard::key::Named::ArrowDown => {
+                if clean_target.contains("DOWN") {
+                    return true;
+                }
+            }
+            iced::keyboard::key::Named::ArrowLeft => {
+                if clean_target.contains("LEFT") {
+                    return true;
+                }
+            }
+            iced::keyboard::key::Named::ArrowRight => {
+                if clean_target.contains("RIGHT") {
+                    return true;
+                }
+            }
+            iced::keyboard::key::Named::Space if clean_target == "SPACE" => {
+                return true;
+            }
+            _ => {}
+        }
+    }
+
+    if let iced::keyboard::key::Physical::Code(code) = physical {
+        let code_str = format!("{code:?}").to_ascii_uppercase();
+        let stripped = code_str.strip_prefix("KEY").unwrap_or(&code_str);
+        if stripped == clean_target {
+            return true;
+        }
+        if code_str == clean_target {
+            return true;
+        }
+        if (code_str.contains("ARROWUP") || code_str == "UP") && clean_target.contains("UP") {
+            return true;
+        }
+        if (code_str.contains("ARROWDOWN") || code_str == "DOWN") && clean_target.contains("DOWN") {
+            return true;
+        }
+        if (code_str.contains("ARROWLEFT") || code_str == "LEFT") && clean_target.contains("LEFT") {
+            return true;
+        }
+        if (code_str.contains("ARROWRIGHT") || code_str == "RIGHT")
+            && clean_target.contains("RIGHT")
+        {
+            return true;
+        }
+        if code_str.replace("PAD", "") == clean_target.replace("PAD", "") {
+            return true;
+        }
+    }
+
+    false
+}
 
 fn mapping_pad<'a>(
     snapshot: &'a UiSnapshot,
+    pressed_keys: &[bool; 4],
+    press_timestamps: &[Option<std::time::Instant>; 4],
     timeline: Option<&Timeline>,
     language: Language,
 ) -> Element<'a, Message> {
@@ -2085,28 +2848,29 @@ fn mapping_pad<'a>(
         &UP,
         snapshot,
         duplicates[0],
-        timeline.is_some_and(|timeline| timeline.held(KeySlot::VerticalFirst)),
+        pressed_keys[0] || timeline.is_some_and(|timeline| timeline.held(KeySlot::VerticalFirst)),
         language,
     );
     let down = keycap(
         &DOWN,
         snapshot,
         duplicates[1],
-        timeline.is_some_and(|timeline| timeline.held(KeySlot::VerticalSecond)),
+        pressed_keys[1] || timeline.is_some_and(|timeline| timeline.held(KeySlot::VerticalSecond)),
         language,
     );
     let left = keycap(
         &LEFT,
         snapshot,
         duplicates[2],
-        timeline.is_some_and(|timeline| timeline.held(KeySlot::HorizontalFirst)),
+        pressed_keys[2] || timeline.is_some_and(|timeline| timeline.held(KeySlot::HorizontalFirst)),
         language,
     );
     let right = keycap(
         &RIGHT,
         snapshot,
         duplicates[3],
-        timeline.is_some_and(|timeline| timeline.held(KeySlot::HorizontalSecond)),
+        pressed_keys[3]
+            || timeline.is_some_and(|timeline| timeline.held(KeySlot::HorizontalSecond)),
         language,
     );
     // No `Fill` height may appear in this subtree. `Container::diff` and
@@ -2122,14 +2886,19 @@ fn mapping_pad<'a>(
                 icons::icon(Icon::Edit, 12.0, Some(theme::MUTED_TEXT)),
                 text(language.text("Click keycap to rebind"))
                     .size(11)
+                    .font(theme::UI_FONT_BOLD)
                     .color(theme::MUTED_TEXT),
             ]
             .spacing(6)
             .align_y(Center),
             container(up).center_x(Fill),
-            row![left, dpad_center_tile(timeline), right]
-                .spacing(16)
-                .align_y(Center),
+            row![
+                left,
+                dpad_center_tile(pressed_keys, press_timestamps, timeline),
+                right
+            ]
+            .spacing(16)
+            .align_y(Center),
             container(down).center_x(Fill),
         ]
         .spacing(16)
@@ -2172,139 +2941,6 @@ fn rebind_banner<'a>(language: Language) -> Element<'a, Message> {
     .into()
 }
 
-/// The D-pad's center tile: a dashed guide ring, a resting dot, and the
-/// moving dot that shifts toward the winning direction (diagonals travel
-/// less far, as in the reference). Iced has no absolute positioning, so
-/// the dot's offset rides on the padding of its full-size wrapper.
-///
-/// The dot follows engine output only. While the filter is off or
-/// measurement runs, the timeline carries physical input, where both
-/// opposing keys can be down with nothing resolving them, so the dot rests.
-fn dpad_center_tile(timeline: Option<&Timeline>) -> Element<'static, Message> {
-    let resolved = timeline.filter(|timeline| !timeline.physical);
-    let (x, y) = resolved.map_or((0, 0), |timeline| {
-        let x = match timeline.winner(KeySlot::HorizontalFirst, KeySlot::HorizontalSecond) {
-            Some(KeySlot::HorizontalFirst) => -1,
-            Some(_) => 1,
-            None => 0,
-        };
-        let y = match timeline.winner(KeySlot::VerticalFirst, KeySlot::VerticalSecond) {
-            Some(KeySlot::VerticalFirst) => -1,
-            Some(_) => 1,
-            None => 0,
-        };
-        (x, y)
-    });
-    let diagonal = x != 0 && y != 0;
-    let reach = if diagonal { 13.0 } else { 18.0 };
-    let active = x != 0 || y != 0;
-    let dot_color = if active {
-        mode_color(SocdMode::Immediate)
-    } else {
-        theme::ICON_MUTED
-    };
-    const DOT: f32 = 18.0;
-    const TILE: f32 = 80.0;
-    container(
-        stack![
-            container(icons::dashed_ring(48.0, theme::GUIDE_RING))
-                .center_x(Fill)
-                .center_y(Fill),
-            container(
-                container(space::horizontal().width(8).height(8)).style(|_| {
-                    theme::dot_style(Color {
-                        a: 0.6,
-                        ..Color::from_rgb8(0xcb, 0xd5, 0xe1)
-                    })
-                })
-            )
-            .center_x(Fill)
-            .center_y(Fill),
-            container(
-                container(space::horizontal().width(DOT).height(DOT))
-                    .style(move |_| theme::dot_style(dot_color))
-            )
-            .padding(Padding {
-                top: (TILE - DOT) / 2.0 + y as f32 * reach,
-                left: (TILE - DOT) / 2.0 + x as f32 * reach,
-                ..Padding::ZERO
-            })
-            .width(Fill)
-            .height(Fill),
-        ]
-        .width(Fill)
-        .height(Fill),
-    )
-    .width(TILE)
-    .height(TILE)
-    .style(|_| theme::dpad_center())
-    .into()
-}
-
-fn keycap<'a>(
-    direction: &Direction,
-    snapshot: &'a UiSnapshot,
-    duplicate: bool,
-    pressed: bool,
-    language: Language,
-) -> Element<'a, Message> {
-    let slot = direction.slot;
-    let accent = direction.accent;
-    let key = &snapshot.keys[key_slot_index(slot)];
-    let selected = snapshot.capture_slot == Some(slot);
-    let active = selected || pressed;
-    let name: &str = if selected { "…" } else { &key.name };
-    let length = name.chars().count();
-    // The reference's normal-key letter scale.
-    let size = if length <= 2 {
-        18.0
-    } else if length <= 4 {
-        14.0
-    } else {
-        11.0
-    };
-    button(
-        column![
-            row![
-                text(language.text(direction.label))
-                    .size(10)
-                    .font(theme::UI_FONT_BOLD)
-                    .color(if active {
-                        Color::from_rgba(1.0, 1.0, 1.0, 0.8)
-                    } else {
-                        theme::ICON_MUTED
-                    })
-                    .width(Fill),
-                icons::icon(
-                    direction.arrow,
-                    12.0,
-                    if active { None } else { Some(accent) }
-                )
-            ],
-            container(hover_text::label(
-                name,
-                size,
-                theme::UI_FONT_BLACK,
-                None,
-                true
-            ))
-            .center_x(Fill)
-            .center_y(Fill),
-        ]
-        .spacing(4),
-    )
-    .width(80)
-    .height(80)
-    .padding(10)
-    .style(move |_, state| theme::keycap(state, active, duplicate, accent))
-    .on_press(if selected {
-        Message::CancelCapture
-    } else {
-        Message::Capture(slot)
-    })
-    .into()
-}
-
 /// The unique/duplicate assignment status, rendered in the mapping card's
 /// footer below the inset (reference: bottom-right, outside the stage).
 fn assignment_status<'a>(duplicates: &[bool; 4], language: Language) -> Element<'a, Message> {
@@ -2329,6 +2965,7 @@ fn assignment_status<'a>(duplicates: &[bool; 4], language: Language) -> Element<
             "All keys uniquely assigned."
         }))
         .size(11)
+        .font(theme::UI_FONT_BOLD)
         .color(if duplicate {
             theme::RED_600
         } else {
@@ -2422,6 +3059,7 @@ fn duration_range<'a>(
 fn profile_chip<'a>(
     physical: crate::core::PhysicalKey,
     snapshot: &'a UiSnapshot,
+    ink: theme::SlotInk,
 ) -> Element<'a, Message> {
     let name = snapshot
         .keys
@@ -2435,20 +3073,28 @@ fn profile_chip<'a>(
                 physical.scan_code
             )
         });
+    // The chip is a square box with the label on its centre line. The padding
+    // is symmetric and carries the centring: iced adds padding outside the
+    // resolved content, so both insets resolve to zero and the 13px line box
+    // sits exactly on the 20x20 box's centre. `Length::min` is given the
+    // content floor rather than the box size because iced expands a resolved
+    // length by the padding around it -- the box ends up `CHIP_SIZE` wide, and
+    // a longer label grows its own chip sideways. The height is fixed on every
+    // chip, so no label can make the row taller.
     container(
         text(name)
             .size(10.0)
-            .font(theme::UI_FONT_BOLD)
-            .color(theme::CHIP_TEXT),
+            // The reference puts its monospace stack on every `<kbd>`, which is
+            // what makes all four chips the same width. A proportional bold
+            // measured W/S/A/D at 24/20/22/22px and pushed the pair row wider
+            // than the reference's.
+            .font(theme::CHIP_FONT)
+            .color(ink.chip_label),
     )
-    // The reference gets its 16px chip from a `leading-none` line plus `py-0.5`,
-    // but iced's default line box for the same 10px label is taller than the
-    // line itself, so fixing the box and centring the line inside it reproduces
-    // the drawn size without clipping the glyphs.
-    .height(theme::CHIP_HEIGHT)
+    .height(theme::CHIP_SIZE)
     .padding(theme::CHIP_PADDING)
-    .align_y(Center)
-    .style(|_| theme::chip_style())
+    .width(Length::Shrink.min(theme::CHIP_CONTENT_MIN))
+    .style(move |_| theme::chip_style(ink))
     .into()
 }
 
@@ -2543,16 +3189,6 @@ const fn mode_color(mode: SocdMode) -> Color {
         SocdMode::PressDelay => theme::INDIGO_600,
         SocdMode::ReleaseDelay => theme::VIOLET_600,
         SocdMode::RandomMix => theme::MIX_TEXT,
-    }
-}
-
-/// Mode label ink from the reference (`MODE_TEXT`): the release-delay label
-/// uses the darker `text-violet-700` while the card tint keeps the lighter
-/// violet. Every other mode labels in its own card color.
-const fn mode_label_color(mode: SocdMode) -> Color {
-    match mode {
-        SocdMode::ReleaseDelay => theme::RELEASE_LABEL,
-        mode => mode_color(mode),
     }
 }
 
@@ -3171,19 +3807,48 @@ fn requested_view() -> UiView {
     requested_view_from(std::env::args())
 }
 
-/// Maps window-unfocus events to a facade-rearming message. `Event` here is
-/// the iced runtime event, not the IPC one.
-fn window_unfocused(
+/// Maps the runtime events the app subscribes to outside its own widgets to
+/// messages. `Event` here is the iced runtime event, not the IPC one.
+///
+/// It used to be only window-unfocus and Escape; the pointer-press release
+/// joined it because a press that leaves the widget under the pointer is the
+/// one event no widget reports. Every widget sees the press and the ones that
+/// handle it capture it, so the subscription only gets the presses that no
+/// widget claimed -- which is exactly the set that has left whatever was
+/// hovered.
+fn runtime_event(
     event: iced::Event,
-    _status: iced::event::Status,
+    status: iced::event::Status,
     _window: iced::window::Id,
 ) -> Option<Message> {
     match event {
+        iced::Event::Window(iced::window::Event::Focused) => Some(Message::WindowFocused),
         iced::Event::Window(iced::window::Event::Unfocused) => Some(Message::WindowUnfocused),
         iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
             key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
             ..
         }) => Some(Message::CancelCapture),
+        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+            key,
+            physical_key,
+            repeat: false,
+            ..
+        }) => Some(Message::KeyboardPressed {
+            key,
+            physical: physical_key,
+        }),
+        iced::Event::Keyboard(iced::keyboard::Event::KeyReleased {
+            key, physical_key, ..
+        }) => Some(Message::KeyboardReleased {
+            key,
+            physical: physical_key,
+        }),
+        iced::Event::Mouse(iced::mouse::Event::ButtonPressed(_))
+        | iced::Event::Touch(iced::touch::Event::FingerPressed { .. })
+            if status == iced::event::Status::Ignored =>
+        {
+            Some(Message::NameHovered(0, false))
+        }
         _ => None,
     }
 }
@@ -3825,5 +4490,103 @@ mod tests {
         let _ = app.handle_event(UiEvent::MonitorStateChanged(false));
         let _ = app.handle_event(UiEvent::MonitorUpdated(event));
         assert!(app.monitor.timeline().is_none());
+    }
+
+    #[test]
+    fn format_key_for_display_splits_compound_keys() {
+        let single = super::format_key_for_display("W");
+        assert_eq!(single.lines, vec!["W"]);
+        assert_eq!(single.size, 18.0);
+
+        let numpad = super::format_key_for_display("Numpad 8");
+        assert_eq!(numpad.lines, vec!["NUMPAD", "8"]);
+
+        let arrow = super::format_key_for_display("Arrow Up");
+        assert_eq!(arrow.lines, vec!["ARROW", "UP"]);
+
+        let backspace = super::format_key_for_display("Backspace");
+        assert_eq!(backspace.lines, vec!["BACK", "SPACE"]);
+
+        let capslock = super::format_key_for_display("CapsLock");
+        assert_eq!(capslock.lines, vec!["CAPS", "LOCK"]);
+    }
+
+    #[test]
+    fn matches_key_detects_characters_and_named_keys() {
+        use iced::keyboard::Key;
+        use iced::keyboard::key::{Code, Named, Physical};
+
+        assert!(super::matches_key(
+            &Key::Character("w".into()),
+            &Physical::Code(Code::KeyW),
+            "W"
+        ));
+        assert!(super::matches_key(
+            &Key::Character("W".into()),
+            &Physical::Code(Code::KeyW),
+            "W"
+        ));
+        assert!(super::matches_key(
+            &Key::Named(Named::ArrowUp),
+            &Physical::Code(Code::ArrowUp),
+            "Up Arrow"
+        ));
+        assert!(super::matches_key(
+            &Key::Named(Named::Space),
+            &Physical::Code(Code::Space),
+            "Space"
+        ));
+    }
+
+    #[test]
+    fn resolve_dpad_handles_opposing_presses_and_diagonals() {
+        let timestamps = [None; 4];
+        let (x, y, active) = super::resolve_dpad(&[false; 4], &timestamps, None);
+        assert_eq!((x, y, active), (0.0, 0.0, false));
+
+        // Up only -> y = -18.0
+        let (x, y, active) = super::resolve_dpad(&[true, false, false, false], &timestamps, None);
+        assert_eq!((x, y, active), (0.0, -18.0, true));
+
+        // Diagonal: Up + Right -> (13.0, -13.0)
+        let (x, y, active) = super::resolve_dpad(&[true, false, false, true], &timestamps, None);
+        assert_eq!((x, y, active), (13.0, -13.0, true));
+
+        // Opposing horizontal keys: Left pressed first, Right pressed second -> Right wins
+        let now = std::time::Instant::now();
+        let ts = [
+            None,
+            None,
+            Some(now),
+            Some(now + std::time::Duration::from_millis(10)),
+        ];
+        let (x, _, active) = super::resolve_dpad(&[false, false, true, true], &ts, None);
+        assert_eq!(x, 18.0);
+        assert!(active);
+    }
+
+    #[test]
+    fn keyboard_press_and_release_updates_app_state() {
+        use iced::keyboard::Key;
+        use iced::keyboard::key::{Code, Physical};
+
+        let mut app = test_app();
+        assert!(!app.pressed_keys[0]);
+
+        // Press "W" (default UP key)
+        let _ = app.update(super::Message::KeyboardPressed {
+            key: Key::Character("w".into()),
+            physical: Physical::Code(Code::KeyW),
+        });
+        assert!(app.pressed_keys[0]);
+        assert!(app.press_timestamps[0].is_some());
+
+        // Release "W"
+        let _ = app.update(super::Message::KeyboardReleased {
+            key: Key::Character("w".into()),
+            physical: Physical::Code(Code::KeyW),
+        });
+        assert!(!app.pressed_keys[0]);
+        assert!(app.press_timestamps[0].is_none());
     }
 }

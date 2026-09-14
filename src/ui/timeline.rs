@@ -273,13 +273,20 @@ const fn index(key: KeySlot) -> usize {
 pub fn graph<'a, Message: 'a>(
     timeline: Option<&'a Timeline>,
     names: [&'a str; 4],
+    awake: bool,
 ) -> Element<'a, Message> {
-    Element::new(Graph { timeline, names })
+    Element::new(Graph {
+        timeline,
+        names,
+        awake,
+    })
 }
 
 struct Graph<'a> {
     timeline: Option<&'a Timeline>,
     names: [&'a str; 4],
+    /// A deactivated window stops advancing the playhead; the engine keeps filtering.
+    awake: bool,
 }
 
 /// What the cached geometry was drawn for: the 60 Hz frame, which keys were
@@ -320,7 +327,8 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for Graph<'_> {
         shell: &mut Shell<'_, Message>,
         _: &Rectangle,
     ) {
-        if let Event::Window(window::Event::RedrawRequested(now)) = event
+        if self.awake
+            && let Event::Window(window::Event::RedrawRequested(now)) = event
             && let Some(timeline) = self.timeline
         {
             let animate = timeline.held_since.iter().any(Option::is_some)

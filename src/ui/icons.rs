@@ -110,38 +110,56 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for Icon {
         });
     }
 }
-/// A 1 px dashed circle: the D-pad's resting guide. A quad border cannot dash,
-/// so this is canvas geometry, cached on its color the same way the icons are.
-pub fn dashed_ring<'a, Message: 'a>(size: f32, color: Color) -> Element<'a, Message> {
-    Element::new(Ring { size, color })
+/// The D-pad's center joystick tile: an 80x80 canvas tile with rounded-2xl corners,
+/// a 48px dashed guide ring, an 8px resting center guide dot, and a dynamic moving dot
+/// that shifts according to the winning direction (18px cardinal, 13px diagonal)
+/// and lights up with an accent glow when active.
+pub fn dpad_tile<'a, Message: 'a>(
+    shift_x: f32,
+    shift_y: f32,
+    active: bool,
+) -> Element<'a, Message> {
+    Element::new(DpadTile {
+        shift_x,
+        shift_y,
+        active,
+    })
 }
-struct Ring {
-    size: f32,
-    color: Color,
+
+struct DpadTile {
+    shift_x: f32,
+    shift_y: f32,
+    active: bool,
 }
+
 #[derive(Default)]
-struct RingState {
+struct DpadTileState {
     cache: Cache,
-    color: Cell<Option<Color>>,
+    key: Cell<Option<(i32, i32, bool)>>,
 }
-impl<Message> Widget<Message, Theme, iced::Renderer> for Ring {
+
+impl<Message> Widget<Message, Theme, iced::Renderer> for DpadTile {
     fn tag(&self) -> tree::Tag {
-        tree::Tag::of::<RingState>()
+        tree::Tag::of::<DpadTileState>()
     }
+
     fn state(&self) -> tree::State {
-        tree::State::new(RingState::default())
+        tree::State::new(DpadTileState::default())
     }
+
     fn size(&self) -> Size<Length> {
-        Size::new(self.size.into(), self.size.into())
+        Size::new(80.0.into(), 80.0.into())
     }
+
     fn layout(
         &mut self,
         _: &mut Tree,
         _: &iced::Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
-        layout::atomic(limits, self.size, self.size)
+        layout::atomic(limits, 80.0, 80.0)
     }
+
     fn draw(
         &self,
         tree: &Tree,
@@ -153,29 +171,87 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for Ring {
         _: &Rectangle,
     ) {
         let bounds = layout.bounds();
-        let state = tree.state.downcast_ref::<RingState>();
-        if state.color.replace(Some(self.color)) != Some(self.color) {
+        let state = tree.state.downcast_ref::<DpadTileState>();
+        let cache_key = (self.shift_x as i32, self.shift_y as i32, self.active);
+        if state.key.replace(Some(cache_key)) != Some(cache_key) {
             state.cache.clear();
         }
         let geometry = state.cache.draw(renderer, bounds.size(), |frame| {
-            // Inset by half the stroke so the ring stays inside its bounds.
-            let radius = (bounds.width.min(bounds.height) - 1.0) / 2.0;
+            let size = bounds.size();
+            let center = frame.center();
+
+            // 1. Tile background & border (rounded-2xl, radius 16px)
+            let tile_path = Path::new(|p| {
+                p.rounded_rectangle(Point::ORIGIN, size, 16.0.into());
+            });
+            // bg-slate-100/90 (rgb 0xf1, 0xf5, 0xf9)
+            frame.fill(&tile_path, Color::from_rgb8(0xf1, 0xf5, 0xf9));
+            // border-slate-200/80 (rgb 0xe2, 0xe8, 0xf0)
             frame.stroke(
-                &Path::circle(frame.center(), radius),
+                &tile_path,
+                Stroke::default()
+                    .with_color(Color::from_rgb8(0xe2, 0xe8, 0xf0))
+                    .with_width(1.0),
+            );
+
+            // 2. Dashed guide ring: 48px diameter (24px radius)
+            let ring_radius = 24.0;
+            frame.stroke(
+                &Path::circle(center, ring_radius),
                 Stroke {
                     line_dash: LineDash {
                         segments: &[3.0, 3.0],
                         offset: 0,
                     },
-                    ..Stroke::default().with_color(self.color).with_width(1.0)
+                    ..Stroke::default()
+                        .with_color(Color::from_rgb8(0xe2, 0xe8, 0xf0))
+                        .with_width(1.0)
                 },
             );
+
+            // 3. Center resting guide dot: 8px diameter (4px radius, slate-300/60)
+            frame.fill(
+                &Path::circle(center, 4.0),
+                Color::from_rgba(0.80, 0.84, 0.88, 0.6),
+            );
+
+            // 4. Dynamic moving dot
+            let dot_pos = Point::new(center.x + self.shift_x, center.y + self.shift_y);
+            if self.active {
+                // Outer ring glow (24px diameter / radius 12px)
+                frame.fill(
+                    &Path::circle(dot_pos, 12.0),
+                    Color::from_rgba(0.23, 0.33, 0.91, 0.25),
+                );
+                // Shadow below active dot
+                frame.fill(
+                    &Path::circle(Point::new(dot_pos.x, dot_pos.y + 1.0), 10.0),
+                    Color::from_rgba(0.23, 0.33, 0.91, 0.30),
+                );
+                // Active solid dot (20px diameter / radius 10px, #3a55e8)
+                frame.fill(
+                    &Path::circle(dot_pos, 10.0),
+                    Color::from_rgb8(0x3a, 0x55, 0xe8),
+                );
+            } else {
+                // Soft shadow below resting dot
+                frame.fill(
+                    &Path::circle(Point::new(dot_pos.x, dot_pos.y + 1.0), 9.0),
+                    Color::from_rgba(0.0, 0.0, 0.0, 0.08),
+                );
+                // Resting solid dot (18px diameter / radius 9px, slate-400/80)
+                frame.fill(
+                    &Path::circle(dot_pos, 9.0),
+                    Color::from_rgba(0.58, 0.64, 0.72, 0.8),
+                );
+            }
         });
         renderer.with_translation(Vector::new(bounds.x, bounds.y), |renderer| {
-            renderer.draw_geometry(geometry)
+            renderer.draw_geometry(geometry);
         });
     }
 }
+
 fn quad(
     renderer: &mut iced::Renderer,
     bounds: Rectangle,

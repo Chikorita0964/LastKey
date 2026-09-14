@@ -8,6 +8,9 @@ release/
 *.pdb
 *.res
 
+# Local agent tooling wiring: machine-specific and not part of the product.
+.vscode/mcp.json
+
 # Local agent session state and design scratch material
 .claude/
 

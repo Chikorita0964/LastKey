@@ -22,6 +22,12 @@ Rendering rules, stated as what to use rather than only what to avoid:
 - A widget that animates drives its own repaint from `Event::Window(RedrawRequested)` plus
   `shell.request_redraw_at`, as `src/ui/timeline.rs:165` does, and only while it has something to
   show. No animation engine, and no repaint loop that outlives the state it renders.
+- A deactivated window is an additional "nothing to show" condition, so it requests no frames at all:
+  the preview clock, the timeline playhead, and hover-reveal motion all stop, and the settings IPC
+  pump drops to `IPC_SLEEP_POLL_INTERVAL`. Only the settings process idles. The filter engine lives
+  in the runtime process and keeps resolving SOCD while the window sleeps, so nothing here may gate
+  filtering, the engine's monitor tap, or the tray. Focus restores the previous behavior, and a
+  command queued on the way out still wakes the pump immediately.
 - Text uses generic font families, never a named one. `UI_FONT` is `Font::DEFAULT`
   (`Family::SansSerif`) and `MONO_FONT` is `Font::MONOSPACE`, so the shaper resolves the OS default
   and then walks its own fallback chain for glyphs that face lacks — Hangul and CJK included. A named
@@ -63,6 +69,35 @@ Two conventions in `theme.rs` are load-bearing, because both are easy to "fix" b
   content-sized instead. Any hairline or spacer inside a row or column must have an explicit size on
   the axis it is not meant to control — `theme::pair_divider` exists for exactly that. Check a
   widget's `size()` before trusting it as decoration.
+- **A reference-matched tint is pre-composited, never handed to iced with an alpha.** A browser
+  blends alpha in sRGB; iced blends in linear space, so the same value lands visibly paler — the
+  Immediate slot card measured `#CED1F6` where the reference draws `#EBEEFD`. `theme::slot_tint`
+  composites each layer in sRGB (`over`, `dim`) and returns an opaque colour instead, so the
+  difference is removed rather than compensated for. A card's edge composites over its own fill, not
+  over the panel behind it, because a CSS `border-box` background reaches under its border.
+- **A content-sized widget must report `Shrink`, not `Fill`, from `size()`.** A row hands every child
+  the same loose limits, and `Limits::resolve_width` maps `Fill` to `max.width`, so a custom widget
+  that declares `Fill` while sizing itself from its content silently claims the whole row. The
+  clipped profile-name label did this: it measured 336px inside a 336px card interior and pushed its
+  trailing pencil to the far edge, where the reference's box is 135px. `hover_text::Label` now reports
+  `Length::Shrink` and resolves to `state.full.min_width()`; the incoming `max` still clamps, so an
+  over-long name still truncates and still scrolls on hover. Squaring the keycap chips uses the mirror
+  image of the same rule: their width is `Length::Shrink.min(theme::CHIP_CONTENT_MIN)`.
+- **Padding is added outside a resolved length, and a container aligns content Left/Top by default.**
+  iced's `layout::positioned` resolves the explicit size first and then expands it by the padding, so
+  `.width(Length::X)` is the *content* width and the drawn box is `X + padding.left + padding.right`
+  — `theme::CHIP_CONTENT_MIN` is the square minus both horizontal insets for that reason. `Container`
+  defaults to `Horizontal::Left` / `Vertical::Top` and centres only when asked. The profile keycap
+  relies on the combination: its insets are symmetric, so the label's own box equals the content box
+  and cannot sit anywhere but centred, which is why it needs no `align_x`/`align_y` at all.
+- **The whole interface is rebuilt and re-laid out after every message, so content-sized widgets
+  resize as they are edited.** The winit runner builds a fresh `UserInterface` whenever messages are
+  pending, and `build_user_interfaces` lays out from scratch. The rename box exploits this rather than
+  fighting it: it is `Length::Shrink` and replaces the name box in place, so it starts at the name
+  box's own width and extends to the right as the name is typed. That is a deliberate departure from
+  the reference, which pins its field to a fixed `w-28` — the owner asked for the box to grow
+  (`글자 크기가 늘어나면 입력창도 같이 우측으로 길어지게`). Its left padding matches
+  `theme::SLOT_NAME_PADDING`'s, so the name does not shift when the box becomes editable.
 
 - One page starts at 1040×800 with a 960×600 minimum. The header holds branding, connection status,
   profile selection, and engine on/off as compact icon-only controls. Mappings and timing are side
@@ -72,13 +107,20 @@ Two conventions in `theme.rs` are load-bearing, because both are easy to "fix" b
   modals — preserving scroll position, and profile errors remain visible inside the panel.
 - Existing UiView launch/focus requests navigate to the top or bottom of that body. Pre-snapshot
   requests wait until it mounts; ordinary snapshots never reset its scroll offset.
-- The D-pad uses capture buttons, highlights duplicate assignments, and shows observed timeline
-  holds. Its center tile carries a resting dot that follows the engine's output direction and rests while the timeline shows physical input, arrows are
-  tinted per direction, and the unique/duplicate status sits in a footer below the inset. Clicking
-  the selected capture again cancels it. While a capture is armed an indigo banner above the stage
-  prompts for a new key and offers an explicit ESC cancel; the banner stays static (no pulse). The
-  stage itself carries only the reference's "Click keycap to rebind" hint — no modifier note —
-  while the engine's modifier exclusion behavior is unchanged.
+- The Key mappings card groups its title and subtitle tightly in a column beside the Restore button.
+  Direction accents match the four SOCD mode colors (UP = Immediate, LEFT = Press Delay, RIGHT = Random Mix,
+  DOWN = Release Delay). Keycaps distinguish rebinding (accent fill, 8px outer glow ring, "..." in black font)
+  from live physical keypresses (accent fill, pressed shadow, key name in bold white). Long and compound key
+  names (e.g., "Numpad 8", "Arrow Up", "Backspace") are automatically split into two auto-scaled lines.
+  The center D-pad joystick is drawn on an 80×80 canvas with rounded-2xl corners, a 48px dashed guide ring,
+  an 8px resting guide dot, and a dynamic moving dot (18px cardinal, 13px diagonal) with active accent glow,
+  resolving real-time opposite inputs via Last-Input-Priority SOCD. While capture is armed, an indigo banner
+  prompts for input with a high-contrast `INDIGO_700`/`INDIGO_800` ESC Cancel button. Unique/duplicate status
+  sits in the card footer with bold iconography and typography.
+  Keycap and D-pad feedback reads the window's own key events, so it reacts whether or not the
+  timeline is recording — matching the reference, which animates keycaps with its timeline switch
+  off. Recording adds the timeline's held state on top; it never gates the feedback. Deactivating the
+  window clears the pressed set, because a key held across the transition never delivers its release.
 - TimingField owns editability, draft access, range validation, and buffers. Each duration group has
   a two-handle 0–20 ms rail plus numeric editors supporting the existing 1000 ms ceiling. Both use
   0.1 ms units; release delay retains its 0.1 ms minimum. Values beyond the rail are preserved in the
@@ -108,6 +150,55 @@ Two conventions in `theme.rs` are load-bearing, because both are easy to "fix" b
   available in the current snapshot. Other physical keys display their explicit SC:xx or E0:xx
   scan code because the current wire does not provide inactive-profile key names; no keyboard-layout
   table or platform call is added to the settings process. Complete labels remain in tooltips.
+- A slot card paints from two inputs: its mode and its interaction state
+  (`theme::{SlotState, slot_tint, slot_ink, slot_mode_ink}`). The loaded slot always draws active;
+  otherwise the card under the pointer draws hovered and the rest draw idle, which is the
+  reference's `opacity-75` applied to the whole card — wash, name, keycaps and hairline alike. The
+  active class has no hover variant, so the loaded slot does not change under the pointer. The
+  state is derived in `SettingsApp::slot_state` from `hovered_slot`, which the card's `mouse_area`
+  sets: a `container` carries no interaction status, so a card's hover cannot be styled the way a
+  button's can. Every cell of an inactive card is the load target, as it is in the reference, where
+  only the name box excludes itself; the keycap row draws no chrome of its own, because the card's
+  hover is the whole affordance. A card's press is published when it happens rather than when it is
+  released, so that a press which both commits an open rename and selects the card under the pointer
+  acts on one card. That is also why the keycap row is no longer a `button`: a press target and a
+  release target on one card cannot coexist, since the press can change what the pointer is over
+  before the release arrives.
+- The name box carries a hover of its own, which the card does not: its fill takes
+  `theme::NAME_HOVER_FILL`, its edge `theme::NAME_HOVER_BORDER`, and its name and pencil both take
+  `INDIGO_600`, an idle card's pencil included — the reference's `group-hover/slot` is one class at
+  full strength, so it replaces the idle dim rather than stacking on it. This is the one part of a
+  card whose ink is not a function of the card's state alone, and it lives in
+  `SettingsApp::hovered_name`, fed by a `mouse_area` around the box. It cannot live in the button's
+  style: `Button::draw` forwards a single `text_color` to every child, and the box needs two inks at
+  rest (name and pencil) and one on hover, which no one colour can express.
+- Profile slot keycaps use `theme::CHIP_FONT`, the monospace face the reference puts on every
+  `<kbd>`. A proportional bold renders W/S/A/D at different widths and widens the pair row past the
+  reference's. Each chip is square (`theme::CHIP_SIZE`, `rounded-md`, radius 6) and the label is
+  centred on both axes; the reference's chip is wider than it is tall. The height is fixed on every
+  chip while the width is a floor, so the computed `SC:xx` fallback grows only its own chip sideways
+  and no label can make the row taller. Squaring the chip is +4px on the card, so
+  `theme::SLOT_ROW_GAP` takes 2 of them (10 → 8) and the card is 80px rather than the reference's 78.
+- The slot name box and the box that replaces it while renaming are one control in two states. The
+  rename field keeps the name box's fill, radius and left inset — measured at the same `x` — so only
+  the edge changes, to `theme::INDIGO_400`, which is how the reference marks editing. The field is
+  `Length::Shrink`, so the box starts at the name's own width and extends rightward as the name is
+  typed, and the pencil is dropped while it is open, because the field is now the control. This is
+  the one place the port departs from the reference, which pins the field to a fixed `w-28`.
+  `Message::EditProfileName` focuses and selects the field, never `Message::ProfileNameChanged`, so a
+  click while typing does not pull the caret back to the end.
+- An open rename ends on any press that reaches the list rather than the field. The panel surface,
+  the backdrop, and the close button all carry the same commit, so pressing anywhere outside the
+  field saves the typed name and leaves the panel as the press asked — the reference does the same
+  for a press inside its panel, where each card's own `onClick` commits as it bubbles. Enter saves
+  too, then closes the box. Escape is the only discard inside the window, and it also drops the
+  typed text back to the stored name. A blank name is never sent: `Settings::validate` rejects it, so
+  the box closes on Enter and reopens on the stored name for a press elsewhere. The reference's
+  backdrop discards instead — unmounting its input before the browser's blur can run — and that is
+  the one exit this port keeps, because a press on "somewhere else" reads as leaving the edit rather
+  than cancelling it. Deactivating the window discards as well, which the reference's browser blur
+  would commit; an edit still open when the window loses focus is likelier to be interrupted than
+  finished.
 - An untouched numeric editor is a facade button. Its first press focuses and selects the real
   input; subsequent presses place the caret normally. Focus moves rearm this behavior. Invalid
   text or inverted bounds are highlighted only for editable groups.

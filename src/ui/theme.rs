@@ -10,6 +10,8 @@ use iced::{
     widget::{button, container, rule, slider, text_input, toggler},
 };
 
+use crate::settings::SocdMode;
+
 const fn rgb(red: u8, green: u8, blue: u8) -> Color {
     Color::from_rgb(
         red as f32 / 255.0,
@@ -46,12 +48,31 @@ pub const MIX_TEXT: Color = rgb(0x6d, 0x51, 0xee);
 // should take a drawn constant, and nothing it draws should take a DOM one.
 /// Drawn indigo-600 (reference literal `#4f46e5`): icon strokes and fills.
 pub const PRIMARY_TEXT: Color = rgb(0x4f, 0x46, 0xe5);
-/// `bg-indigo-50`: the panel close button's hover wash.
+/// `bg-indigo-50`: the panel close button's hover wash, and the base of the
+/// Press Delay slot card. The rest of the indigo and violet ramps follow, for
+/// the two delay-mode cards.
+///
+/// Tailwind v4 re-specified its scale in oklch, so these are the values the
+/// reference actually renders, read back from its own computed styles rather
+/// than the v3 hexes that share the names. Only the steps the slot cards use
+/// are listed; the middle steps were read back from a rendered card edge, which
+/// is the only place the reference paints them.
 const INDIGO_50: Color = rgb(0xee, 0xf2, 0xff);
+const INDIGO_100: Color = rgb(0xe0, 0xe7, 0xff);
+const INDIGO_200: Color = rgb(0xc6, 0xd2, 0xff);
+const INDIGO_300: Color = rgb(0xa3, 0xb3, 0xff);
+const INDIGO_400: Color = rgb(0x7c, 0x86, 0xff);
+const VIOLET_50: Color = rgb(0xf5, 0xf3, 0xff);
+const VIOLET_100: Color = rgb(0xed, 0xe9, 0xfe);
+const VIOLET_200: Color = rgb(0xdd, 0xd6, 0xff);
+const VIOLET_300: Color = rgb(0xc4, 0xb3, 0xff);
+const VIOLET_400: Color = rgb(0xa6, 0x84, 0xff);
 /// `bg-indigo-600` / `text-indigo-600` / `border-indigo-600`.
 pub const INDIGO_600: Color = rgb(0x4f, 0x39, 0xf6);
 /// `bg-indigo-700` / `hover:bg-indigo-700` / `border-indigo-700`.
 pub const INDIGO_700: Color = rgb(0x43, 0x2d, 0xd7);
+/// `bg-indigo-800` / `hover:bg-indigo-800`.
+pub const INDIGO_800: Color = rgb(0x37, 0x30, 0xa3);
 /// `bg-emerald-500`: the connected status dot.
 pub const EMERALD_500: Color = rgb(0x00, 0xbc, 0x7d);
 /// `text-emerald-600`: notices and the latency table's median figures.
@@ -104,6 +125,11 @@ pub const SLATE_300: Color = rgb(0xca, 0xd5, 0xe2);
 pub const SLATE_600: Color = rgb(0x45, 0x55, 0x6c);
 /// `hover:border-indigo-300` on outlined controls and the profile name box.
 const NAME_HOVER_BORDER: Color = rgb(0xa3, 0xb3, 0xff);
+
+/// `hover:bg-indigo-50/60` on the profile name box, composited over the panel
+/// the way [`over`] does for the cards: iced blends an alpha in linear space
+/// and would land paler than the reference's browser does in sRGB.
+const NAME_HOVER_FILL: Color = over(INDIGO_50, 0.60, SURFACE);
 /// `bg-red-50` and `border-red-400` for invalid values and duplicate keys.
 const ERROR_BG: Color = rgb(0xfe, 0xf2, 0xf2);
 const ERROR_BORDER: Color = rgb(0xff, 0x64, 0x67);
@@ -141,6 +167,15 @@ pub const UI_FONT_BLACK: Font = Font {
 /// Generic monospace, which Windows resolves without requiring a specific
 /// family to be installed.
 pub const MONO_FONT: Font = Font::MONOSPACE;
+/// Bold monospace, for the profile slot keycaps. The reference puts its
+/// `font-code` stack on every `<kbd>` (`[&_kbd]:font-code` on `<body>`), which
+/// is what keeps all four chips the same width; a proportional bold measured
+/// W/S/A/D at 24/20/22/22px and pushed the pair row 8px wider than the
+/// reference's.
+pub const CHIP_FONT: Font = Font {
+    weight: Weight::Bold,
+    ..MONO_FONT
+};
 
 /// Body text size from the preview; headings sit just above it.
 pub const BODY_TEXT_SIZE: f32 = 13.0;
@@ -255,8 +290,10 @@ pub const LANGUAGE_SCROLLER_PADDING: Padding = Padding {
 /// (`space-y-0.5`).
 pub const SLOT_GAP: f32 = 6.0;
 pub const LANGUAGE_ROW_GAP: f32 = 2.0;
-/// Between a card's name row and its keycap row (reference `mt-2.5`).
-pub const SLOT_ROW_GAP: f32 = 10.0;
+/// Between a card's name row and its keycap row (reference `mt-2.5`). The
+/// reference's 10 would grow the card by 4px with a square chip, so 2 of those
+/// pixels move here and the card grows by 2.
+pub const SLOT_ROW_GAP: f32 = 8.0;
 /// Slot card inset: `p-3` plus the 1px edge the reference counts inside it.
 pub const SLOT_CARD_PADDING: f32 = 12.0 + 1.0;
 /// Slot name box: reference `pl-2 pr-1 py-1` plus the same 1px edge, so the
@@ -267,20 +304,58 @@ pub const SLOT_NAME_PADDING: Padding = Padding {
     right: 5.0,
     left: 9.0,
 };
+/// Between the name and its pencil (reference `gap-1`).
+pub const SLOT_NAME_GAP: f32 = 4.0;
+/// The rename box that replaces the name box in place: reference `px-2 py-1`
+/// plus the same 1px edge, symmetric because a field has no trailing icon. The
+/// left inset matches the name box's, so the name itself does not move when the
+/// box becomes editable, and the box takes the text's own width rather than
+/// filling the row, so it grows to the right as the name is typed.
+pub const SLOT_NAME_INPUT_PADDING: Padding = Padding {
+    top: 5.0,
+    bottom: 5.0,
+    right: 9.0,
+    left: 9.0,
+};
 /// Heading block: the title row and its subtitle are `gap-1`, tighter than the
 /// `gap-2` inside the title row itself.
 pub const PROFILE_HEADER_GAP: f32 = 4.0;
-/// Keycap chip (reference `px-1.5 py-0.5 leading-none` around a 10px label).
-/// The chip box is pinned rather than derived from its padding because the
-/// reference's `leading-none` line is shorter than the line box iced gives the
-/// same label, and only the box decides the drawn height.
-pub const CHIP_HEIGHT: f32 = 16.0;
+/// Keycap chip: a square box holding one 10px label. The box is pinned rather
+/// than derived from its padding because the reference's `leading-none` line is
+/// shorter than the line box iced gives the same label, and only the box decides
+/// the drawn size.
+pub const CHIP_SIZE: f32 = 20.0;
+/// Between the two chips of one axis pair (reference `gap-1`). Two pixels wider
+/// than the reference because the square chip is 4px taller, and the pair needs
+/// that much air to keep reading as two separate keys.
+pub const CHIP_GAP: f32 = 6.0;
+/// Chip inset. Both pairs are symmetric, and that symmetry is what puts the
+/// label on the chip's centre line. iced adds padding *outside* the resolved
+/// content, so the content box ends up the label's own size and the line box
+/// cannot sit anywhere but centred -- a container only top-aligns content when
+/// the content is smaller than the box, which `Padding::fit` here makes
+/// impossible.
+///
+/// The vertical insets are `(CHIP_SIZE - 13) / 2`, thirteen being the 10px
+/// label's 1.3 line box. That half pixel is deliberate: it centres the *line
+/// box*, which is what can be positioned -- the glyph ink inside it is a font
+/// metric with no API. Measured on the previous 16px chip, the ink's centre and
+/// the line box's centre agreed exactly, so centring the line box centres the
+/// ink too; verify again if the chip font changes.
 pub const CHIP_PADDING: Padding = Padding {
-    top: 0.0,
-    bottom: 0.0,
+    top: 3.5,
+    bottom: 3.5,
     right: 7.0,
     left: 7.0,
 };
+/// The chip's floor applies to its *content*, not its box: iced expands a
+/// resolved length by the padding, so `Length::min(CHIP_SIZE)` would draw a
+/// 34px chip. This is the square minus both horizontal insets, and it is what
+/// makes a single-glyph chip exactly `CHIP_SIZE` wide while a longer label --
+/// the computed `SC:xx` fallback for a key the wire does not name -- grows its
+/// own chip sideways. The height stays `CHIP_SIZE` for every chip, so one long
+/// label cannot make the row taller.
+pub const CHIP_CONTENT_MIN: f32 = CHIP_SIZE - CHIP_PADDING.left - CHIP_PADDING.right;
 
 /// Page background behind the cards.
 pub fn canvas_style() -> container::Style {
@@ -337,7 +412,7 @@ pub fn stage_style() -> container::Style {
 }
 
 /// The capture-mode banner: a solid indigo bar (reference `bg-indigo-600`)
-/// with white text.
+/// with white text and a soft elevation shadow.
 pub fn rebind_banner_style() -> container::Style {
     container::Style {
         background: Some(Background::Color(INDIGO_600)),
@@ -345,6 +420,11 @@ pub fn rebind_banner_style() -> container::Style {
         border: Border {
             radius: 12.0.into(),
             ..Border::default()
+        },
+        shadow: Shadow {
+            color: Color::from_rgba(0.0, 0.0, 0.0, 0.15),
+            offset: Vector::new(0.0, 4.0),
+            blur_radius: 6.0,
         },
         ..container::Style::default()
     }
@@ -409,13 +489,16 @@ pub fn monitor_toggler(theme: &Theme, status: toggler::Status) -> toggler::Style
     }
 }
 
-/// Small bordered keycap chip in a profile slot card. The reference keeps
-/// chips neutral white so the card's mode tint is the only color signal.
-pub fn chip_style() -> container::Style {
+/// Small bordered keycap chip in a slot card (reference: `rounded-md border
+/// border-slate-300 bg-white/80`). The fill is opaque white rather than the
+/// reference's white wash: 80% white over a card tint this pale resolves within
+/// one step of white, and keeping it opaque stops iced's linear compositing
+/// from tinting the one part of the chip that must stay neutral.
+pub fn chip_style(ink: SlotInk) -> container::Style {
     container::Style {
-        background: Some(Background::Color(Color { a: 0.8, ..SURFACE })),
+        background: Some(Background::Color(SURFACE)),
         border: Border {
-            color: SLATE_300,
+            color: ink.chip_edge,
             width: 1.0,
             radius: 6.0.into(),
         },
@@ -444,28 +527,67 @@ pub fn profile_panel() -> container::Style {
 }
 
 /// Slot name box (reference: white `rounded-lg border-slate-200` pill with
-/// the name in slate-900 and a slate-400 pencil; hover deepens the border
-/// and recolors the name to indigo). The pencil keeps its muted ink so the
-/// idle state shows both inks; the name follows the button text color.
-pub fn profile_name_button(_theme: &Theme, status: button::Status) -> button::Style {
-    let (border, text_color) = match status {
-        button::Status::Hovered | button::Status::Pressed => (NAME_HOVER_BORDER, INDIGO_600),
-        _ => (BORDER, BODY_TEXT),
-    };
-    button::Style {
-        background: Some(Background::Color(SURFACE)),
-        text_color,
+/// the name in slate-900 and a slate-400 pencil; hover washes the fill
+/// indigo-50/60, deepens the border to indigo-300 and recolors both the name
+/// and the pencil to indigo-600).
+///
+/// The button hands one `text_color` to every child, which is enough for the
+/// name -- it takes the renderer style -- but not for the pencil, which is a
+/// two-ink control: slate-400 beside a slate-900 name at rest, one indigo-600
+/// ink on hover. A text colour cannot shrink two rest inks into one, so the
+/// hover state is computed here and handed to the app through
+/// [`slot_ink`], where the icon is built and can be given its own colour. The
+/// two functions read the same table, so they cannot drift apart.
+pub fn profile_name_button(card: SlotState) -> impl Fn(&Theme, button::Status) -> button::Style {
+    let ink = slot_ink(card);
+    move |_theme, status| {
+        let (background, border, text_color) = match status {
+            button::Status::Hovered | button::Status::Pressed => {
+                (NAME_HOVER_FILL, NAME_HOVER_BORDER, INDIGO_600)
+            }
+            _ => (SURFACE, ink.hairline, ink.name),
+        };
+        button::Style {
+            background: Some(Background::Color(background)),
+            text_color,
+            border: Border {
+                color: border,
+                width: 1.0,
+                radius: 8.0.into(),
+            },
+            shadow: Shadow {
+                color: Color::from_rgba(0.0, 0.0, 0.0, 0.04),
+                offset: Vector::new(0.0, 1.0),
+                blur_radius: 1.0,
+            },
+            ..button::Style::default()
+        }
+    }
+}
+
+/// The name box made editable in place (reference: `rounded-lg border
+/// border-indigo-400 bg-white`). It keeps the name box's white fill and radius
+/// so the swap reads as the same control, and the accent edge is the only sign
+/// that the box is a field now. The reference gives the editing box that edge
+/// in every state, not only while focused, and so does this.
+pub fn profile_name_input(_theme: &Theme, _status: text_input::Status) -> text_input::Style {
+    text_input::Style {
+        background: Background::Color(SURFACE),
         border: Border {
-            color: border,
+            color: INDIGO_400,
             width: 1.0,
             radius: 8.0.into(),
         },
-        shadow: Shadow {
-            color: Color::from_rgba(0.0, 0.0, 0.0, 0.04),
-            offset: Vector::new(0.0, 1.0),
-            blur_radius: 1.0,
+        // The box is empty for exactly as long as its name is selected, so the
+        // placeholder is the ink the whole name shows in the first frames of an
+        // edit. The reference has no placeholder here and shows the name itself;
+        // this is the closest equivalent that cannot be mistaken for a value.
+        placeholder: ICON_MUTED,
+        value: BODY_TEXT,
+        selection: Color {
+            a: 0.25,
+            ..INDIGO_600
         },
-        ..button::Style::default()
     }
 }
 
@@ -484,24 +606,224 @@ pub fn profile_confirm_overlay() -> container::Style {
     }
 }
 
-/// Profile slot card tinted by its mode accent; the active slot deepens the
-/// same hue instead of switching color. The two alphas are the reference's own
-/// card classes read as paint rather than intent: its active card composites to
-/// 0.40 over white and its idle cards to 0.05, and the idle ones then take
-/// `opacity-75`. The lower figure is the one that was measured; the alpha the
-/// active class alone would suggest is half again too faint -- the hover wash on
-/// the load row comes from that button's own `ghost_button` style.
-pub fn tinted_slot(accent: Color, active: bool) -> container::Style {
+/// Interaction state of a profile slot card.
+///
+/// The reference selects between its three card classes with CSS alone: the
+/// loaded slot always takes the active class, a card under the pointer takes
+/// its hover class, and every other card carries `opacity-75`. The active class
+/// has no hover variant, so the active card does not change under the pointer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SlotState {
+    Active,
+    Hovered,
+    Idle,
+}
+
+/// A card's drawn fill and edge, flattened to opaque sRGB.
+#[derive(Clone, Copy, Debug)]
+pub struct SlotTint {
+    pub fill: Color,
+    pub border: Color,
+}
+
+/// The ink a card's own contents draw with. The name box keeps an opaque white
+/// fill in every state, so it is not part of this set.
+#[derive(Clone, Copy, Debug)]
+pub struct SlotInk {
+    /// Slot name, inside the name box.
+    pub name: Color,
+    /// The rename pencil beside the name. It sits one slate step below the name
+    /// in the reference (`text-slate-400` against `text-slate-900`) and follows
+    /// the box's `currentColor`, so it dims with the rest of an idle card and
+    /// reaches indigo-600 whenever the box is hovered.
+    pub pencil: Color,
+    /// Keycap label.
+    pub chip_label: Color,
+    /// Keycap outline.
+    pub chip_edge: Color,
+    /// Name box edge, and the hairline between the two key pairs.
+    pub hairline: Color,
+}
+
+/// sRGB composite of `top` at `alpha` over `bottom`, rounded to the 8-bit steps
+/// a screen shows.
+///
+/// The reference's browser blends in sRGB. iced blends alpha in linear space,
+/// so a tint handed to iced with an alpha channel lands visibly paler than the
+/// same class does in the reference -- measured at `#CED1F6` where the
+/// reference draws `#EBEEFD`. Flattening the composite here removes the
+/// difference instead of compensating for it.
+const fn over(top: Color, alpha: f32, bottom: Color) -> Color {
+    Color::from_rgb(
+        round8(top.r * alpha + bottom.r * (1.0 - alpha)),
+        round8(top.g * alpha + bottom.g * (1.0 - alpha)),
+        round8(top.b * alpha + bottom.b * (1.0 - alpha)),
+    )
+}
+
+/// Rounds one channel to the 8-bit value the screen will show, so a composite
+/// stacked on another composite matches the browser's own 8-bit arithmetic.
+const fn round8(value: f32) -> f32 {
+    ((value * 255.0 + 0.5) as u32) as f32 / 255.0
+}
+
+/// The reference's `opacity-75` on an idle card: the whole card, ink included,
+/// blended toward the white panel behind it.
+const fn dim(color: Color) -> Color {
+    over(color, 0.75, Color::WHITE)
+}
+
+/// Immediate and Random Mix draw their card from one accent and two alpha
+/// classes: `bg-…/10` with `border-…/50` when active, `bg-…/5` with
+/// `border-…/20` at `opacity-75` when idle, and `bg-…/10` with `border-…/40`
+/// on hover.
+///
+/// The edge composites over the fill rather than over the panel, because a CSS
+/// `border-box` background reaches under its own border. On the Immediate card
+/// that is 9 points of red -- the difference between `#93A2F3` and `#9CAAF3` --
+/// so it is modelled rather than rounded away.
+const fn accent_tint(accent: Color, state: SlotState) -> SlotTint {
+    let (fill_alpha, border_alpha) = match state {
+        SlotState::Active => (0.10, 0.50),
+        SlotState::Hovered => (0.10, 0.40),
+        SlotState::Idle => (0.05, 0.20),
+    };
+    let fill = over(accent, fill_alpha, Color::WHITE);
+    let border = over(accent, border_alpha, fill);
+    match state {
+        SlotState::Idle => SlotTint {
+            fill: dim(fill),
+            border: dim(border),
+        },
+        _ => SlotTint { fill, border },
+    }
+}
+
+/// The two delay modes take their fill and edge from two different steps of a
+/// Tailwind ramp (`bg-indigo-50/40` inside `border-indigo-200/70`) rather than
+/// from one accent with two alphas, so each state names its own pair.
+const fn ramp_tint(
+    fill: Color,
+    fill_alpha: f32,
+    edge: Color,
+    edge_alpha: f32,
+    dimmed: bool,
+) -> SlotTint {
+    let base = over(fill, fill_alpha, Color::WHITE);
+    let border = over(edge, edge_alpha, base);
+    if dimmed {
+        SlotTint {
+            fill: dim(base),
+            border: dim(border),
+        }
+    } else {
+        SlotTint { fill: base, border }
+    }
+}
+
+const PRESS_ACTIVE: SlotTint = ramp_tint(INDIGO_100, 0.70, INDIGO_400, 1.0, false);
+const PRESS_HOVER: SlotTint = ramp_tint(INDIGO_50, 0.80, INDIGO_300, 1.0, false);
+const PRESS_IDLE: SlotTint = ramp_tint(INDIGO_50, 0.40, INDIGO_200, 0.70, true);
+const RELEASE_ACTIVE: SlotTint = ramp_tint(VIOLET_100, 0.70, VIOLET_400, 1.0, false);
+const RELEASE_HOVER: SlotTint = ramp_tint(VIOLET_50, 0.80, VIOLET_300, 1.0, false);
+const RELEASE_IDLE: SlotTint = ramp_tint(VIOLET_50, 0.40, VIOLET_200, 0.70, true);
+
+/// The fill and edge a slot card draws for one mode and state.
+///
+/// This is a separate table from the accent the timeline and preview use
+/// (`app::mode_color`). The two agree on Immediate and Random Mix, which share
+/// their accent constant, and differ on the two delay modes, whose cards sit one
+/// ramp step off the accent. That is the reference's own arrangement.
+pub const fn slot_tint(mode: SocdMode, state: SlotState) -> SlotTint {
+    match mode {
+        SocdMode::Immediate => accent_tint(IMMEDIATE_ACCENT, state),
+        SocdMode::RandomMix => accent_tint(MIX_TEXT, state),
+        SocdMode::PressDelay => match state {
+            SlotState::Active => PRESS_ACTIVE,
+            SlotState::Hovered => PRESS_HOVER,
+            SlotState::Idle => PRESS_IDLE,
+        },
+        SocdMode::ReleaseDelay => match state {
+            SlotState::Active => RELEASE_ACTIVE,
+            SlotState::Hovered => RELEASE_HOVER,
+            SlotState::Idle => RELEASE_IDLE,
+        },
+    }
+}
+
+/// The ink a card's contents draw with. Idle is the reference's `opacity-75`
+/// applied to the same inks, so the name, the keycaps and the hairline all
+/// lighten together -- measured at `#4B5160` for a slate-900 name where the
+/// active card draws `#0F172B`.
+///
+/// `hovering` is the name box's own hover, not the card's: the reference gives
+/// the box `hover:*` classes on its own element, so pointing anywhere else in
+/// the card leaves the box at rest. It is how the pencil, which has to be
+/// coloured where the icon is built, learns what `profile_name_button` already
+/// knows about the box it sits in.
+pub fn slot_ink(state: SlotState) -> SlotInk {
+    slot_ink_hovering(state, false)
+}
+
+/// [`slot_ink`] with the name box's hover folded in. Only the name box is
+/// affected: its fill, edge, name and pencil all move together, so the box is
+/// the one part of a card whose ink is not a function of the card's state
+/// alone.
+pub fn slot_ink_hovering(state: SlotState, hovering: bool) -> SlotInk {
+    let ink = SlotInk {
+        name: BODY_TEXT,
+        pencil: ICON_MUTED,
+        chip_label: CHIP_TEXT,
+        chip_edge: SLATE_300,
+        hairline: BORDER,
+    };
+    let ink = match state {
+        SlotState::Idle => SlotInk {
+            name: dim(ink.name),
+            pencil: dim(ink.pencil),
+            chip_label: dim(ink.chip_label),
+            chip_edge: dim(ink.chip_edge),
+            hairline: dim(ink.hairline),
+        },
+        _ => ink,
+    };
+    // The hover replaces the idle dim rather than stacking on it: the reference's
+    // `group-hover/slot:text-indigo-600` is one class at full strength, and an
+    // idle card under the pointer draws the same indigo as an active one.
+    if hovering {
+        SlotInk {
+            name: INDIGO_600,
+            pencil: INDIGO_600,
+            ..ink
+        }
+    } else {
+        ink
+    }
+}
+
+/// The mode label's ink on a slot card. The immediate and random-mix labels use
+/// the same colour as their card tint; the two delay labels reach one step
+/// darker (`text-indigo-700`, `text-violet-700`), which is what the reference's
+/// `MODE_TEXT` table states and what its rendered pixels show.
+pub fn slot_mode_ink(mode: SocdMode, state: SlotState) -> Color {
+    let base = match mode {
+        SocdMode::Immediate => IMMEDIATE_ACCENT,
+        SocdMode::PressDelay => INDIGO_700,
+        SocdMode::RandomMix => MIX_TEXT,
+        SocdMode::ReleaseDelay => RELEASE_LABEL,
+    };
+    match state {
+        SlotState::Idle => dim(base),
+        _ => base,
+    }
+}
+
+/// Profile slot card tinted by its mode and interaction state.
+pub fn tinted_slot(tint: SlotTint) -> container::Style {
     container::Style {
-        background: Some(Background::Color(Color {
-            a: if active { 0.40 } else { 0.05 },
-            ..accent
-        })),
+        background: Some(Background::Color(tint.fill)),
         border: Border {
-            color: Color {
-                a: if active { 0.50 } else { 0.25 },
-                ..accent
-            },
+            color: tint.border,
             width: 1.0,
             radius: 12.0.into(),
         },
@@ -521,23 +843,6 @@ pub fn pill_style(invalid: bool) -> container::Style {
         ..container::Style::default()
     }
 }
-
-/// The D-pad's center tile: an inset well holding the resting guide and the
-/// moving dot.
-pub fn dpad_center() -> container::Style {
-    container::Style {
-        background: Some(Background::Color(INSET)),
-        border: Border {
-            color: BORDER,
-            width: 1.0,
-            radius: 16.0.into(),
-        },
-        ..container::Style::default()
-    }
-}
-
-/// Stroke color of the dashed guide ring inside the D-pad's center tile.
-pub const GUIDE_RING: Color = BORDER;
 
 /// Numbered step badge in the "How it works" block. The steps that carry
 /// the mode's delay behavior are accent-tinted; the rest stay neutral.
@@ -682,48 +987,94 @@ pub fn dot_style(color: Color) -> container::Style {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeycapMode {
+    Normal,
+    Pressed,
+    Rebinding,
+}
+
 pub fn keycap(
     status: button::Status,
-    selected: bool,
+    mode: KeycapMode,
     duplicate: bool,
     accent: Color,
+    ring: Color,
 ) -> button::Style {
-    let active = selected || status == button::Status::Pressed;
-    button::Style {
-        background: Some(
-            if active {
-                accent
-            } else if duplicate {
-                ERROR_BG
-            } else {
-                SURFACE
-            }
-            .into(),
-        ),
-        text_color: if active {
-            SURFACE
-        } else if duplicate {
-            ERROR_TEXT
-        } else {
-            BODY_TEXT
-        },
-        border: Border {
-            color: if duplicate {
-                ERROR_BORDER
-            } else if active || status == button::Status::Hovered {
-                accent
-            } else {
-                BORDER
+    match mode {
+        KeycapMode::Rebinding => button::Style {
+            background: Some(Background::Color(accent)),
+            text_color: Color::WHITE,
+            border: Border {
+                color: Color::from_rgba(1.0, 1.0, 1.0, 0.4),
+                width: 2.0,
+                radius: 12.0.into(),
             },
-            width: 2.0,
-            radius: 12.0.into(),
+            shadow: Shadow {
+                color: ring,
+                offset: Vector::ZERO,
+                blur_radius: 8.0,
+            },
+            ..button::Style::default()
         },
-        shadow: Shadow {
-            color: Color::from_rgba(0.0, 0.0, 0.0, 0.05),
-            offset: Vector::new(0.0, 2.0),
-            blur_radius: 1.0,
+        KeycapMode::Pressed => button::Style {
+            background: Some(Background::Color(accent)),
+            text_color: Color::WHITE,
+            border: Border {
+                color: accent,
+                width: 2.0,
+                radius: 12.0.into(),
+            },
+            shadow: Shadow {
+                color: ring,
+                offset: Vector::ZERO,
+                blur_radius: 3.0,
+            },
+            ..button::Style::default()
         },
-        ..button::Style::default()
+        KeycapMode::Normal => {
+            let active = status == button::Status::Pressed;
+            button::Style {
+                background: Some(
+                    if active {
+                        accent
+                    } else if duplicate {
+                        ERROR_BG
+                    } else if status == button::Status::Hovered {
+                        rgb(0xf8, 0xfa, 0xfc)
+                    } else {
+                        SURFACE
+                    }
+                    .into(),
+                ),
+                text_color: if active {
+                    SURFACE
+                } else if duplicate {
+                    ERROR_TEXT
+                } else {
+                    BODY_TEXT
+                },
+                border: Border {
+                    color: if duplicate {
+                        ERROR_BORDER
+                    } else if active {
+                        accent
+                    } else if status == button::Status::Hovered {
+                        rgb(0x81, 0x8c, 0xf8)
+                    } else {
+                        BORDER
+                    },
+                    width: 2.0,
+                    radius: 12.0.into(),
+                },
+                shadow: Shadow {
+                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.05),
+                    offset: Vector::new(0.0, 1.0),
+                    blur_radius: 2.0,
+                },
+                ..button::Style::default()
+            }
+        }
     }
 }
 
@@ -811,11 +1162,11 @@ pub fn warning_button(_theme: &Theme, status: button::Status) -> button::Style {
 }
 
 /// The capture banner's ESC chip: a darker indigo fill (reference
-/// `bg-indigo-700`) with white text, on top of the banner itself.
+/// `bg-indigo-700` with `hover:bg-indigo-800`) with white text, on top of the banner itself.
 pub fn banner_cancel_button(_theme: &Theme, status: button::Status) -> button::Style {
     let background = match status {
-        button::Status::Hovered | button::Status::Pressed => INDIGO_700,
-        _ => INDIGO_600,
+        button::Status::Hovered | button::Status::Pressed => INDIGO_800,
+        _ => INDIGO_700,
     };
     button::Style {
         background: Some(Background::Color(background)),
@@ -852,27 +1203,7 @@ pub fn secondary_button(_theme: &Theme, status: button::Status) -> button::Style
     }
 }
 
-/// Transparent clickable region for the profile slot's load row: no chrome
-/// of its own, just a faint accent wash on hover.
-pub fn ghost_button(_theme: &Theme, status: button::Status) -> button::Style {
-    let background = match status {
-        button::Status::Hovered | button::Status::Pressed => Some(Background::Color(Color {
-            a: 0.06,
-            ..INDIGO_600
-        })),
-        _ => None,
-    };
-    button::Style {
-        background,
-        text_color: BODY_TEXT,
-        border: Border {
-            radius: 8.0.into(),
-            ..Border::default()
-        },
-        ..button::Style::default()
-    }
-}
-
+/// The keycap row on an inactive slot doubles as the load target. The reference
 /// Panel close button: a borderless circle rather than the outlined secondary
 /// button the rest of the UI uses. Reference: `rounded-full` on a transparent
 /// shell, with a `bg-indigo-50/70` wash and indigo ink on hover. The reference
@@ -906,9 +1237,9 @@ pub fn profile_close_button(_theme: &Theme, status: button::Status) -> button::S
 /// stretches to the whole row and inflates the card from the reference's 78px to
 /// 150px -- measured, before this replaced it. A `border-l` in CSS is sized to
 /// its content instead, which is the 16px of a keycap chip.
-pub fn pair_divider() -> container::Style {
+pub fn pair_divider(ink: SlotInk) -> container::Style {
     container::Style {
-        background: Some(Background::Color(BORDER)),
+        background: Some(Background::Color(ink.hairline)),
         ..container::Style::default()
     }
 }

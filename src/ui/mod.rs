@@ -5,6 +5,8 @@ mod ipc_client;
 mod language;
 mod preview;
 mod theme;
+#[cfg(test)]
+mod theme_tests;
 mod timeline;
 mod widgets;
 
