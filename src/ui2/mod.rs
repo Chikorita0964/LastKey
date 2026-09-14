@@ -3,6 +3,13 @@
 //! specification until cutover.
 
 mod app;
+pub mod language;
+pub mod message;
+pub mod preview;
+pub mod state;
+#[cfg(test)]
+mod state_tests;
+pub mod timeline;
 
 pub use app::run;
 
