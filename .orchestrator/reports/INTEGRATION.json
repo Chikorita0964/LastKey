@@ -1,0 +1,130 @@
+{
+  "status": "completed",
+  "batch": ["T2", "T3", "T4"],
+  "branch": "agent/integration",
+  "base": "5c4fdecf9171291fa5ac052d0051a57bdffa3a75",
+  "merged_branches": [
+    {
+      "branch": "agent/worker-1",
+      "tip": "e328d9829b9f2a4f5a612af88d7d78c2cddfadb0",
+      "implementation_commit": "1053066",
+      "task": "T2"
+    },
+    {
+      "branch": "agent/worker-2",
+      "tip": "97b0f93ec6c14cf8f91af1fdf7eea265757ca6d6",
+      "implementation_commit": "d331d69",
+      "task": "T3"
+    },
+    {
+      "branch": "agent/worker-3",
+      "tip": "0c7d9e665e5a1e2b85e9aa39a303db407d080e8e",
+      "implementation_commit": "deb3e43",
+      "task": "T4"
+    }
+  ],
+  "merge_commits": [
+    "7febf4a",
+    "c64df2d",
+    "0b56dc3",
+    "869a78a"
+  ],
+  "glue_commit": "869a78a",
+  "files_changed": [
+    ".orchestrator/reports/T2.json",
+    ".orchestrator/reports/T3.json",
+    ".orchestrator/reports/T4.json",
+    "Cargo.lock",
+    "Cargo.toml",
+    "src/ui2/keycap.rs",
+    "src/ui2/mapping.rs",
+    "src/ui2/mod.rs",
+    "src/ui2/theme.rs",
+    "src/ui2/timing.rs"
+  ],
+  "integration_glue": [
+    "src/ui2/mod.rs: registered pub mod keycap, mapping, theme, timing (authorized shared glue; worker ownership of each file preserved)",
+    "Cargo.toml: added [target.'cfg(windows)'.dev-dependencies] egui_kittest = 0.36.2 (shared T8 prerequisite brought forward so merged semantic tests execute; no other feature/dependency change)",
+    "Cargo.lock: egui_kittest 0.36.2 + kittest 0.4.0 + toml 1.1.6+spec-1.1.0 entries; lastkey now depends on egui_kittest"
+  ],
+  "conflicts_resolved": [],
+  "unresolved_conflicts": [],
+  "tests": [
+    {
+      "command": "cargo test --no-default-features --features egui-ui --lib",
+      "result": "pass",
+      "note": "scoped loop after glue: 135 passed, 0 failed. Covers 105 Wave-0 + 9 T2 theme + 10 T3 (5 keycap unit, 2 mapping unit, 3 egui_kittest semantic) + 11 T4 timing unit, all against actual merged modules, real settings/state, and real T2 theme."
+    },
+    {
+      "command": "cargo fmt --all -- --check",
+      "result": "pass"
+    },
+    {
+      "command": "cargo test --locked --all-targets",
+      "result": "pass",
+      "note": "full gate default: 72 lib + 0 lastkey bin + 9 delivery_recovery + 15 measurement + 18 settings + 18 timing"
+    },
+    {
+      "command": "cargo clippy --locked --all-targets -- -D warnings",
+      "result": "pass"
+    },
+    {
+      "command": "cargo test --locked --no-default-features --features egui-ui --lib --bin lastkey-settings",
+      "result": "pass",
+      "note": "full gate egui-ui: 135 lib + 0 settings bin"
+    },
+    {
+      "command": "cargo clippy --locked --no-default-features --features egui-ui --all-targets -- -D warnings",
+      "result": "pass"
+    },
+    {
+      "command": "cargo check --locked --target x86_64-unknown-linux-gnu --all-targets",
+      "result": "pass"
+    },
+    {
+      "command": "cargo tree --no-default-features -e normal",
+      "result": "pass",
+      "note": "zero matches for egui/eframe/wgpu/winit/accesskit/iced/lyon; default tree stays GUI-free; windows-gated dev-dependency does not leak into the normal tree"
+    },
+    {
+      "command": "git diff --check",
+      "result": "pass"
+    },
+    {
+      "command": ".github\\scripts\\Test-ReleaseFormDefault.ps1",
+      "result": "pass"
+    }
+  ],
+  "test_coverage": {
+    "compilation": "pass: all four merged modules compile in-tree under the egui-ui feature; both clippy configurations clean with -D warnings",
+    "semantic_behavior": "pass with gaps: 9 T2 theme tests, 3 T3 egui_kittest tests (restore-button command path, pressed-state label, keycap click start/cancel rebinding), and 11 T4 run_ui unit tests (mode labels/colors, value-box ids/select-all/edit-read-back, per-mode card render, range slider clamp, mechanism steps) all execute and pass in-tree",
+    "native_visual_acceptance": "unknown: no on-screen check of any merged card; prior verification.md unverified areas still apply"
+  },
+  "known_gap_assessment": [
+    "T2-harness gap CLOSED for compilation/semantics: the 9 theme tests now run in-tree (135-test egui-ui run) against the real module, not the #[path] stub harness.",
+    "T3 stand-in-theme gap CLOSED for compilation: mapping.rs/keycap.rs now compile against the real T2 theme; every theme:: path they reference in code resolves (both clippy configs clean). No mechanical fix beyond registration was needed.",
+    "T3 omissions NOT granted parity: hover-scroll reveal for over-long keycap labels still not ported (clipped still labels); bold/black weight still approximated by repeated galley stamping (keycap::stamp_galley), not a registered weighted face; pulsing capture banner still not ported. Responsible: T3; required correction: port or explicitly re-scope in ui.md via Master before parity claims.",
+    "Palette duplication REMAINS (Rule 2, not silently fixed): timing.rs re-declares IMMEDIATE_ACCENT/INDIGO_600-800/VIOLET_600/MIX_TEXT/PRIMARY_TEXT/MUTED_TEXT/BODY_TEXT/BORDER/SURFACE/INSET/SLATE_100-300/ERROR_*/RELEASE_TEXT/PURPLE_600 locally; keycap.rs keeps local HOVER_FILL/HOVER_BORDER and ring literals; mapping.rs keeps local CARD_BORDER/BUTTON_HOVER_FILL/BORDER, SECTION_GAP, and pixel metrics. Theme.rs already publishes the canonicals (CARD_BORDER, KEYCAP_HOVER_BG/BORDER, SECTION_GAP included). Responsible: T3/T4 owners; required correction: import from ui2::theme instead of re-inlining, owned by the respective task, not the Integrator.",
+    "KeycapMode duplication REMAINS (Rule 2, not silently fixed): theme.rs defines KeycapMode and keycap.rs defines its own identical KeycapMode; keycap.rs uses its own. No compile conflict, but two authoritative expressions for one concept. Responsible: T3 (with T2); required correction: derive from one owner or add a mismatch check.",
+    "T4 kittest criterion STILL UNPROVEN: timing.rs has 11 unit tests via ctx.run_ui + TextEdit load_state/cursor APIs and zero egui_kittest tests; no test drives a value box by accessible label through kittest. The merged tree proves kittest infrastructure works (3 mapping tests pass), but not T4's required semantic editing/read-back path. Responsible: T4 (or T8 semantic-test pass); required correction: add a kittest test that sets a timing value through the box by label and reads it back.",
+    "T4 temporary-registration note assessed: final committed scope is exactly src/ui2/timing.rs + report; no stray mod.rs edit was committed by the Worker. Integration registered the module as authorized glue.",
+    "theme::banner_cancel_button / secondary_button / BUTTON_PADDING / card_style mentions in mapping.rs are doc-comment references to Iced closure origins, not missing-symbol uses; all code-level theme:: paths resolve."
+  ],
+  "remaining_behavior_acceptance_gaps": [
+    "No egui_kittest coverage for T4 value editing by label (see above).",
+    "No native visual acceptance for theme/style output, keycap/mapping card, or timing card (layout, glow/pressed states, two-line compound labels, banner, pills, sliders, value boxes at initial/minimum sizes).",
+    "Font-weight fidelity open: single-weight bundled faces vs reference bold/black; current approximation via stamp_galley is declared, not verified on screen.",
+    "Hover-scroll and pulsing-banner behaviors explicitly not ported; parity decision belongs to Master/ui.md, not this integration."
+  ],
+  "follow_ups": [
+    { "task": "T3", "required": "Re-home duplicated palette literals to ui2::theme imports; unify KeycapMode ownership; port or re-scope hover-scroll and pulsing banner; confirm bold approximation or register a weighted face." },
+    { "task": "T4", "required": "Re-home duplicated theme constants to ui2::theme imports; add egui_kittest value-box edit/read-back test by accessible label." },
+    { "task": "T8", "required": "Build label-driven semantic suite on the now-working kittest gate (rebind, mode change, timing edit, filter toggle, profile rename); fail on lost accessible names." },
+    { "task": "Master", "required": "Schedule native visual acceptance for the integrated T2-T4 cards per verification.md Unverified Areas; do not claim migration parity from this integration." }
+  ],
+  "ready_for_independent_review": true,
+  "parity_claim": "none: completed integration is not migration parity. Full gate passes; behavior/acceptance gaps above remain.",
+  "env": "VsDevCmd.bat -arch=x64 -host_arch=x64 before cargo; egui 0.36.2 / eframe 0.36.2 / egui_kittest 0.36.2 from local cargo registry",
+  "pushed": false,
+  "notes": "Three merges were conflict-free (ort, no content conflicts). No worker file was redesigned; only authorized glue (mod.rs registration + windows-gated kittest dev-dep) was added. No .agent/ or AGENTS.md staged. No T5/T6/T7/inspection/trimming/cutover work started. No check was re-run on unchanged code beyond the single full gate on the final tree."
+}
