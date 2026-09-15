@@ -16,7 +16,7 @@ use std::f32::consts::PI;
 
 use egui::{
     Align, Color32, CornerRadius, FontId, Layout, Margin, Painter, Pos2, Rect, Response, Sense,
-    Shape, Stroke, StrokeKind, Ui, Vec2, WidgetInfo, WidgetType, epaint::Shadow,
+    Shape, Stroke, StrokeKind, Ui, Vec2, WidgetInfo, WidgetType,
 };
 
 use crate::core::PhysicalKey;
@@ -30,9 +30,6 @@ use super::{
     timeline::Timeline,
 };
 
-/// `theme::card_style`'s edge (`border-2 border-indigo-200/80`), which the
-/// Iced theme writes inline rather than as a named constant.
-const CARD_BORDER: Color32 = Color32::from_rgb(0xd2, 0xdb, 0xff);
 /// `rounded-2xl`: the card and the stage tile.
 const CARD_RADIUS: u8 = 16;
 /// `theme::BUTTON_PADDING`: `py-1.5 px-3` plus the 1px border iced lays inside
@@ -43,9 +40,6 @@ const BUTTON_RADIUS: u8 = 12;
 const BUTTON_TEXT_SIZE: f32 = 12.0;
 const BUTTON_ICON: f32 = 14.0;
 const BUTTON_ICON_GAP: f32 = 6.0;
-/// `theme::secondary_button`'s hover pair, written inline there.
-const BUTTON_HOVER_FILL: Color32 = Color32::from_rgb(0xf5, 0xf7, 0xff);
-const BUTTON_HOVER_BORDER: Color32 = Color32::from_rgb(0xa3, 0xb3, 0xff);
 /// The banner's ESC chip: `theme::banner_cancel_button` with `px-2.5 py-1`.
 const ESC_PAD_X: f32 = 10.0;
 const ESC_PAD_Y: f32 = 4.0;
@@ -55,13 +49,9 @@ const ESC_TEXT_SIZE: f32 = 11.0;
 const BANNER_PAD_X: f32 = 16.0;
 const BANNER_PAD_Y: f32 = 10.0;
 const BANNER_RADIUS: u8 = 12;
-/// `theme::HEADING_SIZE`.
-const HEADING_SIZE: f32 = 15.0;
 /// The D-pad stage's `p-5` and the tile's square (`icons::DpadTile`).
 const STAGE_PADDING: f32 = 20.0;
 const DPAD_TILE_SIZE: f32 = 80.0;
-/// `theme::SECTION_GAP`: the card column's spacing and the keycap row's.
-const SECTION_GAP: f32 = 16.0;
 
 /// Draws the whole Key mappings card and returns the messages the frame
 /// produced. The card needs a snapshot to draw: with no connection the page
@@ -74,19 +64,14 @@ pub fn key_mappings_card(ui: &mut Ui, state: &State) -> Vec<Message> {
     let mut messages = Vec::new();
 
     egui::Frame::NONE
-        .fill(Color32::WHITE)
-        .stroke(Stroke::new(2.0, CARD_BORDER))
+        .fill(theme::SURFACE)
+        .stroke(Stroke::new(2.0, theme::CARD_BORDER))
         .corner_radius(CornerRadius::same(CARD_RADIUS))
         .inner_margin(Margin::same(20))
-        .shadow(Shadow {
-            offset: [0, 1],
-            blur: 2,
-            spread: 0,
-            color: Color32::from_black_alpha(10),
-        })
+        .shadow(theme::SHADOW_CARD)
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
-            ui.spacing_mut().item_spacing.y = SECTION_GAP;
+            ui.spacing_mut().item_spacing.y = theme::SECTION_GAP;
             header(ui, state, &mut messages);
             if snapshot.capture_slot.is_some() && rebind_banner(ui, state) {
                 messages.push(Message::CancelCapture);
@@ -139,12 +124,7 @@ fn rebind_banner(ui: &mut Ui, state: &State) -> bool {
             top: BANNER_PAD_Y as i8,
             bottom: BANNER_PAD_Y as i8,
         })
-        .shadow(Shadow {
-            offset: [0, 4],
-            blur: 6,
-            spread: 0,
-            color: Color32::from_black_alpha(38),
-        })
+        .shadow(theme::SHADOW_BANNER)
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             ui.horizontal(|ui| {
@@ -180,7 +160,7 @@ fn mapping_pad(ui: &mut Ui, state: &State, snapshot: &UiSnapshot, messages: &mut
         .inner_margin(Margin::same(STAGE_PADDING as i8))
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
-            ui.spacing_mut().item_spacing.y = SECTION_GAP;
+            ui.spacing_mut().item_spacing.y = theme::SECTION_GAP;
             ui.vertical_centered(|ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
@@ -195,7 +175,7 @@ fn mapping_pad(ui: &mut Ui, state: &State, snapshot: &UiSnapshot, messages: &mut
                 });
                 directional_keycap(ui, state, snapshot, &duplicates, &UP, timeline, messages);
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = SECTION_GAP;
+                    ui.spacing_mut().item_spacing.x = theme::SECTION_GAP;
                     directional_keycap(ui, state, snapshot, &duplicates, &LEFT, timeline, messages);
                     let (shift_x, shift_y, active) =
                         resolve_dpad(&state.pressed_keys, &state.press_timestamps, timeline);
@@ -290,9 +270,11 @@ fn assignment_status(ui: &mut Ui, duplicates: &[bool; 4], state: &State) {
     );
 }
 
-/// Last-input-priority resolution for the centre tile: while the monitor is
-/// recording physical input, the timeline owns the winner; otherwise the
-/// window's own press set wins, with the later press taking a contested pair.
+/// Last-input-priority resolution for the centre tile. The timeline resolves
+/// the winner while it is showing filtered output (`!physical`), and the
+/// window's own press set with its timestamps resolves it otherwise: the later
+/// press takes a contested pair. The `!physical` condition is unchanged from
+/// the Iced `resolve_dpad`.
 /// Ported unchanged from the Iced `resolve_dpad`.
 fn resolve_dpad(
     pressed_keys: &[bool; 4],
@@ -397,32 +379,24 @@ fn dpad_center_tile(ui: &mut Ui, shift_x: f32, shift_y: f32, active: bool) {
         3.0,
         3.0,
     ));
-    painter.circle_filled(
-        center,
-        4.0,
-        Color32::from_rgba_unmultiplied(204, 214, 224, 153),
-    );
+    painter.circle_filled(center, 4.0, theme::DPAD_GUIDE_DOT);
 
     let dot = Pos2::new(center.x + shift_x, center.y + shift_y);
     if active {
-        painter.circle_filled(dot, 12.0, Color32::from_rgba_unmultiplied(59, 84, 232, 64));
+        painter.circle_filled(dot, 12.0, theme::DPAD_ACTIVE_GLOW);
         painter.circle_filled(
             Pos2::new(dot.x, dot.y + 1.0),
             10.0,
-            Color32::from_rgba_unmultiplied(59, 84, 232, 77),
+            theme::DPAD_ACTIVE_DOT_SHADOW,
         );
         painter.circle_filled(dot, 10.0, theme::IMMEDIATE_ACCENT);
     } else {
         painter.circle_filled(
             Pos2::new(dot.x, dot.y + 1.0),
             9.0,
-            Color32::from_black_alpha(20),
+            theme::DPAD_IDLE_DOT_SHADOW,
         );
-        painter.circle_filled(
-            dot,
-            9.0,
-            Color32::from_rgba_unmultiplied(148, 163, 184, 204),
-        );
+        painter.circle_filled(dot, 9.0, theme::DPAD_IDLE_DOT);
     }
 }
 
@@ -432,29 +406,38 @@ fn section_title(ui: &mut Ui, kind: Icon, label: &str) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
         icon(ui, kind, 16.0, theme::PRIMARY_TEXT);
-        text(ui, label, HEADING_SIZE, theme::BODY_TEXT, true);
+        text(ui, label, theme::HEADING_SIZE, theme::BODY_TEXT, true);
     });
 }
 
 /// Outlined action control: white shell, slate edge, slate-600 label, and the
 /// Iced `theme::secondary_button` hover (indigo ink over an indigo-50 wash).
+///
+/// The label galley is laid out with [`Color32::PLACEHOLDER`] on purpose: a
+/// galley carries the colour it was laid out with, and `Painter::galley`'s
+/// fallback colour only reaches `PLACEHOLDER` glyphs. Laying this text out in
+/// a real colour would pin it there and ignore the per-state `ink` below.
 fn secondary_button(ui: &mut Ui, kind: Icon, label: &str) -> Response {
     let galley = ui.painter().layout_no_wrap(
         label.to_owned(),
         FontId::proportional(BUTTON_TEXT_SIZE),
-        Color32::WHITE,
+        Color32::PLACEHOLDER,
     );
     let content = BUTTON_ICON + BUTTON_ICON_GAP + galley.size().x;
     let (rect, response) = ui.allocate_exact_size(
-        Vec2::new(content + 2.0 * (BUTTON_PAD_X + 1.0), BUTTON_HEIGHT),
+        Vec2::new(content + 2.0 * BUTTON_PAD_X, BUTTON_HEIGHT),
         Sense::click(),
     );
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), label));
     let hovered = response.hovered();
-    let (fill, edge, ink) = if hovered {
-        (BUTTON_HOVER_FILL, BUTTON_HOVER_BORDER, theme::INDIGO_600)
+    let (fill, edge, label_ink) = if hovered {
+        (
+            theme::HOVER_WASH,
+            theme::NAME_HOVER_BORDER,
+            theme::INDIGO_600,
+        )
     } else {
-        (Color32::WHITE, theme::BORDER, theme::ICON_SECONDARY)
+        (theme::SURFACE, theme::BORDER, theme::ICON_SECONDARY)
     };
     let painter = ui.painter_at(rect);
     let radius = CornerRadius::same(BUTTON_RADIUS);
@@ -468,7 +451,7 @@ fn secondary_button(ui: &mut Ui, kind: Icon, label: &str) -> Response {
             Vec2::splat(BUTTON_ICON),
         ),
         kind,
-        theme::ICON_SECONDARY,
+        action_icon_ink(kind, label_ink),
     );
     keycap::stamp_galley(
         &painter,
@@ -477,18 +460,32 @@ fn secondary_button(ui: &mut Ui, kind: Icon, label: &str) -> Response {
             rect.center().y - galley.size().y / 2.0,
         ),
         &galley,
-        ink,
+        label_ink,
         BUTTON_TEXT_SIZE,
     );
     response
 }
 
+/// The icon ink rule from the Iced `icon_label`: a Restore glyph keeps the
+/// reference's slate-600 ink in every state, while other action icons inherit
+/// the button's text colour so their hover states keep working. The label
+/// itself follows the hover ink either way.
+fn action_icon_ink(kind: Icon, label_ink: Color32) -> Color32 {
+    if kind == Icon::Restore {
+        theme::ICON_SECONDARY
+    } else {
+        label_ink
+    }
+}
+
 /// The banner's ESC chip (reference `bg-indigo-700 hover:bg-indigo-800`).
 fn esc_button(ui: &mut Ui, label: &str) -> Response {
+    // `PLACEHOLDER` for the same reason as `secondary_button`: the chip's ink
+    // is decided at paint time.
     let galley = ui.painter().layout_no_wrap(
         label.to_owned(),
         FontId::proportional(ESC_TEXT_SIZE),
-        Color32::WHITE,
+        Color32::PLACEHOLDER,
     );
     let (rect, response) = ui.allocate_exact_size(
         Vec2::new(
@@ -519,11 +516,15 @@ fn esc_button(ui: &mut Ui, label: &str) -> Response {
 }
 
 /// One measured line of text, painted at its natural size. `bold` picks the
-/// local weight approximation in [`keycap::stamp_galley`].
+/// local weight approximation in [`keycap::stamp_galley`]. The galley is laid
+/// out with [`Color32::PLACEHOLDER`] so the `color` handed to the painter is
+/// the one that renders.
 fn text(ui: &mut Ui, content: &str, size: f32, color: Color32, bold: bool) -> Rect {
-    let galley = ui
-        .painter()
-        .layout_no_wrap(content.to_owned(), FontId::proportional(size), color);
+    let galley = ui.painter().layout_no_wrap(
+        content.to_owned(),
+        FontId::proportional(size),
+        Color32::PLACEHOLDER,
+    );
     let (rect, _) = ui.allocate_exact_size(galley.size(), Sense::hover());
     if bold {
         keycap::stamp_galley(ui.painter(), rect.min, &galley, color, size);
@@ -729,6 +730,146 @@ mod tests {
         let (x, _, active) = resolve_dpad(&[false, false, true, true], &timestamps, None);
         assert_eq!(x, 18.0);
         assert!(active);
+    }
+
+    /// The colour a painted label actually renders in.
+    ///
+    /// A galley carries the colour it was laid out with, and the colour handed
+    /// to `Painter::galley` only reaches sections laid out with
+    /// [`Color32::PLACEHOLDER`]. Reading both is what makes the
+    /// layout-colour defect observable: a label laid out in a real colour
+    /// renders in that colour no matter what the paint call passes.
+    fn painted_text_color(
+        harness: &egui_kittest::Harness<'_, FakeRuntime>,
+        needle: &str,
+    ) -> Option<Color32> {
+        harness.output().shapes.iter().find_map(|clipped| {
+            let egui::Shape::Text(text) = &clipped.shape else {
+                return None;
+            };
+            if !text.galley.text().contains(needle) {
+                return None;
+            }
+            let layout_color = text
+                .galley
+                .job
+                .sections
+                .first()
+                .map(|section| section.format.color)
+                .unwrap_or(Color32::PLACEHOLDER);
+            Some(if layout_color == Color32::PLACEHOLDER {
+                text.fallback_color
+            } else {
+                layout_color
+            })
+        })
+    }
+
+    #[test]
+    fn the_restore_button_paints_its_label_in_the_state_ink() {
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1040.0, 800.0))
+            .build_ui_state(
+                |ui, runtime: &mut FakeRuntime| runtime.frame(ui),
+                FakeRuntime {
+                    state: baseline_state(),
+                    sent: Vec::new(),
+                },
+            );
+
+        assert_eq!(
+            painted_text_color(&harness, "Restore mapping defaults"),
+            Some(theme::ICON_SECONDARY),
+            "at rest the label must render in the secondary ink, not in the colour it was laid out with"
+        );
+
+        harness.get_by_label("Restore mapping defaults").hover();
+        harness.run();
+        assert_eq!(
+            painted_text_color(&harness, "Restore mapping defaults"),
+            Some(theme::INDIGO_600),
+            "hover must move the label to the indigo ink"
+        );
+    }
+
+    #[test]
+    fn other_action_icons_follow_the_button_ink() {
+        assert_eq!(
+            action_icon_ink(Icon::Restore, theme::INDIGO_600),
+            theme::ICON_SECONDARY
+        );
+        assert_eq!(
+            action_icon_ink(Icon::Keyboard, theme::INDIGO_600),
+            theme::INDIGO_600
+        );
+    }
+
+    /// Every solid stroke colour painted by a widget's own painter, i.e. the
+    /// shapes clipped to that widget's rect.
+    fn painted_stroke_colors(
+        harness: &egui_kittest::Harness<'_, FakeRuntime>,
+        clip: Rect,
+    ) -> Vec<Color32> {
+        use egui::epaint::ColorMode;
+
+        fn stroke_colors(shape: &egui::Shape) -> Vec<Color32> {
+            match shape {
+                egui::Shape::Path(path) => match path.stroke.color {
+                    ColorMode::Solid(color) => vec![color],
+                    ColorMode::UV(_) => Vec::new(),
+                },
+                egui::Shape::LineSegment { stroke, .. } => vec![stroke.color],
+                egui::Shape::Rect(rect) => vec![rect.stroke.color],
+                egui::Shape::Circle(circle) => vec![circle.stroke.color],
+                _ => Vec::new(),
+            }
+        }
+
+        harness
+            .output()
+            .shapes
+            .iter()
+            .filter(|clipped| clipped.clip_rect == clip)
+            .flat_map(|clipped| stroke_colors(&clipped.shape))
+            .collect()
+    }
+
+    #[test]
+    fn the_restore_icon_keeps_the_iced_slate_ink_on_hover() {
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1040.0, 800.0))
+            .build_ui_state(
+                |ui, runtime: &mut FakeRuntime| runtime.frame(ui),
+                FakeRuntime {
+                    state: baseline_state(),
+                    sent: Vec::new(),
+                },
+            );
+        let button = harness.get_by_label("Restore mapping defaults").rect();
+
+        // Migration constraint 5 preserves the Iced `icon_label` rule: the
+        // Restore glyph keeps slate-600 in every state while the label moves to
+        // the hover ink. R1 asked for one shared ink variable, which would have
+        // recoloured the icon; this test records the evidence-backed deviation.
+        for hovered in [false, true] {
+            if hovered {
+                harness.get_by_label("Restore mapping defaults").hover();
+                harness.run();
+            }
+            let strokes = painted_stroke_colors(&harness, button);
+            assert!(
+                strokes.contains(&theme::ICON_SECONDARY),
+                "the Restore glyph must paint in the secondary slate (hovered: {hovered})"
+            );
+            assert!(
+                !strokes.contains(&theme::INDIGO_600),
+                "the Restore glyph must not follow the label's hover ink (hovered: {hovered})"
+            );
+        }
     }
 
     #[test]
