@@ -6,8 +6,8 @@
 //! behavior.
 
 use egui::{
-    Align, Align2, Color32, FontId, Frame, Id, Margin, Pos2, Rect, Response, Sense, Stroke,
-    TextEdit, Ui, WidgetInfo, WidgetType, text::CCursor, vec2,
+    Align, Align2, Color32, CornerRadius, FontId, Frame, Id, Margin, Pos2, Rect, Response, Sense,
+    Stroke, TextEdit, Ui, WidgetInfo, WidgetType, text::CCursor, vec2,
 };
 
 use crate::settings::{SocdMode, TimingSettings};
@@ -29,6 +29,18 @@ use super::{
 // ----------------------------------------------------------------------------
 // Mode Metadata
 // ----------------------------------------------------------------------------
+
+/// Geometry of the two-handle duration rail.
+///
+/// The Iced source is `src/ui/widgets.rs::RangeSlider`, which draws its own
+/// rail and thumbs instead of reusing `theme::accent_slider`: a 12px rail
+/// rounded to 6, and constant 16px (radius 8) thumbs whose size does not
+/// depend on the status (`src/ui/widgets.rs:238-285`). `theme::SLIDER_RAIL_*`
+/// and `theme::SLIDER_HANDLE_RADIUS*` stay the single-handle `accent_slider`
+/// contract the Random Mix mixer uses.
+const RANGE_RAIL_WIDTH: f32 = 12.0;
+const RANGE_RAIL_RADIUS: CornerRadius = CornerRadius::same(6);
+const RANGE_THUMB_RADIUS: f32 = 8.0;
 
 /// Color associated with each SOCD mode.
 pub const fn mode_color(mode: SocdMode) -> Color32 {
@@ -194,11 +206,16 @@ struct RangeDragState {
     offset: f32,
 }
 
-/// Radius of slider handles matching the theme contract:
-/// 7.0 at rest and hover ([`SLIDER_HANDLE_RADIUS`]), swelling to 8.0 while grabbed ([`SLIDER_HANDLE_RADIUS_DRAG`]).
+/// Radius of the Random Mix mixer handle for the Iced `accent_slider` status
+/// contract (`src/ui/theme.rs:1288-1293`): 7.0 at rest, swelling to 8.0 while
+/// the pointer is over the slider or the handle is grabbed. Iced reports
+/// `Status::Hovered` whenever the cursor is inside the slider bounds and
+/// `Status::Dragged` while the handle is grabbed (iced rev `f8127c8`,
+/// `widget/src/slider.rs:403-409`), so both states take
+/// [`SLIDER_HANDLE_RADIUS_DRAG`].
 #[inline]
-pub const fn slider_handle_radius(dragged: bool) -> f32 {
-    if dragged {
+pub const fn mixer_handle_radius(hovered_or_dragged: bool) -> f32 {
+    if hovered_or_dragged {
         SLIDER_HANDLE_RADIUS_DRAG
     } else {
         SLIDER_HANDLE_RADIUS
@@ -286,14 +303,15 @@ pub fn range_slider(ui: &mut Ui, props: RangeSliderProps<'_>) -> Option<(f32, f3
     } else {
         SLIDER_RAIL_DISABLED
     };
-    let rail_half = SLIDER_RAIL_WIDTH / 2.0;
+    let rail_half = RANGE_RAIL_WIDTH / 2.0;
 
-    // Background track (SLATE_100, 10px high, rounded 5px per theme::SLIDER_RAIL_*)
+    // Background track (SLATE_100, 12px high, rounded 6 per the Iced
+    // `widgets::RangeSlider` geometry)
     let track_rect = Rect::from_min_max(
         Pos2::new(track_start, center_y - rail_half),
         Pos2::new(track_end, center_y + rail_half),
     );
-    painter.rect_filled(track_rect, SLIDER_RAIL_RADIUS, SLATE_100);
+    painter.rect_filled(track_rect, RANGE_RAIL_RADIUS, SLATE_100);
 
     // Active range span
     let span_start = to_x(props.min_val);
@@ -303,17 +321,17 @@ pub fn range_slider(ui: &mut Ui, props: RangeSliderProps<'_>) -> Option<(f32, f3
             Pos2::new(span_start, center_y - rail_half),
             Pos2::new(span_end, center_y + rail_half),
         );
-        painter.rect_filled(span_rect, SLIDER_RAIL_RADIUS, active_accent);
+        painter.rect_filled(span_rect, RANGE_RAIL_RADIUS, active_accent);
     }
 
-    // Two thumbs: white background, 3px accent stroke
-    let thumb_radius = slider_handle_radius(response.dragged());
+    // Two thumbs: white background, 3px accent stroke, constant 16px size
+    // (the Iced widget has no hover/drag state on its thumbs)
     for val in [props.min_val, props.max_val] {
         let thumb_x = to_x(val);
         let center = Pos2::new(thumb_x, center_y);
         painter.circle(
             center,
-            thumb_radius,
+            RANGE_THUMB_RADIUS,
             SURFACE,
             Stroke::new(SLIDER_HANDLE_BORDER, active_accent),
         );
@@ -333,8 +351,12 @@ pub fn range_slider(ui: &mut Ui, props: RangeSliderProps<'_>) -> Option<(f32, f3
 // Mixer Slider (Random Mix Rail)
 // ----------------------------------------------------------------------------
 
-/// Random Mix ratio rail slider: 10pt rail rounded to 5, hollow handle that swells
-/// from 7 to 8 while grabbed, ringed in MIX_TEXT with a RELEASE_TEXT filled rail.
+/// Random Mix ratio rail slider: 10pt rail rounded to 5, hollow handle that
+/// swells from 7 to 8 while hovered or grabbed, ringed in MIX_TEXT. The rail
+/// is filled `PRIMARY_TEXT` left of the handle and `RELEASE_TEXT` right of it,
+/// the split the Iced `theme::mixer_slider` sets by overriding
+/// `accent_slider`'s second rail background (`src/ui/theme.rs:1116-1121`,
+/// iced `widget/src/slider.rs:455-481`).
 pub fn mixer_slider(
     ui: &mut Ui,
     press_share: f32,
@@ -375,26 +397,28 @@ pub fn mixer_slider(
     let painter = ui.painter();
     let rail_half = SLIDER_RAIL_WIDTH / 2.0;
 
-    // Background track (SLATE_100, 10px high, rounded 5px)
-    let track_rect = Rect::from_min_max(
-        Pos2::new(track_start, center_y - rail_half),
-        Pos2::new(track_end, center_y + rail_half),
-    );
-    painter.rect_filled(track_rect, SLIDER_RAIL_RADIUS, SLATE_100);
-
-    // Filled span from start to handle (RELEASE_TEXT, rounded 5px)
+    // Rail split at the handle: PRIMARY_TEXT to the left, RELEASE_TEXT to the
+    // right, both 10px high and rounded 5 -- the Iced accent_slider rail with
+    // mixer_slider's `backgrounds.1` override.
     let handle_x = to_x(press_share);
-    if handle_x > track_start {
-        let span_rect = Rect::from_min_max(
-            Pos2::new(track_start, center_y - rail_half),
-            Pos2::new(handle_x, center_y + rail_half),
-        );
-        painter.rect_filled(span_rect, SLIDER_RAIL_RADIUS, RELEASE_TEXT);
+    for (start, end, fill) in [
+        (track_start, handle_x, PRIMARY_TEXT),
+        (handle_x, track_end, RELEASE_TEXT),
+    ] {
+        let (start, end) = (start.min(end), start.max(end));
+        if end > start {
+            let span_rect = Rect::from_min_max(
+                Pos2::new(start, center_y - rail_half),
+                Pos2::new(end, center_y + rail_half),
+            );
+            painter.rect_filled(span_rect, SLIDER_RAIL_RADIUS, fill);
+        }
     }
 
-    // Handle thumb: Circle at handle_x, center_y, radius 7.0 (8.0 while dragged),
-    // white fill, 3.0 border in MIX_TEXT.
-    let handle_radius = slider_handle_radius(response.dragged());
+    // Handle thumb: Circle at handle_x, center_y, radius 7.0 (8.0 while hovered
+    // or grabbed, per the accent_slider status contract), white fill, 3.0 border
+    // in MIX_TEXT.
+    let handle_radius = mixer_handle_radius(response.hovered() || response.dragged());
     painter.circle(
         Pos2::new(handle_x, center_y),
         handle_radius,
@@ -422,62 +446,70 @@ pub fn mixer_slider(
 // ----------------------------------------------------------------------------
 
 /// Horizontal 4-mode segment picker for the timing card.
+///
+/// The strip insets its segments by 4 (`src/ui/app.rs:3123`,
+/// `container(segments).padding(4)`), and each segment is padded by
+/// [`theme::MODE_PADDING`] (`src/ui/app.rs:3117`). egui's `Frame` draws its
+/// stroke outside the inner margin exactly as Iced's container does, so both
+/// numbers pass through unchanged.
 pub fn mode_selector(
     ui: &mut Ui,
     selected: SocdMode,
     language: Language,
     messages: &mut Vec<Message>,
 ) {
-    theme::group_style().show(ui, |ui| {
-        ui.columns(4, |cols| {
-            for (i, mode) in SocdMode::ALL.iter().copied().enumerate() {
-                let col = &mut cols[i];
-                let is_active = mode == selected;
-                let label = mode_label(mode, language);
-                let color = if is_active {
-                    mode_color(mode)
-                } else {
-                    MUTED_TEXT
-                };
+    theme::group_style()
+        .inner_margin(Margin::same(4))
+        .show(ui, |ui| {
+            ui.columns(4, |cols| {
+                for (i, mode) in SocdMode::ALL.iter().copied().enumerate() {
+                    let col = &mut cols[i];
+                    let is_active = mode == selected;
+                    let label = mode_label(mode, language);
+                    let color = if is_active {
+                        mode_color(mode)
+                    } else {
+                        MUTED_TEXT
+                    };
 
-                let btn_frame = if is_active {
-                    Frame::NONE
-                        .fill(SURFACE)
-                        .stroke(Stroke::new(1.0, BORDER))
-                        .corner_radius(theme::CHIP_RADIUS)
-                        .inner_margin(Margin::symmetric(8, 5))
-                } else {
-                    Frame::NONE
-                        .fill(Color32::TRANSPARENT)
-                        .corner_radius(theme::CHIP_RADIUS)
-                        .inner_margin(Margin::symmetric(8, 5))
-                };
+                    let btn_frame = if is_active {
+                        Frame::NONE
+                            .fill(SURFACE)
+                            .stroke(Stroke::new(1.0, BORDER))
+                            .corner_radius(theme::CHIP_RADIUS)
+                            .inner_margin(theme::MODE_PADDING)
+                    } else {
+                        Frame::NONE
+                            .fill(Color32::TRANSPARENT)
+                            .corner_radius(theme::CHIP_RADIUS)
+                            .inner_margin(theme::MODE_PADDING)
+                    };
 
-                let res = btn_frame
-                    .show(col, |ui| {
-                        ui.set_width(ui.available_width());
-                        ui.vertical_centered(|ui| {
-                            ui.colored_label(
-                                color,
-                                egui::RichText::new(label)
-                                    .font(FontId::new(12.0, egui::FontFamily::Proportional))
-                                    .strong(),
-                            );
-                        });
-                    })
-                    .response
-                    .interact(Sense::click());
+                    let res = btn_frame
+                        .show(col, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.vertical_centered(|ui| {
+                                ui.colored_label(
+                                    color,
+                                    egui::RichText::new(label)
+                                        .font(FontId::new(12.0, egui::FontFamily::Proportional))
+                                        .strong(),
+                                );
+                            });
+                        })
+                        .response
+                        .interact(Sense::click());
 
-                res.widget_info(|| {
-                    WidgetInfo::selected(WidgetType::Button, col.is_enabled(), is_active, label)
-                });
+                    res.widget_info(|| {
+                        WidgetInfo::selected(WidgetType::Button, col.is_enabled(), is_active, label)
+                    });
 
-                if res.clicked() {
-                    messages.push(Message::ModeSelected(mode));
+                    if res.clicked() {
+                        messages.push(Message::ModeSelected(mode));
+                    }
                 }
-            }
+            });
         });
-    });
 }
 
 // ----------------------------------------------------------------------------
@@ -620,8 +652,11 @@ pub fn rate_group(
     let rate_str = inputs.buffer(TimingField::PreservationRate);
     let invalid = parse_rate_text(rate_str).is_none();
 
+    // The Iced ratio group is the one slot in this card padded with
+    // `theme::GROUP_PADDING` rather than the 12 the duration ranges use
+    // (`src/ui/app.rs:3180`).
     theme::slot_style()
-        .inner_margin(Margin::same(12))
+        .inner_margin(Margin::same(GROUP_PADDING as i8))
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing = vec2(0.0, 8.0);
 
@@ -1439,18 +1474,310 @@ mod tests {
     }
 
     #[test]
-    fn test_slider_handle_radius_contract() {
-        // Rest: 7.0
-        assert_eq!(slider_handle_radius(false), SLIDER_HANDLE_RADIUS);
-        assert_eq!(slider_handle_radius(false), 7.0);
-        // Hovered (dragged = false): still 7.0, does not swell on hover alone
-        let hovered = true;
-        let dragged = false;
-        let _ = hovered;
-        assert_eq!(slider_handle_radius(dragged), 7.0);
-        // Dragged (grabbed): swells to 8.0
-        assert_eq!(slider_handle_radius(true), SLIDER_HANDLE_RADIUS_DRAG);
-        assert_eq!(slider_handle_radius(true), 8.0);
+    fn test_mixer_handle_radius_contract() {
+        // The Iced `accent_slider` maps `Status::Active` to 7.0 and
+        // `Status::Hovered | Status::Dragged` to 8.0 (`src/ui/theme.rs:1288-1293`).
+        assert_eq!(mixer_handle_radius(false), SLIDER_HANDLE_RADIUS);
+        assert_eq!(mixer_handle_radius(false), 7.0);
+        assert_eq!(mixer_handle_radius(true), SLIDER_HANDLE_RADIUS_DRAG);
+        assert_eq!(mixer_handle_radius(true), 8.0);
+    }
+
+    /// Every `Shape::Rect` this frame painted, flattened out of `Shape::Vec`.
+    fn painted_rects<State>(
+        harness: &egui_kittest::Harness<'_, State>,
+    ) -> Vec<egui::epaint::RectShape> {
+        fn collect(shape: &egui::Shape, out: &mut Vec<egui::epaint::RectShape>) {
+            match shape {
+                egui::Shape::Rect(rect) => out.push(rect.clone()),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for clipped in &harness.output().shapes {
+            collect(&clipped.shape, &mut out);
+        }
+        out
+    }
+
+    /// Radii of the painted circles ringed in `ink`, in paint order.
+    fn painted_circle_radii<State>(
+        harness: &egui_kittest::Harness<'_, State>,
+        ink: Color32,
+    ) -> Vec<f32> {
+        harness
+            .output()
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Circle(circle) if circle.stroke.color == ink => Some(circle.radius),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// R2 round-3: the strip insets its segments by 4 and each segment is padded
+    /// by `theme::MODE_PADDING`. Iced wraps the segments as
+    /// `container(segments).padding(4)` (`src/ui/app.rs:3123`) and pads each
+    /// segment with `theme::MODE_PADDING` (`src/ui/app.rs:3117`). Rendered rather
+    /// than restated, so a flattened margin fails here.
+    #[test]
+    fn test_mode_selector_strip_inset_and_segment_padding() {
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(600.0, 200.0))
+            .build_ui(|ui| {
+                let mut messages = Vec::new();
+                mode_selector(ui, SocdMode::PressDelay, Language::English, &mut messages);
+            });
+        harness.run();
+
+        // The strip is the only `group_style` frame in this render: inset fill,
+        // 1px border, `GROUP_RADIUS` corners.
+        let strip = painted_rects(&harness)
+            .into_iter()
+            .find(|rect| rect.corner_radius == theme::GROUP_RADIUS && rect.fill == theme::INSET)
+            .expect("the mode strip paints its group frame");
+
+        for mode in SocdMode::ALL {
+            let label = mode_label(mode, Language::English);
+            let segment = harness
+                .get_by_role_and_label(egui::accesskit::Role::Button, label)
+                .rect();
+
+            // 4px strip inset + the frame's own 1px stroke.
+            assert!(
+                segment.min.x - strip.rect.min.x >= 4.0,
+                "{label}: strip must inset the segments by 4 (left gap {})",
+                segment.min.x - strip.rect.min.x
+            );
+            assert!(
+                segment.min.y - strip.rect.min.y >= 4.0,
+                "{label}: strip must inset the segments by 4 (top gap {})",
+                segment.min.y - strip.rect.min.y
+            );
+
+            // MODE_PADDING contributes 7px vertically over a 14px label, so a
+            // segment is at least the reference's 28px. The literal
+            // `symmetric(8, 5)` this replaces measured 24. The bound rather than
+            // an equality keeps this about the padding: the selected segment
+            // additionally draws its own in-frame 1px stroke, which is a separate
+            // question from the padding this test guards.
+            let height = segment.height();
+            assert!(
+                height >= 28.0,
+                "{label}: segment height must follow theme::MODE_PADDING (measured {height})"
+            );
+        }
+    }
+
+    /// R2 round-3: the mixer handle must swell on hover as well as drag, which
+    /// only a rendered frame can show. `test_mixer_handle_radius_contract` pins
+    /// the pure rule; this pins that `mixer_slider` actually feeds it the
+    /// interaction state.
+    #[test]
+    fn test_mixer_handle_swells_on_hover_and_drag() {
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(600.0, 200.0))
+            .build_ui(|ui| {
+                let _ = mixer_slider(ui, 50.0, true, Language::English);
+            });
+        harness.run();
+
+        assert_eq!(
+            painted_circle_radii(&harness, MIX_TEXT),
+            vec![SLIDER_HANDLE_RADIUS],
+            "the handle rests at 7.0"
+        );
+
+        let slider =
+            harness.get_by_role_and_label(egui::accesskit::Role::Slider, "Delay Mix Ratio");
+        let rect = slider.rect();
+        slider.hover();
+        harness.run();
+        assert_eq!(
+            painted_circle_radii(&harness, MIX_TEXT),
+            vec![SLIDER_HANDLE_RADIUS_DRAG],
+            "hovering the mixer must swell the handle to 8.0"
+        );
+
+        // Past egui's click/drag threshold, so `dragged()` reports.
+        harness.drag_at(rect.center());
+        harness.run();
+        harness.hover_at(rect.center() + egui::vec2(60.0, 0.0));
+        harness.run();
+        assert_eq!(
+            painted_circle_radii(&harness, MIX_TEXT),
+            vec![SLIDER_HANDLE_RADIUS_DRAG],
+            "grabbing the mixer must keep the handle at 8.0"
+        );
+        harness.drop_at(rect.center() + egui::vec2(60.0, 0.0));
+    }
+
+    /// R2 round-3: the Iced `mixer_slider` fills the rail `PRIMARY_TEXT` left of
+    /// the handle and `RELEASE_TEXT` right of it (`src/ui/theme.rs:1116-1121`).
+    #[test]
+    fn test_mixer_rail_splits_primary_left_release_right() {
+        use egui_kittest::Harness;
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(600.0, 200.0))
+            .build_ui(|ui| {
+                let _ = mixer_slider(ui, 50.0, true, Language::English);
+            });
+        harness.run();
+
+        let rail: Vec<_> = painted_rects(&harness)
+            .into_iter()
+            .filter(|rect| rect.corner_radius == SLIDER_RAIL_RADIUS)
+            .collect();
+        assert_eq!(rail.len(), 2, "the rail paints two spans: {rail:?}");
+
+        let left = rail
+            .iter()
+            .find(|rect| rect.fill == PRIMARY_TEXT)
+            .expect("the span left of the handle is PRIMARY_TEXT");
+        let right = rail
+            .iter()
+            .find(|rect| rect.fill == RELEASE_TEXT)
+            .expect("the span right of the handle is RELEASE_TEXT");
+
+        assert!(
+            left.rect.max.x <= right.rect.min.x + f32::EPSILON,
+            "the two spans must meet at the handle: left {:?}, right {:?}",
+            left.rect,
+            right.rect
+        );
+        assert!(
+            !rail.iter().any(|rect| rect.fill == SLATE_100),
+            "the mixer rail carries no neutral SLATE_100 track"
+        );
+        assert_eq!(
+            left.rect.height(),
+            SLIDER_RAIL_WIDTH,
+            "the rail keeps the accent_slider 10pt height"
+        );
+    }
+
+    /// R2 round-3: the duration rail is the Iced `widgets::RangeSlider`, not the
+    /// single-handle `accent_slider`: a 12px rail rounded to 6 with constant
+    /// 16px thumbs (radius 8) that do not change with the status
+    /// (`src/ui/widgets.rs:238-285`).
+    #[test]
+    fn test_duration_rail_uses_the_range_geometry() {
+        use egui_kittest::Harness;
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(600.0, 200.0))
+            .build_ui(|ui| {
+                let res = range_slider(
+                    ui,
+                    RangeSliderProps {
+                        min_val: 2.0,
+                        max_val: 8.0,
+                        floor: 0.0,
+                        enabled: true,
+                        accent: PRIMARY_TEXT,
+                        id: Id::new("rail-geometry-test"),
+                        accessible_name: "Rail geometry range",
+                    },
+                );
+                assert_eq!(res, None);
+            });
+        harness.run();
+
+        let track = painted_rects(&harness)
+            .into_iter()
+            .find(|rect| rect.fill == SLATE_100)
+            .expect("the rail paints its SLATE_100 track");
+        assert_eq!(
+            track.rect.height(),
+            RANGE_RAIL_WIDTH,
+            "the two-handle rail is 12px tall, not the accent_slider 10"
+        );
+        assert_eq!(
+            track.corner_radius, RANGE_RAIL_RADIUS,
+            "the two-handle rail is rounded to 6, not the accent_slider 5"
+        );
+
+        assert_eq!(
+            painted_circle_radii(&harness, PRIMARY_TEXT),
+            vec![RANGE_THUMB_RADIUS, RANGE_THUMB_RADIUS],
+            "both thumbs keep the constant 16px size"
+        );
+
+        // The Iced widget has no status-dependent thumb size, so a drag must
+        // leave the geometry alone.
+        harness.drag_at(egui::pos2(300.0, 100.0));
+        harness.run();
+        harness.hover_at(egui::pos2(340.0, 100.0));
+        harness.run();
+        assert_eq!(
+            painted_circle_radii(&harness, PRIMARY_TEXT),
+            vec![RANGE_THUMB_RADIUS, RANGE_THUMB_RADIUS],
+            "dragging must not resize the two-handle thumbs"
+        );
+        harness.drop_at(egui::pos2(340.0, 100.0));
+    }
+
+    /// R2 round-3: the Random Mix slot is padded with `theme::GROUP_PADDING` (14),
+    /// not the 12 the duration groups use (`src/ui/app.rs:3180`).
+    #[test]
+    fn test_rate_group_uses_group_padding() {
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        let timing = TimingSettings {
+            mode: SocdMode::RandomMix,
+            ..Default::default()
+        };
+        let inputs = TimingInputs::from_timing(&timing);
+        let editing = [false; 5];
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(600.0, 400.0))
+            .build_ui(move |ui| {
+                let mut messages = Vec::new();
+                rate_group(
+                    ui,
+                    &timing,
+                    &inputs,
+                    &editing,
+                    Language::English,
+                    &mut messages,
+                );
+            });
+        harness.run();
+
+        // The mixer's own rect is unique in this render, and the slot is the one
+        // `slot_style` frame that contains it. Selecting by containment rather
+        // than by fill+radius alone keeps this unambiguous: the ratio pill shares
+        // both the SURFACE fill and the GROUP_RADIUS corners.
+        let rail = harness
+            .get_by_role_and_label(egui::accesskit::Role::Slider, "Delay Mix Ratio")
+            .rect();
+        let slot = painted_rects(&harness)
+            .into_iter()
+            .find(|rect| {
+                rect.corner_radius == theme::GROUP_RADIUS
+                    && rect.fill == SURFACE
+                    && rect.rect.contains_rect(rail)
+            })
+            .expect("the ratio group paints the slot frame around its mixer");
+
+        // The slot's content starts GROUP_PADDING + the frame's 1px stroke in.
+        // The 12px-padded duration groups measure 13 here instead.
+        assert_eq!(
+            rail.min.x - slot.rect.min.x,
+            GROUP_PADDING + 1.0,
+            "the ratio group is padded by GROUP_PADDING + its stroke"
+        );
     }
 
     #[test]
