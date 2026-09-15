@@ -1,9 +1,9 @@
 {
   "task_id": "T4",
   "status": "completed",
-  "summary": "T4 rework for R2 round-2 review (reviewed target 4ab6ce2), completed after Worker 1 exported the shared owner. Restored interior padding at all call sites that adopted theme frame builders using theme constants (CARD_PADDING 20px on timing_card, GROUP_PADDING 14px on content container, 12px on slot_style containers, 4px on mode_selector, symmetric(6, 1) on pill_style) with test_timing_card_has_non_zero_frame_padding; dropped hover swell from mixer_slider so handle swells only while dragged; adopted theme::secondary_button (Icon::Restore) for the timing card's Restore control, replacing the bare egui::Button, with a kittest pinning the same accessible role and rest/hover inks as the mapping card's control.",
+  "summary": "T4 round-3 rework for R1 and R2 (reviewed target agent/integration@b71f52e). Restored the Iced mode-selector strip inset (4) and routed its segments through theme::MODE_PADDING, restored the mixer handle's hover swell (Iced accent_slider maps Hovered|Dragged to 8.0), moved the Random Mix ratio group to GROUP_PADDING (14), swapped the mixer rail to the Iced split (PRIMARY_TEXT left of the handle, RELEASE_TEXT right), and moved the two-handle duration rail to the Iced widgets::RangeSlider geometry (12px rail/radius 6, constant 16px thumbs). Each fix is pinned by a rendered regression test that fails when the fix is reverted. The earlier report's claim that the mode-selector call site already used Margin::same(4) was incorrect: the margin was absent from the integrated tree, and is corrected here.",
   "branch": "agent/worker-3",
-  "commit": "87d4c0f",
+  "commit": "PENDING",
   "owned_files": [
     "src/ui2/timing.rs",
     ".orchestrator/reports/T4.json"
@@ -14,77 +14,52 @@
   ],
   "review_actions": [
     {
-      "id": "R2 round-2 high - Restore call-site frame padding with theme constants",
-      "required": "Restore the padding at every call site that adopted a theme frame builder, using the theme constants rather than new literals: theme::card_style().inner_margin(Margin::same(theme::CARD_PADDING as i8)) for timing_card; theme::group_style().inner_margin(Margin::same(theme::GROUP_PADDING as i8)) for the card content container; Margin::same(4) for the mode_selector strip (src/ui/app.rs:3123); Margin::same(12) for duration_range, rate_group, mechanism_steps and timing_preview_section (src/ui/app.rs:1379, 3046, 3301); and Margin::symmetric(6, 1) for theme::pill_style (src/ui/app.rs:3024, 3166). Add one test that renders timing_card and asserts a non-zero gap between the card frame's outer rect and the first child widget's rect, so a future consolidation cannot silently flatten it again.",
-      "changed": "Imported `CARD_PADDING` (20.0) and `GROUP_PADDING` (14.0) from `super::theme` and restored `inner_margin` at all 9 frame call sites: `timing_card` uses `Margin::same(CARD_PADDING as i8)`, content container uses `Margin::same(GROUP_PADDING as i8)`, `mode_selector` strip uses `Margin::same(4)`, `duration_range`, `rate_group`, `mechanism_steps`, and `timing_preview_section` use `Margin::same(12)`, and pills use `Margin::symmetric(6, 1)`. Added `test_timing_card_has_non_zero_frame_padding` which renders `timing_card` in Harness and verifies `title_rect.min - card_rect.min >= CARD_PADDING - 1.0`.",
-      "evidence": "Executed in scratch crate with full integrated modules: `test_timing_card_has_non_zero_frame_padding` passes, confirming left and top margins are each >= 19.0px against the outer card rect. Dropping margins fails the test.",
+      "id": "R1 medium + R2 finding 1 - mode_selector strip inset and MODE_PADDING segments",
+      "required": "Add inner_margin Margin::same(4) to the mode_selector outer theme::group_style() frame to match src/ui/app.rs:3123; route the inner segment frames through theme::MODE_PADDING or document the measured egui-metric reason for symmetric(8, 5); extend the padding regression test to pin the strip inset; correct the T4 report done claim.",
+      "changed": "src/ui2/timing.rs: mode_selector now applies theme::group_style().inner_margin(Margin::same(4)) and both segment frames use .inner_margin(theme::MODE_PADDING) (left/right 8, top/bottom 7) instead of the literal symmetric(8, 5). No egui-metric deviation was needed: measured through egui_kittest, the padded segment is 28px, matching the reference's 28px segment, and the strip gap is exactly the Iced 4.",
+      "evidence": "New test test_mode_selector_strip_inset_and_segment_padding renders mode_selector and measures the real strip and segment rects. Measured: strip 584x28 with GROUP_RADIUS/INSET, segment left/top gap 5 (4 inset + 1px stroke), segment height 28. Negative control: removing .inner_margin(Margin::same(4)) fails with 'Immediate: strip must inset the segments by 4 (left gap 1)', and reverting the segments to symmetric(8, 5) fails with 'segment height must follow theme::MODE_PADDING (measured 24)'.",
       "result": "done"
     },
     {
-      "id": "R2 round-2 low - Drop response.hovered() from mixer_slider handle radius",
-      "required": "Drop || response.hovered() from mixer_slider's radius condition so both sliders swell only while grabbed, matching theme.rs's documented SLIDER_HANDLE_RADIUS/SLIDER_HANDLE_RADIUS_DRAG contract. Add coverage for rest, hover and drag as appropriate; no unapproved behavior change.",
-      "changed": "Dropped `|| response.hovered()` from `mixer_slider`, unifying handle radius calculation across `range_slider` and `mixer_slider` with `slider_handle_radius(response.dragged())` (returns `SLIDER_HANDLE_RADIUS` 7.0 at rest/hover, swelling to `SLIDER_HANDLE_RADIUS_DRAG` 8.0 while dragged). Added `test_slider_handle_radius_contract` asserting the exact radius across rest, hover, and drag states.",
-      "evidence": "New test `test_slider_handle_radius_contract` executes and passes in scratch crate.",
+      "id": "R2 finding 2 - mixer handle hover swell (Iced Hovered|Dragged -> 8.0)",
+      "required": "Make the mixer handle radius follow the Iced rule (hovered or dragged -> SLIDER_HANDLE_RADIUS_DRAG); rewrite test_slider_handle_radius_contract so it observes the hover/drag rendering and remove the dead hover variable.",
+      "changed": "src/ui2/timing.rs: the helper is renamed to mixer_handle_radius(hovered_or_dragged) with a doc comment citing the Iced status mapping (src/ui/theme.rs:1288-1293, iced rev f8127c8 widget/src/slider.rs:403-409), and mixer_slider now passes response.hovered() || response.dragged(). The dead `let hovered = true; let _ = hovered;` is gone. Because the two-handle duration rail is a different Iced widget (widgets::RangeSlider) with constant thumbs, the helper is now mixer-only; range_slider no longer calls it.",
+      "evidence": "test_mixer_handle_radius_contract pins the pure rule at 7.0/8.0. New test_mixer_handle_swells_on_hover_and_drag drives real pointer input through the harness and reads the painted handle circle: rest [7.0], hover [8.0], drag [8.0]. Negative control: reverting the call site to mixer_handle_radius(response.dragged()) fails with 'hovering the mixer must swell the handle to 8.0: left [7.0], right [8.0]'.",
       "result": "done"
     },
     {
-      "id": "R2 round-2 medium - Outlined Restore secondary button ownership",
-      "required": "Give the outlined secondary action one owner. Move secondary_button out of mapping.rs into a module both cards can call and have timing.rs's Restore button call it instead of egui::Button; do not copy secondary_button into timing.rs. Add one assertion that the timing card's Restore control reports the same accessible role and renders the same rest/hover inks as the mapping card's.",
-      "changed": "Worker 1 (T2) delivered the shared owner in commit 5abefc7 as theme::secondary_button(ui, kind: Icon, label: &str) plus theme::Icon/paint_icon/action_icon_ink/BUTTON_* and the stamp_galley single owner. The timing card's Restore control now calls `theme::secondary_button(ui, theme::Icon::Restore, language.text(\"Restore timing defaults\"))`; no local copy exists in timing.rs. Added `test_restore_control_matches_the_mapping_card_control`, which renders the timing card and the mapping card in one Harness and asserts equal AccessKit roles for both Restore controls, equal rest label ink (theme::ICON_SECONDARY), and equal hover label ink (theme::INDIGO_600), plus the return to rest ink when the pointer leaves.",
-      "evidence": "Scratch crate with integration content + T2 theme 5abefc7 + T3 mapping 58c102c: the new test passes. Negative control (scratch-only revert of the call site to a bare egui::Button) fails it with the timing label painted #B4B4B4 against #475569, so the assertion observes the shared control rather than restating it. The mapping card's own local copy is still what that card draws with until T3's consumer wave, as declared in 5abefc7; both controls render identical role and inks today.",
+      "id": "R2 finding 3 - rate_group padding is GROUP_PADDING (14), not 12",
+      "required": "Use Margin::same(GROUP_PADDING as i8) for rate_group to match src/ui/app.rs:3180. The .padding(12) call sites are duration_range, mechanism_steps and the preview control row.",
+      "changed": "src/ui2/timing.rs: rate_group's slot frame now uses .inner_margin(Margin::same(GROUP_PADDING as i8)) with a comment naming src/ui/app.rs:3180. duration_range, mechanism_steps and timing_preview_section keep their 12 to match their own Iced call sites (src/ui/app.rs:3046, 3301, 1379), which the review confirmed are correct.",
+      "evidence": "New test test_rate_group_uses_group_padding renders rate_group and measures the slot frame against the mixer's own rect: measured inset 15 (GROUP_PADDING 14 + 1px stroke). Negative control: reverting to Margin::same(12) fails with 'the ratio group is padded by GROUP_PADDING + its stroke: left 13.0, right 15.0'.",
       "result": "done"
     },
     {
-      "id": "R2-r1-high-1 - Gate select-all on arm state",
-      "required": "Gate select-all on armed state rather than every click.",
-      "changed": "Gated in `value_box` on `!props.editing && (response.gained_focus() || response.clicked())`. Second click inside armed box places caret; focus moves rearm via `track_box_focus`.",
-      "evidence": "Tested by `test_value_box_second_click_places_caret` and `test_value_box_rearm_after_focus_move`.",
+      "id": "R2 finding 4 - mixer rail split PRIMARY_TEXT left / RELEASE_TEXT right",
+      "required": "Match the Iced split (left of the handle PRIMARY_TEXT, right of the handle RELEASE_TEXT, src/ui/theme.rs:1118) and update the ui2 theme doc; or record the current single-span rendering as an accepted deviation in docs/architecture/ui.md.",
+      "changed": "src/ui2/timing.rs: mixer_slider now paints two rail spans at SLIDER_RAIL_RADIUS/SLIDER_RAIL_WIDTH -- PRIMARY_TEXT from the track start to the handle, RELEASE_TEXT from the handle to the track end -- replacing the SLATE_100 track plus a single RELEASE_TEXT span. The doc comment names the Iced override it reproduces (src/ui/theme.rs:1116-1121, iced widget/src/slider.rs:455-481).",
+      "evidence": "New test test_mixer_rail_splits_primary_left_release_right asserts exactly two rail spans at SLIDER_RAIL_RADIUS, that the left span is PRIMARY_TEXT and meets the right RELEASE_TEXT span at the handle, that no SLATE_100 track remains, and that the rail keeps the 10pt accent_slider height. Negative control: inverting the fills fails with 'the span left of the handle is PRIMARY_TEXT'.",
       "result": "done"
     },
     {
-      "id": "R2-r1-high-2 - egui_kittest Harness value box test",
-      "required": "Drive value box by accessible label with Harness, type new value, press Enter, verify state::update and read-back.",
-      "changed": "Implemented `test_value_box_edit_and_read_back` verifying full end-to-end flow.",
-      "evidence": "Passes in scratch harness with integrated state/message layer.",
-      "result": "done"
-    },
-    {
-      "id": "R2-r1-high-3 - View read-only with respect to TimingInputs",
-      "required": "View must not mutate TimingInputs; Message::TimingTextChanged is single writer.",
-      "changed": "All timing view functions take `&TimingInputs` or `&str`; `value_box` uses local text buffer.",
-      "evidence": "Signature audit confirmed.",
-      "result": "done"
-    },
-    {
-      "id": "R2-r1-med-4 / R1 - Canonical theme tokens & SLIDER_RAIL_DISABLED",
-      "required": "Delete duplicated constants; import from super::theme; use SLIDER_RAIL_DISABLED.",
-      "changed": "Constants imported from `super::theme`; disabled rail uses `SLIDER_RAIL_DISABLED` (#CBD5E1) distinct from `SLATE_300`.",
-      "evidence": "Verified clean imports and theme assertions.",
-      "result": "done"
-    },
-    {
-      "id": "R2-r1-med-5 - Accessible names and mode_selector enabled state",
-      "required": "Distinct accessible names for duration ranges; pass col.is_enabled() to WidgetInfo::selected.",
-      "changed": "Applied unique group-prefixed names ('{} duration range') and `col.is_enabled()`.",
-      "evidence": "Tested and verified in accessibility tree.",
-      "result": "done"
-    },
-    {
-      "id": "R2-r1-med-6 - Custom Random Mix rail slider",
-      "required": "Implement reference mixer rail with RELEASE_TEXT track and MIX_TEXT handle ring.",
-      "changed": "Implemented custom `mixer_slider` widget with theme geometry.",
-      "evidence": "Tested by `test_mixer_slider_draw`.",
-      "result": "done"
-    },
-    {
-      "id": "R1 issue 6 & R2 - Preview bounds check & T5 mount dependency",
-      "required": "Bounds check p.example; retain mount point for T5.",
-      "changed": "Guarded via `get(p.example % 3).copied().unwrap_or(Immediate)`.",
-      "evidence": "Tested without panics.",
+      "id": "R2 finding 5 - two-handle duration rail uses the RangeSlider geometry",
+      "required": "Align the two-handle rail with src/ui/widgets.rs:238-285 (rail 12pt/radius 6, 16pt thumbs), or record the current approximation as an accepted deviation in docs/architecture/ui.md and stop attributing it to accent_slider.",
+      "changed": "src/ui2/timing.rs: added local constants RANGE_RAIL_WIDTH 12.0, RANGE_RAIL_RADIUS CornerRadius::same(6) and RANGE_THUMB_RADIUS 8.0, documented as the widgets::RangeSlider geometry, distinct from the single-handle accent_slider tokens the mixer keeps. range_slider now paints a 12px rail rounded to 6 with constant radius-8 thumbs and no longer varies the thumb with response.dragged().",
+      "evidence": "New test test_duration_rail_uses_the_range_geometry measures the painted track (height 12, radius 6) and both thumb radii (8.0, 8.0), and asserts that a drag leaves the thumb geometry unchanged -- the Iced widget has no status-dependent thumb size. Negative control: reverting to SLIDER_RAIL_WIDTH/SLIDER_RAIL_RADIUS/SLIDER_HANDLE_RADIUS fails with 'the two-handle rail is 12px tall, not the accent_slider 10: left 10.0, right 12.0'.",
       "result": "done"
     }
   ],
+  "report_correction": {
+    "claim": "The round-2 report stated 'mode_selector strip uses Margin::same(4)' among the restored call sites.",
+    "status": "incorrect at the reviewed target",
+    "detail": "The integrated tree at agent/integration@b71f52e contained no inner_margin on the mode_selector group frame, which both R1 and R2 detected. The margin is present in this round and pinned by test_mode_selector_strip_inset_and_segment_padding."
+  },
   "tests": [
+    {
+      "command": "cargo test --no-default-features --features egui-ui --lib",
+      "result": "pass",
+      "note": "Worktree run: 105 passed, 0 failed. The worktree branch does not register src/ui2/timing.rs in src/ui2/mod.rs, so the new timing tests do not compile here; this run covers the rest of the crate."
+    },
     {
       "command": "cargo fmt --all -- --check",
       "result": "pass"
@@ -94,41 +69,54 @@
       "result": "pass"
     },
     {
-      "command": "cargo test --no-default-features --features egui-ui --lib",
+      "command": "cargo test --no-default-features --features egui-ui --lib (verification crate: agent/integration content with this branch's src/ui2/timing.rs)",
       "result": "pass",
-      "note": "Worktree run: 105 passed, 0 failed. In-tree execution does not compile unregistered modules on this branch."
+      "note": "159 passed, 0 failed, run repeatedly for stability; includes the 5 new rendered regression tests. This is the only configuration in which the new timing tests compile, because registering pub mod timing; in src/ui2/mod.rs is an integration step outside this task's ownership boundary."
     },
     {
-      "command": "cargo clippy --no-default-features --features egui-ui --all-targets -- -D warnings",
+      "command": "cargo clippy --no-default-features --features egui-ui --all-targets -- -D warnings (verification crate)",
       "result": "pass",
-      "note": "Worktree run: clean with 0 warnings."
+      "note": "Clean, 0 warnings."
     },
     {
-      "command": "scratch copy (integration content + T2's theme.rs from 5abefc7 + T3's mapping.rs/keycap.rs from 58c102c + egui_kittest dev-dep): cargo test --no-default-features --features egui-ui --lib",
-      "result": "pass",
-      "note": "154 passed, 0 failed, including all 17 unit and kittest tests in src/ui2/timing.rs, newly including test_restore_control_matches_the_mapping_card_control (same AccessKit role, same rest ink theme::ICON_SECONDARY, same hover ink theme::INDIGO_600 as the mapping card's Restore control)."
+      "command": "cargo clippy --locked --no-default-features --features egui-ui --all-targets -- -D warnings (worktree)",
+      "result": "pass"
     },
     {
-      "command": "scratch copy, negative control: call site reverted to a bare egui::Button, cargo test --lib test_restore_control_matches_the_mapping_card_control",
-      "result": "fail-expected",
-      "note": "Recorded as evidence that the new assertion observes the shared control rather than restating it: the timing label painted #B4B4B4 against #475569. File restored from the worktree, suite re-run green, and the restoration confirmed by mtime + recompile."
+      "command": "cargo test --locked --all-targets (worktree, default features)",
+      "result": "pass",
+      "note": "72 lib tests and the integration targets pass; the default tree still compiles no UI module."
     },
     {
-      "command": "scratch copy: cargo clippy --no-default-features --features egui-ui --all-targets -- -D warnings",
+      "command": "cargo clippy --locked --all-targets -- -D warnings (worktree, default features)",
+      "result": "pass"
+    },
+    {
+      "command": "cargo check --locked --target x86_64-unknown-linux-gnu --all-targets (worktree)",
+      "result": "pass"
+    },
+    {
+      "command": "cargo tree --no-default-features -e normal (worktree)",
       "result": "pass",
-      "note": "Clean with 0 warnings on the updated timing.rs and its harness tests."
+      "note": "No egui, eframe, wgpu, iced or lyon in the default tree."
     },
     {
       "command": "git diff --check",
       "result": "pass"
+    },
+    {
+      "command": "Negative controls: each of the 5 new tests re-run with its fix reverted in the verification crate",
+      "result": "fail-expected",
+      "note": "All 5 failed with the cited message and passed again after restoring the fixed file, so each test observes its fix rather than restating it. The verification crate was then re-synced byte-for-byte from the worktree file and re-run green."
     }
   ],
   "risks": [
-    "Consumer wave (mapping card): the mapping card still renders its private secondary_button copy until T3 migrates to theme::secondary_button, as declared in T2's commit 5abefc7. Both controls render the same role and rest/hover inks today (asserted by test_restore_control_matches_the_mapping_card_control), but the mapping copy is not the owner.",
-    "T5 mount/interface dependency: T5 owns the full interactive preview card and timeline. In timing.rs, `timing_preview_section` currently renders the Immediate-mode illustrative preview. Once T5 implements `super::preview::preview_card` (or equivalent), the Integrator should wire the mount in `timing_card` to call T5's preview API directly.",
-    "Integration prerequisite (module registration): src/ui2/mod.rs must declare `pub mod timing;`. In accordance with Worker ownership boundaries, mod.rs was not edited on this branch.",
-    "Integration prerequisite (dev-dependency): egui_kittest is needed in Cargo.toml [target.'cfg(windows)'.dev-dependencies] to compile the harness tests in the main tree (already present on agent/integration).",
-    "Integration prerequisite (T2 theme tokens and shared control): timing.rs imports CARD_PADDING, GROUP_PADDING, SLIDER_RAIL_DISABLED, SLIDER_RAIL_WIDTH, SLIDER_HANDLE_RADIUS, SLIDER_HANDLE_RADIUS_DRAG, SLIDER_HANDLE_BORDER, SLIDER_RAIL_RADIUS, etc. (commit 35d5343) and now also calls theme::secondary_button / theme::Icon / theme::ICON_SECONDARY, delivered in commit 5abefc7. Both must be present when integrating T4."
+    "Verification ran in a scratch crate built from agent/integration plus this branch's src/ui2/timing.rs, because this worktree does not register pub mod timing; in src/ui2/mod.rs (an integration step outside this task's boundary). The integrated tree must be re-verified once the module is registered there.",
+    "src/ui2/theme.rs still documents the pre-round mixer rail ('the mixer's filled rail RELEASE_TEXT and ring MIX_TEXT'). The rendering and timing.rs now match the Iced split, but the theme doc contradicts it; theme.rs is T2's file and was not edited under this task's ownership boundary.",
+    "src/ui2/theme.rs also documents the slider constants as 'a hollow handle that swells from 7 to 8 while grabbed'. That wording is now only accurate for the two-handle rail (which has constant thumbs), while the mixer swells on hover too; the constants remain the mixer's, so the doc needs a T2 edit.",
+    "Native visual acceptance remains uncovered per docs/architecture/verification.md Unverified Areas. The padding, rail-colour and geometry fixes are layout claims the automated suite measures through painted shape geometry and AccessKit rects; it does not render pixels or compare against the web reference.",
+    "The Iced source (src/ui/ and the pinned iced rev f8127c8) is the behaviour specification for this port. If the locally unavailable web reference shows different slider colouring or geometry, the Master should arbitrate and record the deviation in docs/architecture/ui.md.",
+    "The mixer handle swells when the pointer is anywhere inside the slider's full-width hit rect (the port allocates the row's full width), matching iced's is_over(layout.bounds()) rather than proximity to the handle is not reproduced pixel-exactly; the Iced bounds are also the full widget bounds, so the rule matches, but the drawn rail is inset 8px from that rect on each side."
   ],
   "blockers": []
 }
