@@ -1,9 +1,9 @@
 {
   "task_id": "T3",
   "status": "completed",
-  "summary": "T3 rework after review (reviewed commit f3dc2d9). Fixed the secondary-button label that was laid out in white and so ignored its state ink; added a painted-shape regression test that provably fails against the old code; substituted every duplicated colour/shadow token with the theme owner T2 now provides (values verified identical, one owner for KeycapMode); made format_key_for_display char-safe for multi-byte names with new tests; corrected the resolve_dpad comment; and set the secondary button to content + 2 * 13px with its icon following the state ink. The branch still lacks the integration glue (module registration, egui_kittest dev-dependency), so T3 compile/test/clippy evidence comes from an out-of-tree scratch crate that now also uses T2's real theme.rs from agent/integration.",
+  "summary": "T3 follow-up after report 494c848. Completed the remaining R1 substitutions: the five D-pad dot/glow literals now use T2's new theme tokens (values verified byte-identical against agent/worker-1 35d5343), with tile fill/edge/ring already on theme::SLATE_100/theme::BORDER and all pixel metrics kept local. Reverted the Restore icon ink to the original Iced behaviour (fixed slate-600; other action icons still inherit the label ink) under migration constraint 5, keeping the readable placeholder-based label and the content + 2 * 13px width, and added regression coverage that fails if the single-ink change is applied. T2's five D-pad tokens do NOT yet exist on agent/integration (f3dc2d9), so the integrator must merge T2's follow-up before this branch. Font weight, long-label hover-scroll and banner behaviour remain open and untouched.",
   "branch": "agent/worker-2",
-  "commit": "494c848",
+  "commit": "586fe95",
   "owned_files": [
     "src/ui2/mapping.rs",
     "src/ui2/keycap.rs",
@@ -11,56 +11,47 @@
   ],
   "changed_files": [
     "src/ui2/mapping.rs",
-    "src/ui2/keycap.rs",
     ".orchestrator/reports/T3.json"
   ],
   "review_actions": [
     {
-      "id": "R2 high - secondary_button laid out its label in a real colour",
-      "required": "Lay the galley out with Color32::PLACEHOLDER (or with `ink` after it is computed), audit every other layout_no_wrap for the same shape, and add regression coverage that makes the defect observable.",
-      "changed": "`secondary_button` now lays the label galley out with Color32::PLACEHOLDER and paints it with the state `ink`. `esc_button`, the shared `text()` helper, the keycap legend galley and `keycap::paint_text_block` got the same treatment, so no galley pins its colour at layout time.",
-      "evidence": "Audit: all five `layout_no_wrap` calls in the two files now pass Color32::PLACEHOLDER (keycap.rs L329 legend, L418 label block; mapping.rs L429 button label, L481 ESC label, L519 shared text). The new test `the_restore_button_paints_its_label_in_the_state_ink` reads the painted Shape::Text and asserts the effective colour: at rest #47_55_69_FF (theme::ICON_SECONDARY), hovered #4F_39_F6_FF (theme::INDIGO_600). Proven to be a real guard: with the old WHITE layout colour the same test fails reading #FF_FF_FF_FF instead of #47_55_69_FF.",
+      "id": "R1 follow-up - D-pad tile/ring/dot literals need theme tokens",
+      "required": "Replace the D-pad tile/ring/dot literals in mapping.rs with the matching theme tokens (or add the missing ones to theme.rs); keep pixel metrics local.",
+      "changed": "mapping.rs now paints the D-pad dots/glow entirely from theme: DPAD_GUIDE_DOT (resting guide dot), DPAD_ACTIVE_GLOW (24px halo), DPAD_ACTIVE_DOT_SHADOW, DPAD_IDLE_DOT_SHADOW, DPAD_IDLE_DOT; the tile fill and edge/ring were already theme::SLATE_100 and theme::BORDER. Kept local as metrics: 80px tile, radius 16, 24px guide ring, 3/3 dash, dot radii 4/9/10/12 and the 1px shadow offset. theme.rs was NOT edited.",
+      "evidence": "Byte-identical check against agent/worker-1:src/ui2/theme.rs at 35d5343: DPAD_GUIDE_DOT = from_rgba_unmultiplied_const(204,214,224,153); DPAD_ACTIVE_GLOW = (59,84,232,64); DPAD_ACTIVE_DOT_SHADOW = (59,84,232,77); DPAD_IDLE_DOT_SHADOW = from_black_alpha(20); DPAD_IDLE_DOT = with_alpha(ICON_MUTED, 204) = from_rgba_unmultiplied(148,163,184,204) - each exactly the constructor this file used, so no colour changes. T2's own regression test pins the same values. The modules compile and their tests pass against that exact theme.rs in the scratch harness. T2's warning is respected: the translucent tokens are substituted directly, never compared through channel getters. My earlier report's claim that these literals had no theme owner is now stale and superseded by this change.",
       "result": "done"
     },
     {
-      "id": "R1 medium + R2 medium - duplicated theme tokens and KeycapMode",
-      "required": "Replace HOVER_FILL/HOVER_BORDER with theme::KEYCAP_HOVER_BG/KEYCAP_HOVER_BORDER; unify KeycapMode to theme::KeycapMode (re-export or alias, delete the local enum); replace CARD_BORDER with theme::CARD_BORDER, BUTTON_HOVER_FILL with theme::HOVER_WASH, BUTTON_HOVER_BORDER with theme::NAME_HOVER_BORDER, SECTION_GAP with theme::SECTION_GAP, HEADING_SIZE with theme::HEADING_SIZE. Verify each value is identical before replacing.",
-      "changed": "All eight required substitutions applied, plus the same-class tokens that T2 also owns and that matched byte-for-byte: KEYCAP_REBIND_EDGE (white/102), SHADOW_KEYCAP ([0,1]/blur 2/black 13), SHADOW_CARD ([0,1]/blur 2/black 10), SHADOW_BANNER ([0,4]/blur 6/black 38), KEYCAP_REBIND_GLOW_BLUR (8), KEYCAP_PRESSED_GLOW_BLUR (3), and Color32::WHITE fills that are theme::SURFACE (card frame, keycap rest, secondary button rest). The local KeycapMode enum is deleted; keycap.rs now has `pub use super::theme::KeycapMode;` and mapping.rs keeps importing it from keycap.",
-      "evidence": "Each value was compared against agent/integration's src/ui2/theme.rs before use: CARD_BORDER 0xd2dbff, HOVER_WASH 0xf5f7ff, NAME_HOVER_BORDER 0xa3b3ff, SECTION_GAP 16.0, HEADING_SIZE 15.0, KEYCAP_HOVER_BG 0xf8fafc, KEYCAP_HOVER_BORDER 0x818cf8, KEYCAP_REBIND_EDGE white alpha 102, SHADOW_KEYCAP {[0,1],2,0,black13}, SHADOW_CARD {[0,1],2,0,black10}, SHADOW_BANNER {[0,4],6,0,black38}, glows 8 and 3, SURFACE white - all identical, so no colour changed. Verified by compiling the T3 modules against that exact theme.rs in the scratch crate. Remaining local values have no theme owner: pixel metrics, the four per-direction ring colours, the D-pad tile dot rgba literals, the D-pad tile size, and the white-alpha legend/rebind inks that the Iced widget code also wrote inline.",
+      "id": "R1 earlier - one shared ink variable for the secondary button",
+      "required": "Paint the icon with the same ink variable as the label (rework of 494c848).",
+      "changed": "Deliberately NOT preserved: migration constraint 5 outranks the reviewer suggestion. The icon ink rule is restored to the original Iced `icon_label`: `action_icon_ink(kind, label_ink)` returns ICON_SECONDARY for an `Icon::Restore` glyph in every state and the label ink for other icons. The label still follows its state ink (slate-600 at rest, indigo-600 on hover) and is still laid out with PLACEHOLDER, so the readable-label fix stands; the width stays `content + 2.0 * BUTTON_PAD_X` with the 30px height.",
+      "evidence": "Original behaviour verified in the source of truth: src/ui/app.rs `icon_label` carries the comment 'Restore affordances use the reference's slate-600 ink; other action icons inherit the button text color so hover states keep working.' and codes it as `matches!(name, Icon::Restore).then_some(theme::ICON_SECONDARY)`, so the Restore glyph never recolours while src/ui/theme.rs `secondary_button` moves text_color to INDIGO_600 on hover. Two new tests cover it: `other_action_icons_follow_the_button_ink` (both branches of the rule) and `the_restore_icon_keeps_the_iced_slate_ink_on_hover`, a shape-level test that reads the strokes clips to the button rect and asserts ICON_SECONDARY is present and INDIGO_600 is absent, at rest and while hovered. Probe: with the single-ink change re-applied in the scratch copy the test fails at 'the Restore glyph must paint in the secondary slate (hovered: true)' (exit 101), then the scratch was re-synced and the suite passed again. This deviation is stated here for re-review; ui.md was not touched and no parity was silently waived.",
+      "result": "done-deviating"
+    },
+    {
+      "id": "R2 high - secondary_button label colour (earlier rework, retained)",
+      "required": "Lay the galley out with Color32::PLACEHOLDER or with `ink` after it is computed; audit the other layout calls; add regression coverage.",
+      "changed": "Unchanged from 494c848: all five `layout_no_wrap` calls in the two files pass Color32::PLACEHOLDER and the state colour is supplied at paint time. `secondary_button` now names its label colour `label_ink` to keep it distinct from the icon ink rule.",
+      "evidence": "`the_restore_button_paints_its_label_in_the_state_ink` still passes: at rest #47_55_69_FF (ICON_SECONDARY), hovered #4F_39_F6_FF (INDIGO_600). The earlier probe (reverting the layout colour to WHITE) failed with #FF_FF_FF_FF.",
       "result": "done"
     },
     {
-      "id": "R1 low + R2 low - format_key_for_display panicked on multi-byte names",
-      "required": "Compute the halfway point over char_indices() and use chars().count() for the >= 7, <= 2, <= 4 and <= 6 length classifications; keep the ASCII assertions green and add multi-byte cases.",
-      "changed": "The split threshold and both size classifications now count characters; the midpoint comes from `char_boundary_at_half`, which maps the halfway character count onto a byte offset with `char_indices().nth`. The digit split is unchanged because `str::find` already returns a char boundary, with a comment saying so.",
-      "evidence": "New test `multi_byte_names_split_without_panicking`: `가나다라마바사` (7 chars / 21 bytes) splits into 가나다라 + 마바사 at 12.0; `가나다라마` (5 chars / 15 bytes) stays on one line at 11.0; `F한` (2 chars / 4 bytes) keeps 18.0; `가나다라마바4` splits on the digit. The old byte-based midpoint panicked on the first case. All five ASCII assertions in `format_key_for_display_splits_compound_keys` and the autoscale assertions are unchanged and green.",
+      "id": "Earlier rework items (tokens, KeycapMode owner, char-safe split, resolve_dpad comment)",
+      "required": "As recorded in the previous report revision.",
+      "changed": "No change in this follow-up; all stay as committed in 494c848.",
+      "evidence": "All previously listed tests still pass in the 129-test scratch run.",
       "result": "done"
     },
     {
-      "id": "R1 low + R2 low - resolve_dpad doc comment",
-      "required": "State that the timeline resolves the winner while it is showing filtered output (!physical), and that the window's own press set with timestamps resolves it otherwise. Comment only.",
-      "changed": "Rewrote the doc comment to that wording and noted the condition is unchanged from the Iced `resolve_dpad`. No code change.",
-      "evidence": "Diff shows comment-only change; the resolve_dpad test is unchanged and passes.",
-      "result": "done"
-    },
-    {
-      "id": "R1 low - secondary_button metrics and icon ink",
-      "required": "Set the button width to content + 2.0 * BUTTON_PAD_X (13.0 per side, keep 30.0 height) and paint the icon with the same ink variable as the label.",
-      "changed": "Width is now `content + 2.0 * BUTTON_PAD_X` (13px per side, two pixels narrower than the previous 14px-per-side model); height stays 30.0. The icon takes the same `ink` as the label, so it is slate-600 at rest and indigo-600 on hover.",
-      "evidence": "Both changes are visible in the diff; the painted-label colour test covers the label, and the icon ink now shares the same variable.",
-      "result": "done",
-      "note": "Deliberate divergence to flag: the Iced `icon_label` pinned the Restore icon at `ICON_SECONDARY` in every state, so the icon did not follow the label to indigo on hover. R1's required action asks for one ink variable, so the icon now recolours. Raise it if the Iced behaviour is the one to keep."
-    },
-    {
-      "id": "R2 - stamp_galley ownership",
-      "required": "Not to be acted on in T3 beyond reporting (theme-owned).",
-      "changed": "Nothing. The weight approximation stays in keycap.rs (`pub(super) fn stamp_galley`) and mapping.rs calls it. Reported: egui's bundled faces carry one weight each, so a shared weight strategy belongs to theme/app; T3 keeps the local stand-in until then.",
+      "id": "R2 - stamp_galley ownership (weight strategy)",
+      "required": "Do not act in T3 beyond reporting.",
+      "changed": "Nothing. Still keycap.rs-local. Open, not claimed solved.",
       "result": "not_done"
     },
     {
-      "id": "hover-scroll and pulsing banner parity",
-      "required": "Not to be ported in this rework (Master / ui.md parity decisions).",
-      "changed": "Nothing. Keycap labels stay clipped and still; the capture banner stays still.",
+      "id": "long-label hover-scroll and the pulsing capture banner",
+      "required": "Not ported in this rework.",
+      "changed": "Nothing. Both remain open behaviour gaps; this follow-up did not expand into them.",
       "result": "not_done"
     }
   ],
@@ -76,27 +67,27 @@
     {
       "command": "cargo test --no-default-features --features egui-ui --lib",
       "result": "pass",
-      "note": "worktree run: 105 passed, 0 failed. The T3 modules are unregistered on this branch, so this run does NOT compile them and is not T3 evidence."
+      "note": "worktree run: 105 passed, 0 failed. The T3 modules are unregistered on this branch, so this run does NOT compile them; it is not T3 evidence."
     },
     {
       "command": "cargo clippy --no-default-features --features egui-ui --all-targets -- -D warnings",
       "result": "pass",
-      "note": "worktree run: clean, but does NOT compile the unregistered T3 modules."
+      "note": "worktree run: clean, but likewise does NOT compile the unregistered T3 modules."
     },
     {
-      "command": "scratch copy (mod.rs registration + T2's real theme.rs from agent/integration + egui_kittest dev-dep): cargo test --no-default-features --features egui-ui --lib",
+      "command": "scratch harness (mod.rs registration + agent/worker-1 35d5343 theme.rs + egui_kittest dev-dep): cargo test --no-default-features --features egui-ui --lib",
       "result": "pass",
-      "note": "126 passed, 0 failed, including 12 T3 tests: 6 keycap unit tests (including the new multi-byte cases) and 6 mapping tests (including the new painted-label regression test and the three egui_kittest semantic tests). This is the executed evidence for the T3 code."
+      "note": "129 passed, 0 failed. This is where the T3 modules actually executed: 6 keycap tests and 8 mapping tests (duplicate_slots, resolve_dpad, other_action_icons_follow_the_button_ink, a_physically_held_key_renders_the_pressed_state, the_restore_icon_keeps_the_iced_slate_ink_on_hover, the_restore_button_paints_its_label_in_the_state_ink, the_restore_button_emits_the_mapping_command, clicking_a_keycap_starts_and_cancels_rebinding), plus T2's theme tests and the Wave 0 suite."
     },
     {
-      "command": "scratch copy: cargo clippy --no-default-features --features egui-ui --all-targets -- -D warnings",
+      "command": "scratch harness: cargo clippy --no-default-features --features egui-ui --all-targets -- -D warnings",
       "result": "pass",
-      "note": "Clean on the T3 modules and their test code."
+      "note": "Clean on the T3 modules and their test code against the updated theme."
     },
     {
-      "command": "scratch copy with the layout colour reverted to Color32::WHITE: cargo test ... the_restore_button_paints_its_label_in_the_state_ink",
+      "command": "scratch harness with `action_icon_ink(kind, label_ink)` replaced by `label_ink` (R1's requested single ink): cargo test ... the_restore_icon_keeps_the_iced_slate_ink_on_hover",
       "result": "fail",
-      "note": "Intentional defect probe: the test fails with left #FF_FF_FF_FF vs right #47_55_69_FF, proving the regression test observes the original defect. Reverted by re-syncing from the worktree afterwards."
+      "note": "Intentional probe: fails with 'the Restore glyph must paint in the secondary slate (hovered: true)' (exit 101), proving the test observes the behaviour difference. Reverted by re-syncing from the worktree."
     },
     {
       "command": "cargo test --locked --all-targets",
@@ -106,11 +97,6 @@
     {
       "command": "cargo clippy --locked --all-targets -- -D warnings",
       "result": "pass"
-    },
-    {
-      "command": "cargo test --locked --no-default-features --features egui-ui --lib --bin lastkey-settings",
-      "result": "pass",
-      "note": "105 + 0 passed; T3 modules not compiled on this branch."
     },
     {
       "command": "cargo check --locked --target x86_64-unknown-linux-gnu --all-targets",
@@ -131,12 +117,12 @@
     }
   ],
   "risks": [
-    "Integration prerequisite (module registration and dev-dependency): agent/integration already registers `pub mod keycap; pub mod mapping; pub mod theme;` and carries the egui_kittest dev-dependency, but this branch does not. Until the integrator re-merges, no in-tree command compiles the T3 modules and the two egui_kittest tests cannot build here; that is a branch limitation, not a T3 failure.",
-    "Integration prerequisite (theme surface, now verified): mapping.rs and keycap.rs import BODY_TEXT, MUTED_TEXT, ICON_MUTED, ICON_SECONDARY, PRIMARY_TEXT, INDIGO_600, INDIGO_700, INDIGO_800, IMMEDIATE_ACCENT, VIOLET_600, MIX_TEXT, SLATE_100, ERROR_BG, ERROR_BORDER, ERROR_TEXT, GREEN_CHECK, RED_600, EMERALD_700, BORDER, INSET, SURFACE, CARD_BORDER, HOVER_WASH, NAME_HOVER_BORDER, KEYCAP_HOVER_BG, KEYCAP_HOVER_BORDER, KEYCAP_REBIND_EDGE, SHADOW_KEYCAP, SHADOW_CARD, SHADOW_BANNER, KEYCAP_REBIND_GLOW_BLUR, KEYCAP_PRESSED_GLOW_BLUR, HEADING_SIZE, SECTION_GAP and `KeycapMode` from theme. All were verified to exist with identical values in agent/integration's src/ui2/theme.rs at f3dc2d9; renaming or removing any of them breaks the merge.",
-    "Font weight: egui's bundled faces have one weight each and RichText::strong only recolours, so keycap.rs approximates bold/black by stamping the galley twice at a sub-pixel offset (`stamp_galley`). Reported as theme-owned (R2 item) and deliberately not moved.",
-    "Secondary-button icon ink now follows the label to indigo on hover, which diverges from the Iced `icon_label`, where the Restore icon stayed slate-600 in every state. R1's required action demanded the single ink variable; flagged here in case ui.md parity should win.",
-    "Verification method: the scratch crate at C:\\Users\\Administrator\\AppData\\Local\\Temp\\kilo\\t3scratch mirrors this worktree's src, adds the module registration, uses T2's real src/ui2/theme.rs copied read-only from the integration worktree, and appends the egui_kittest dev-dependency (sync.ps1 in that directory reproduces it). It is outside the repo and not committed.",
-    "Native visual acceptance remains pending as docs/architecture/verification.md records; the kittest tests cover semantics and the painted text colour, not the whole rendered layout."
+    "Merge order: this branch now imports theme::DPAD_GUIDE_DOT, theme::DPAD_ACTIVE_GLOW, theme::DPAD_ACTIVE_DOT_SHADOW, theme::DPAD_IDLE_DOT_SHADOW and theme::DPAD_IDLE_DOT, which exist on agent/worker-1 (35d5343) but NOT on agent/integration (f3dc2d9). Merging T3 before T2's follow-up will fail to compile; T2's token commit must land first.",
+    "The full theme surface T3 imports is BODY_TEXT, MUTED_TEXT, ICON_MUTED, ICON_SECONDARY, PRIMARY_TEXT, INDIGO_600, INDIGO_700, INDIGO_800, IMMEDIATE_ACCENT, VIOLET_600, MIX_TEXT, SLATE_100, ERROR_BG, ERROR_BORDER, ERROR_TEXT, GREEN_CHECK, RED_600, EMERALD_700, BORDER, INSET, SURFACE, CARD_BORDER, HOVER_WASH, NAME_HOVER_BORDER, KEYCAP_HOVER_BG, KEYCAP_HOVER_BORDER, KEYCAP_REBIND_EDGE, SHADOW_KEYCAP, SHADOW_CARD, SHADOW_BANNER, KEYCAP_REBIND_GLOW_BLUR, KEYCAP_PRESSED_GLOW_BLUR, HEADING_SIZE, SECTION_GAP and KeycapMode. All verified present (the first block on agent/integration f3dc2d9, the DPAD_* block on agent/worker-1 35d5343); a rename or removal breaks the merge.",
+    "Branch limitation: this branch does not register the modules and has no egui_kittest dev-dependency, so no in-tree command compiles T3. All T3 execution evidence comes from the scratch harness at %TEMP%/kilo/t3scratch, which mirrors this worktree's src, registers the modules, copies agent/worker-1's theme.rs read-only and appends the dev-dependency (sync.ps1 is in that directory). It is outside the repo and not committed.",
+    "Secondary-button icon ink is deliberately back to the Iced behaviour (Restore glyph fixed at slate-600), which deviates from R1's requested shared ink variable. Recorded for re-review; if ui.md parity is judged to require the shared ink instead, the change is a one-line call-site edit and the test would need to be inverted.",
+    "Still open and NOT solved by this follow-up: the font-weight strategy (egui has no bold face; keycap.rs keeps the double-stamp approximation), long-keycap-label hover-scroll, and the pulsing capture banner. No claim is made about them here.",
+    "Native visual acceptance remains pending as docs/architecture/verification.md records; the kittest tests cover semantics, painted text colour and painted stroke colour, not the whole rendered layout."
   ],
   "blockers": []
 }
