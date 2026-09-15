@@ -36,7 +36,12 @@
 //!   so the closures are not ported as functions; their state-independent
 //!   values are exposed here as the constants and [`egui::Frame`] builders
 //!   the view modules compose. Each one's disposition is noted at its old
-//!   name below.
+//!   name below. One exception, assigned by the Master after R2 round 2
+//!   issue 2: [`secondary_button`] and the [`Icon`]/[`paint_icon`] set it
+//!   needs are ported here as a shared paint-only control, so the outlined
+//!   secondary action both cards render has one owner. Consumer call sites
+//!   migrate to it in their own wave; until then the mapping module's local
+//!   copy is what it draws with, and the two must not diverge.
 //! - Constants the Iced file kept private are public here: with the style
 //!   closures gone, the view modules are the consumers, and re-inlining a
 //!   hex there would duplicate the contract this file owns.
@@ -47,7 +52,12 @@
 
 use crate::settings::SocdMode;
 use egui::epaint::MarginF32;
-use egui::{Color32, CornerRadius, Frame, Shadow, Stroke, TextStyle, Vec2};
+use egui::{
+    Color32, CornerRadius, FontId, Frame, Galley, Painter, Pos2, Rect, Response, Sense, Shadow,
+    Shape, Stroke, StrokeKind, TextStyle, Ui, Vec2, WidgetInfo, WidgetType,
+};
+use std::f32::consts::PI;
+use std::sync::Arc;
 
 const fn rgb(red: u8, green: u8, blue: u8) -> Color32 {
     Color32::from_rgb(red, green, blue)
@@ -925,11 +935,15 @@ pub fn slot_mode_ink(mode: SocdMode, state: SlotState) -> Color32 {
 /// plus [`SEGMENT_RADIUS`]/[`CONTROL_RADIUS`]/[`PILL_RADIUS`]/[`CIRCLE_RADIUS`]
 /// and the shadow constants); `accent_slider`, `mixer_slider` (geometry above;
 /// the rails are [`PRIMARY_TEXT`]/[`SLATE_100`], the mixer's filled rail
-/// [`RELEASE_TEXT`] and ring [`MIX_TEXT`], the handle [`SURFACE`] ringed 3pt);
+/// [`RELEASE_TEXT`] and ring [`MIX_TEXT`], the handle [`SURFACE`] ringed 3pt,
+/// and the disabled ink [`SLIDER_RAIL_DISABLED`]);
 /// `monitor_toggler` (track [`INDIGO_600`]/[`SLATE_300`], knob [`SURFACE`]);
 /// `value_input`, `facade_button`, `profile_name_input` (fills and edges above;
 /// the selection tint is [`TEXT_SELECTION`]); `table_rule` (a 1px [`BORDER`]
 /// hairline, which `ui.separator()` draws from the mapped `bg_stroke`).
+/// `secondary_button` *is* ported -- as the shared paint-only control
+/// [`secondary_button`] below, the one exception the Master assigned after
+/// R2 round 2 issue 2.
 pub fn style() -> egui::Style {
     // egui 0.36 has no `Style::light()`; the light scheme is a `Visuals`
     // constructor, and the rest of the default style (spacing, interaction,
@@ -1017,6 +1031,197 @@ pub fn style() -> egui::Style {
     }
 
     style
+}
+
+// ---------------------------------------------------------------------------
+// Shared paint-only controls (Master-assigned owner, R2 round 2 issue 2).
+// ---------------------------------------------------------------------------
+
+/// The action icon set, ported from `src/ui2/mapping.rs` (whose glyphs trace
+/// the Iced `src/ui/icons.rs::draw_icon` paths). Paint-only: a kind, a rect,
+/// an ink.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Icon {
+    Keyboard,
+    Restore,
+    Edit,
+    Check,
+    Warning,
+}
+
+/// Trace one [`Icon`] into `rect` at `color`. The geometry is the mapping
+/// card's, which is the geometry the Iced widget drew.
+pub fn paint_icon(painter: &Painter, rect: Rect, kind: Icon, color: Color32) {
+    let size = rect.width().min(rect.height());
+    let stroke = Stroke::new((size * 0.1).max(1.2), color);
+    let point = |x: f32, y: f32| Pos2::new(rect.left() + x * size, rect.top() + y * size);
+    let line = |coordinates: &[(f32, f32)]| {
+        painter.add(Shape::line(
+            coordinates.iter().map(|&(x, y)| point(x, y)).collect(),
+            stroke,
+        ));
+    };
+    match kind {
+        Icon::Keyboard => {
+            painter.rect_stroke(
+                Rect::from_min_max(point(0.15, 0.23), point(0.85, 0.78)),
+                CornerRadius::same(1),
+                stroke,
+                StrokeKind::Middle,
+            );
+            line(&[(0.32, 0.6), (0.68, 0.6)]);
+            for x in [0.28, 0.5, 0.72] {
+                painter.circle_filled(point(x, 0.4), size * 0.04, color);
+            }
+        }
+        Icon::Restore => {
+            // The Iced arc runs PI * 0.2 -> PI * 1.8 around the centre at r
+            // 0.32; sampled because epaint shapes are polylines.
+            let arc: Vec<Pos2> = (0..=24)
+                .map(|step| {
+                    let angle = PI * 0.2 + PI * 1.6 * (step as f32 / 24.0);
+                    point(0.5 + angle.cos() * 0.32, 0.5 + angle.sin() * 0.32)
+                })
+                .collect();
+            painter.add(Shape::line(arc, stroke));
+            let x = 0.5 + (PI * 1.8).cos() * 0.32;
+            let y = 0.5 + (PI * 1.8).sin() * 0.32;
+            line(&[(x - 0.15, y), (x, y), (x, y + 0.15)]);
+        }
+        Icon::Edit => line(&[
+            (0.2, 0.8),
+            (0.2, 0.65),
+            (0.65, 0.2),
+            (0.8, 0.35),
+            (0.35, 0.8),
+            (0.2, 0.8),
+        ]),
+        Icon::Check => line(&[(0.15, 0.52), (0.4, 0.78), (0.85, 0.25)]),
+        Icon::Warning => {
+            line(&[(0.5, 0.15), (0.85, 0.85), (0.15, 0.85), (0.5, 0.15)]);
+            line(&[(0.5, 0.38), (0.5, 0.62)]);
+            painter.circle_filled(point(0.5, 0.75), size * 0.05, color);
+        }
+    }
+}
+
+/// The icon ink rule from the Iced `icon_label` (src/ui/app.rs:2411-2428):
+/// a Restore glyph keeps the reference's slate-600 ink in every state, while
+/// other action icons inherit the button's text colour so their hover states
+/// keep working. The label itself follows the hover ink either way.
+fn action_icon_ink(kind: Icon, label_ink: Color32) -> Color32 {
+    if kind == Icon::Restore {
+        ICON_SECONDARY
+    } else {
+        label_ink
+    }
+}
+
+/// The outlined action's source dimensions: a 30px shell -- the reference's
+/// `py-1.5` line (16px) plus 2*6 padding plus 2*1 border, the derivation the
+/// Iced theme comment records beside [`BUTTON_PADDING`] -- with a 14px icon
+/// and a 6px gap ahead of the 12px label. Horizontal padding is
+/// [`BUTTON_PADDING`]'s 13pt per side; the corner is [`CONTROL_RADIUS`].
+pub const BUTTON_HEIGHT: f32 = 30.0;
+pub const BUTTON_TEXT_SIZE: f32 = 12.0;
+pub const BUTTON_ICON: f32 = 14.0;
+pub const BUTTON_ICON_GAP: f32 = 6.0;
+
+/// The double-stamp weight approximation's offset: a second pass of the same
+/// galley at `max(size * STAMP_OFFSET_FACTOR, STAMP_OFFSET_MIN)` px to the
+/// right, the geometry `src/ui2/keycap.rs`'s `stamp_galley` renders with.
+pub const STAMP_OFFSET_FACTOR: f32 = 0.04;
+pub const STAMP_OFFSET_MIN: f32 = 0.35;
+
+/// Paint one galley twice at a sub-pixel offset so it reads heavier.
+///
+/// This is the single owner the R2 round-1 issue 8 asked for -- the copy
+/// `keycap.rs` carries is the consumer wave's to delete, exactly as its
+/// `KeycapMode` copy was this one's to absorb. It is **not** a blessing of
+/// the approximation: egui's bundled faces ship a single weight, so the Iced
+/// port's `UI_FONT_BOLD`/`UI_FONT_BLACK` families cannot be selected and
+/// `RichText::strong` only recolours. Whether to register a weighted face
+/// and drop this, or record the stamp as the accepted approach in
+/// `docs/architecture/ui.md`, is an open Master decision (ui.md:112-119
+/// requires bold key names and footer typography); no bold-weight parity is
+/// claimed by anything here.
+pub fn stamp_galley(painter: &Painter, pos: Pos2, galley: &Arc<Galley>, color: Color32, size: f32) {
+    painter.galley(pos, galley.clone(), color);
+    painter.galley(
+        pos + Vec2::new((size * STAMP_OFFSET_FACTOR).max(STAMP_OFFSET_MIN), 0.0),
+        galley.clone(),
+        color,
+    );
+}
+
+/// The outlined secondary action: white shell, [`BORDER`] edge,
+/// [`ICON_SECONDARY`] label at rest; [`HOVER_WASH`] fill, [`NAME_HOVER_BORDER`]
+/// edge and [`INDIGO_600`] label on hover; a disabled ui drops the label to
+/// [`SLATE_300`] and keeps the outline (the Iced `secondary_button`
+/// `Disabled` arm, src/ui/theme.rs). egui additionally fades everything a
+/// disabled ui paints by `Visuals::disabled_alpha`, so the rendered disabled
+/// bytes are the spec pair under that fade -- a representation difference
+/// against Iced's explicit-only disabled arm, not a value change.
+/// Paint-only: it draws, publishes the
+/// accessible node, and hands back the [`Response`] -- mapping a click to a
+/// `Message` stays the caller's job (migration constraint 2).
+///
+/// Ported from the verified integrated rendering in `src/ui2/mapping.rs`
+/// (R2 round 2 issue 2), which is itself the Iced `theme::secondary_button`
+/// closure plus `icon_label`'s Restore-only slate ink. The label galley is
+/// laid out with [`Color32::PLACEHOLDER`] on purpose: `Painter::galley`'s
+/// colour argument is a fallback only, and a galley laid out in a real colour
+/// would pin it and ignore the per-state ink (the trap R2 measured at egui
+/// 0.36 `painter.rs:527`, where the mapping card's white-on-white regression
+/// lived).
+pub fn secondary_button(ui: &mut Ui, kind: Icon, label: &str) -> Response {
+    let galley = ui.painter().layout_no_wrap(
+        label.to_owned(),
+        FontId::proportional(BUTTON_TEXT_SIZE),
+        Color32::PLACEHOLDER,
+    );
+    let content = BUTTON_ICON + BUTTON_ICON_GAP + galley.size().x;
+    let (rect, response) = ui.allocate_exact_size(
+        Vec2::new(content + 2.0 * BUTTON_PADDING.left, BUTTON_HEIGHT),
+        Sense::click(),
+    );
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), label));
+    let (fill, edge, label_ink) = if !ui.is_enabled() {
+        (SURFACE, BORDER, SLATE_300)
+    } else if response.hovered() {
+        (HOVER_WASH, NAME_HOVER_BORDER, INDIGO_600)
+    } else {
+        (SURFACE, BORDER, ICON_SECONDARY)
+    };
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, CONTROL_RADIUS, fill);
+    painter.rect_stroke(
+        rect,
+        CONTROL_RADIUS,
+        Stroke::new(1.0, edge),
+        StrokeKind::Inside,
+    );
+    let start = rect.center().x - content / 2.0;
+    paint_icon(
+        &painter,
+        Rect::from_min_size(
+            Pos2::new(start, rect.center().y - BUTTON_ICON / 2.0),
+            Vec2::splat(BUTTON_ICON),
+        ),
+        kind,
+        action_icon_ink(kind, label_ink),
+    );
+    stamp_galley(
+        &painter,
+        Pos2::new(
+            start + BUTTON_ICON + BUTTON_ICON_GAP,
+            rect.center().y - galley.size().y / 2.0,
+        ),
+        &galley,
+        label_ink,
+        BUTTON_TEXT_SIZE,
+    );
+    response
 }
 
 #[cfg(test)]
@@ -1316,5 +1521,220 @@ mod theme_tests {
         // kept deliberately (see the constants' docs).
         assert_eq!(&ICON_MUTED.to_srgba_unmultiplied()[..3], &[148, 163, 184]);
         assert_ne!(rgb(59, 84, 232), IMMEDIATE_ACCENT);
+    }
+}
+
+#[cfg(test)]
+mod controls_tests {
+    //! Render tests for the shared paint-only controls.
+    //!
+    //! The pattern follows the mapping card's integrated tests: read the
+    //! painted shapes out of the harness output, so the layout-colour trap
+    //! and the state inks are observed rather than asserted by construction.
+
+    use super::{
+        BORDER, BUTTON_HEIGHT, BUTTON_ICON, BUTTON_ICON_GAP, BUTTON_PADDING, HOVER_WASH,
+        ICON_SECONDARY, INDIGO_600, Icon, NAME_HOVER_BORDER, SLATE_300, SURFACE, action_icon_ink,
+        secondary_button,
+    };
+    use egui::{Color32, Rect, Shape};
+    use egui_kittest::{Harness, kittest::Queryable};
+
+    const LABEL: &str = "Restore timing defaults";
+
+    /// The colours a painted label actually renders in, one per stamp pass.
+    ///
+    /// A galley carries the colour it was laid out with, and the colour
+    /// handed to `Painter::galley` only reaches sections laid out with
+    /// [`Color32::PLACEHOLDER`] -- reading both is what makes the
+    /// layout-colour defect observable.
+    fn painted_text_colors(harness: &Harness, needle: &str) -> Vec<Color32> {
+        harness
+            .output()
+            .shapes
+            .iter()
+            .filter_map(|clipped| {
+                let Shape::Text(text) = &clipped.shape else {
+                    return None;
+                };
+                if !text.galley.text().contains(needle) {
+                    return None;
+                }
+                let layout_color = text
+                    .galley
+                    .job
+                    .sections
+                    .first()
+                    .map(|section| section.format.color)
+                    .unwrap_or(Color32::PLACEHOLDER);
+                Some(if layout_color == Color32::PLACEHOLDER {
+                    text.fallback_color
+                } else {
+                    layout_color
+                })
+            })
+            .collect()
+    }
+
+    fn painted_text_width(harness: &Harness, needle: &str) -> Option<f32> {
+        harness.output().shapes.iter().find_map(|clipped| {
+            let Shape::Text(text) = &clipped.shape else {
+                return None;
+            };
+            text.galley
+                .text()
+                .contains(needle)
+                .then_some(text.galley.size().x)
+        })
+    }
+
+    #[test]
+    fn the_secondary_button_publishes_a_named_button_node() {
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(400.0, 120.0))
+            .build_ui(|ui| {
+                secondary_button(ui, Icon::Restore, LABEL);
+            });
+        harness.run();
+        // Panics unless a Button-role node with this exact name exists, which
+        // is the accessible semantics the control must keep for kittest and
+        // screen readers.
+        let by_role = harness.get_by_role_and_label(egui::accesskit::Role::Button, LABEL);
+        let by_label = harness.get_by_label(LABEL);
+        assert_eq!(
+            by_role.rect(),
+            by_label.rect(),
+            "both queries must hit the same node"
+        );
+    }
+
+    #[test]
+    fn the_secondary_button_paints_the_state_inks() {
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(400.0, 120.0))
+            .build_ui(|ui| {
+                secondary_button(ui, Icon::Restore, LABEL);
+            });
+        harness.run();
+        let rest = painted_text_colors(&harness, LABEL);
+        assert!(!rest.is_empty(), "the label must render at all");
+        assert!(
+            rest.iter().all(|color| *color == ICON_SECONDARY),
+            "at rest the label must render in the secondary ink, not in the colour it was laid out with: {rest:?}"
+        );
+
+        harness.get_by_label(LABEL).hover();
+        harness.run();
+        let hovered = painted_text_colors(&harness, LABEL);
+        assert!(
+            hovered.iter().all(|color| *color == INDIGO_600),
+            "hover must move the label to the indigo ink: {hovered:?}"
+        );
+    }
+
+    #[test]
+    fn the_label_is_stamped_twice_by_the_shared_approximation() {
+        // Pins the integrated rendering (two text passes, the same galley).
+        // This records what the control does, not a bold-weight parity claim:
+        // the weight strategy stays an open Master decision.
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(400.0, 120.0))
+            .build_ui(|ui| {
+                secondary_button(ui, Icon::Restore, LABEL);
+            });
+        harness.run();
+        let stamps = painted_text_colors(&harness, LABEL);
+        assert_eq!(
+            stamps.len(),
+            2,
+            "the label must carry exactly the two passes of the shared stamp"
+        );
+    }
+
+    #[test]
+    fn the_secondary_button_keeps_the_source_dimensions() {
+        let captured: std::cell::RefCell<Option<Rect>> = std::cell::RefCell::new(None);
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(400.0, 120.0))
+            .build_ui(|ui| {
+                let response = secondary_button(ui, Icon::Restore, LABEL);
+                *captured.borrow_mut() = Some(response.rect);
+            });
+        harness.run();
+        let rect = *captured
+            .borrow()
+            .as_ref()
+            .expect("the closure ran and captured the response rect");
+        assert_eq!(
+            rect.height(),
+            BUTTON_HEIGHT,
+            "the reference action is 30px tall"
+        );
+        let text_width = painted_text_width(&harness, LABEL).expect("the label rendered");
+        let expected = text_width + BUTTON_ICON + BUTTON_ICON_GAP + 2.0 * BUTTON_PADDING.left;
+        assert!(
+            (rect.width() - expected).abs() < 0.01,
+            "width must be icon + gap + label + the BUTTON_PADDING 13pt per side: rect {} vs expected {expected}",
+            rect.width()
+        );
+    }
+
+    #[test]
+    fn the_disabled_button_takes_the_iced_disabled_pair() {
+        // The Iced `secondary_button` Disabled arm: SURFACE shell, BORDER
+        // outline, SLATE_300 ink. The integrated mapping copy had no disabled
+        // branch (both current call sites are always enabled); this is the
+        // spec the shared owner restores, inert for enabled consumers.
+        //
+        // The rendered bytes are additionally faded by egui's global
+        // `Visuals::disabled_alpha` (0.5 in `Visuals::light()`, applied to
+        // every shape a disabled ui paints) -- a difference of representation
+        // against Iced, which had no automatic fade. The control's ink
+        // SELECTION is what this pins; the fade sits on top of it.
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(400.0, 120.0))
+            .build_ui(|ui| {
+                ui.disable();
+                secondary_button(ui, Icon::Restore, LABEL);
+            });
+        harness.run();
+        // The fade primitive is `Visuals::faded` (egui style.rs:1179:
+        // `color.gamma_multiply(disabled_alpha)`); 0.5 is the shipped default
+        // in both schemes (style.rs:1560, and observed under the harness's
+        // default style).
+        let faded = SLATE_300.gamma_multiply(0.5);
+        let inks = painted_text_colors(&harness, LABEL);
+        assert!(
+            !inks.is_empty() && inks.iter().all(|color| *color == faded),
+            "a disabled control drops its label to slate-300 (under the global fade): {inks:?} vs {faded:?}"
+        );
+    }
+
+    #[test]
+    fn the_restore_icon_keeps_the_iced_slate_ink_rule() {
+        // src/ui/app.rs:2411-2428: Restore-only slate ink; other icons
+        // inherit the button ink so hover reaches them.
+        assert_eq!(action_icon_ink(Icon::Restore, INDIGO_600), ICON_SECONDARY);
+        assert_eq!(action_icon_ink(Icon::Keyboard, INDIGO_600), INDIGO_600);
+        // And the resting pair the control composes from:
+        assert_eq!(
+            action_icon_ink(Icon::Restore, ICON_SECONDARY),
+            ICON_SECONDARY
+        );
+        assert_eq!(action_icon_ink(Icon::Check, ICON_SECONDARY), ICON_SECONDARY);
+    }
+
+    #[test]
+    fn the_state_triples_are_the_named_tokens() {
+        // The control composes its three states from the published constants
+        // -- pin the pairs so a token edit cannot silently move one state.
+        // (fill, edge, ink) rest / hover / disabled, as secondary_button
+        // documents.
+        let rest = (SURFACE, BORDER, ICON_SECONDARY);
+        let hovered = (HOVER_WASH, NAME_HOVER_BORDER, INDIGO_600);
+        let disabled = (SURFACE, BORDER, SLATE_300);
+        assert_ne!(rest.2, hovered.2, "hover must actually move the ink");
+        assert_ne!(rest.2, disabled.2, "disabled must actually dim the ink");
+        assert_eq!(rest.0, disabled.0, "both keep the SURFACE shell");
     }
 }
