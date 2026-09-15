@@ -1,7 +1,7 @@
 {
   "task_id": "T3",
   "status": "completed",
-  "summary": "T3 rework for R2 round 2 (target 4ab6ce2c). mapping.rs only: painted text now publishes a WidgetType::Label AccessKit node from `text()` while the decorative glyphs stay unlabelled and the D-pad tile keeps its label, with a kittest test that flips two bindings onto one PhysicalKey and asserts the footer status flips both ways by label; and the duplicated trailing line of the resolve_dpad doc comment is deleted while the correct `!physical` sentence and the code stay as they were. All prior paint/icon/UTF-8 regressions and the localized accessible text are preserved. The secondary_button migration to Worker 1's pending shared outlined action and the open font-weight, hover-scroll and banner items are untouched.",
+  "summary": "T3 round-3 rework (target 4ab6ce2c) is complete in src/ui2/mapping.rs: painted text now publishes a WidgetType::Label node so the footer's duplicate/uniqueness status is observable by label, with a kittest test that flips two bindings onto one PhysicalKey and asserts the status both ways, and the duplicated trailing line of the resolve_dpad doc comment is deleted. All earlier regressions (paint colour, icon ink, UTF-8 split, localized accessible text) stay green; the secondary_button migration to Worker 1's shared outlined action and the open font-weight, hover-scroll and banner items are untouched.",
   "branch": "agent/worker-2",
   "commit": "58c102c",
   "owned_files": [
