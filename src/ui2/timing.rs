@@ -988,12 +988,13 @@ pub fn timing_card(
                 });
 
                 ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                    let restore_btn = ui.add(
-                        egui::Button::new(
-                            egui::RichText::new(language.text("Restore timing defaults"))
-                                .font(FontId::new(12.0, egui::FontFamily::Proportional)),
-                        )
-                        .corner_radius(theme::CHIP_RADIUS),
+                    // One owner for the outlined secondary action (R2 round-2
+                    // issue 2): the same theme::secondary_button the mapping
+                    // card renders, not a local copy and not a global egui::Button.
+                    let restore_btn = theme::secondary_button(
+                        ui,
+                        theme::Icon::Restore,
+                        language.text("Restore timing defaults"),
                     );
                     if restore_btn.clicked() {
                         messages.push(Message::RestoreTimingDefaults);
@@ -1482,6 +1483,132 @@ mod tests {
         assert!(
             top_gap >= CARD_PADDING - 1.0,
             "top gap must be at least CARD_PADDING: top_gap={top_gap}, CARD_PADDING={CARD_PADDING}"
+        );
+    }
+
+    /// State with both a draft (timing card) and a runtime snapshot (mapping card)
+    /// so one harness can render the two cards side by side.
+    fn dual_card_state() -> State {
+        use crate::{
+            core::PhysicalKey,
+            protocol::{DisplayKey, UiSnapshot},
+            settings::Settings,
+        };
+
+        let keys = std::array::from_fn(|index| DisplayKey {
+            physical: PhysicalKey::new(0x11 + index as u16, false),
+            name: ["W", "S", "A", "D"][index].into(),
+        });
+        let mut state = State {
+            connected: true,
+            draft: Some(Settings::default()),
+            snapshot: Some(UiSnapshot {
+                filter_enabled: true,
+                saved: Settings::default(),
+                draft: Settings::default(),
+                keys,
+                capture_slot: None,
+                measurement_active: false,
+                measurement: None,
+            }),
+            inputs: TimingInputs::from_timing(&TimingSettings::default()),
+            ..State::default()
+        };
+        state.draft.as_mut().unwrap().timing.mode = SocdMode::PressDelay;
+        state
+    }
+
+    /// The colour a label actually renders in: the galley's own layout colour,
+    /// falling back to the paint call's colour only when the layout used
+    /// [`Color32::PLACEHOLDER`]. A label laid out in a real colour renders in
+    /// that colour regardless of the paint call, which is the trap both cards'
+    /// restore controls must avoid.
+    fn painted_text_color(
+        harness: &egui_kittest::Harness<'_, FakeRuntime>,
+        needle: &str,
+    ) -> Option<Color32> {
+        harness.output().shapes.iter().find_map(|clipped| {
+            let egui::Shape::Text(text) = &clipped.shape else {
+                return None;
+            };
+            if !text.galley.text().contains(needle) {
+                return None;
+            }
+            let layout_color = text
+                .galley
+                .job
+                .sections
+                .first()
+                .map(|section| section.format.color)
+                .unwrap_or(Color32::PLACEHOLDER);
+            Some(if layout_color == Color32::PLACEHOLDER {
+                text.fallback_color
+            } else {
+                layout_color
+            })
+        })
+    }
+
+    /// R2 round-2 issue 2: the timing card's Restore control must be the same
+    /// outlined secondary action the mapping card renders -- same accessible
+    /// role, same rest ink, same hover ink.
+    #[test]
+    fn test_restore_control_matches_the_mapping_card_control() {
+        use egui_kittest::{Harness, kittest::NodeT, kittest::Queryable};
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1040.0, 1600.0))
+            .build_ui_state(
+                |ui, runtime: &mut FakeRuntime| {
+                    runtime.frame(ui);
+                    if runtime.state.snapshot.is_some() {
+                        let _ = super::super::mapping::key_mappings_card(ui, &runtime.state);
+                    }
+                },
+                FakeRuntime::new(dual_card_state()),
+            );
+        harness.run();
+
+        // Same accessible role: both controls publish a labelled button node.
+        let timing_role = harness
+            .get_by_label("Restore timing defaults")
+            .accesskit_node()
+            .role();
+        let mapping_role = harness
+            .get_by_label("Restore mapping defaults")
+            .accesskit_node()
+            .role();
+        assert_eq!(
+            timing_role, mapping_role,
+            "both cards' restore controls must report the same accessible role"
+        );
+
+        // Same rest ink.
+        let timing_rest = painted_text_color(&harness, "Restore timing defaults");
+        assert_eq!(timing_rest, Some(theme::ICON_SECONDARY));
+        assert_eq!(
+            timing_rest,
+            painted_text_color(&harness, "Restore mapping defaults"),
+            "both cards' restore labels must render the same rest ink"
+        );
+
+        // Same hover ink: hover each control and compare.
+        harness.get_by_label("Restore timing defaults").hover();
+        harness.run();
+        let timing_hover = painted_text_color(&harness, "Restore timing defaults");
+        assert_eq!(timing_hover, Some(theme::INDIGO_600));
+
+        harness.get_by_label("Restore mapping defaults").hover();
+        harness.run();
+        let mapping_hover = painted_text_color(&harness, "Restore mapping defaults");
+        assert_eq!(
+            timing_hover, mapping_hover,
+            "both cards' restore labels must render the same hover ink"
+        );
+        assert_eq!(
+            painted_text_color(&harness, "Restore timing defaults"),
+            timing_rest,
+            "the timing control must return to its rest ink when the pointer leaves"
         );
     }
 }
