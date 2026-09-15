@@ -1,58 +1,60 @@
 {
   "task_id": "T2",
   "status": "completed",
-  "phase": "R2-round-2 shared-control prerequisite (theme-owned API + tests only; consumer migration is a later wave and is NOT done by this step)",
-  "summary": "src/ui2/theme.rs now owns the shared paint-only outlined secondary action (theme::secondary_button + the Icon/paint_icon set + stamp_galley with named offset constants), ported from the verified integrated mapping.rs rendering, with 7 new render tests. The Master assigned theme.rs as owner (R2 round-2 issue 2); mapping.rs's local copies and timing.rs's bare egui::Button are untouched here and must migrate in their own wave. No default inner_margin on any frame builder was changed (R2 round-2 issue 1 belongs to Worker 3).",
+  "phase": "R2 round-3 doc-comment correction (src/ui2/theme.rs only; comment-only, no code or constant changed; the mapping.rs consumer migration is still a later wave)",
+  "summary": "R2's single round-3 finding (low) is fixed: the two theme.rs doc passages now state the rendering the integrated timing.rs implements -- the mixer handle swells from 7 to 8 while hovered or grabbed, and the mixer rail splits PRIMARY_TEXT left of the handle / RELEASE_TEXT right of it with no neutral SLATE_100 track. Comments only; no constants, code, or tests changed.",
   "branch": "agent/worker-1",
-  "commit": "5abefc7",
+  "commit": "3d88f0c",
   "prior_commits": {
     "t2_initial": "1053066",
     "t2_token_followup": "35d5343 (integrated as agent/integration 74de063; verified consumed by T3/T4 rework in R1 round 2)",
-    "reports": ["e328d98", "8b93cab"]
+    "t2_round2_shared_control": "5abefc7",
+    "t2_round3_doc_fix": "3d88f0c",
+    "reports": ["e328d98", "8b93cab", "0308d87"]
   },
   "review_references": {
-    "R2_round_2": "agent/review-2@01d494f .orchestrator/reviews/R2.json - FAIL on 4ab6ce2; issue 2 (medium) is this prerequisite's mandate; issue 1 (high, timing margins) is Worker 3's; issues 3/5 (mapping labels, doc line) are Worker 2's; issue 4 (slider swell) is Worker 3's",
+    "R2_round_3": "agent/review-2 .orchestrator/reviews/R2.json - FAIL on agent/integration@6d25b0c with exactly one actionable issue (low, T2): theme.rs:397-399 and 936-938 documented the pre-round slider contract; this rework is that correction. R2's round-3 summary states all round-2 findings were fixed in src/ui2/timing.rs, so the earlier timing-card margin item is resolved and the T4 Restore consumer migration is present on 6d25b0c (theme::secondary_button call + test_restore_control_matches_the_mapping_card_control).",
+    "R2_round_2": "agent/review-2@01d494f .orchestrator/reviews/R2.json - FAIL on 4ab6ce2; issue 2 (medium) was the shared-control prerequisite landed as 5abefc7; issue 1 (high, timing margins) was Worker 3's and is fixed per R2 round 3; issues 3/5 (mapping labels, doc line) were Worker 2's; issue 4 (slider swell) was Worker 3's.",
     "R1_round_2": "agent/review-1@5cc3410 .orchestrator/reviews/R1.json - PASS; confirms all round-1 T2 follow-ups landed (SLIDER_RAIL_DISABLED consumed, KeycapMode single owner, DPAD_* routed, Restore-ink deviation accepted)",
-    "reviewed_base": "4ab6ce2c119bdc9ef7b5afa7468a39ba47379aec (agent/integration)"
+    "reviewed_base": "6d25b0c8a300233cc51cf6f64aa19786b83aa959 (agent/integration), the tree carrying the round-3 timing.rs rendering these comments now match"
   },
   "owned_files": ["src/ui2/theme.rs"],
   "changed_files": ["src/ui2/theme.rs", ".orchestrator/reports/T2.json"],
   "exported_callable_api": {
     "secondary_button": "pub fn secondary_button(ui: &mut Ui, kind: Icon, label: &str) -> Response -- paints shell/edge/icon/label, publishes WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), label), returns the Response for the caller to map .clicked() to a Message. States: rest (SURFACE, BORDER, ICON_SECONDARY), hover (HOVER_WASH, NAME_HOVER_BORDER, INDIGO_600), disabled (SURFACE, BORDER, SLATE_300 = the Iced Disabled arm; egui additionally gamma_multiply-fades it by Visuals::disabled_alpha, documented). Geometry: 30px height (BUTTON_HEIGHT), BUTTON_PADDING.left 13pt per side, CONTROL_RADIUS 12, BUTTON_ICON 14 + BUTTON_ICON_GAP 6, BUTTON_TEXT_SIZE 12.",
     "Icon": "pub enum Icon { Keyboard, Restore, Edit, Check, Warning } + pub fn paint_icon(painter: &Painter, rect: Rect, kind: Icon, color: Color32) - the mapping set, glyph geometry verbatim; action_icon_ink (Restore keeps ICON_SECONDARY in every state, src/ui/app.rs:2411-2428) is private to the control",
-    "stamp_galley": "pub fn stamp_galley(painter: &Painter, pos: Pos2, galley: &Arc<Galley>, color: Color32, size: f32) with pub STAMP_OFFSET_FACTOR = 0.04 / STAMP_OFFSET_MIN = 0.35 -- single owner of the double-stamp weight approximation (R2 round-1 issue 8 shape); NOT a blessing of the approximation, see unresolved_dependencies",
+    "stamp_galley": "pub fn stamp_galley(painter: &Painter, pos: Pos2, galley: &Arc<Galley>, color: Color32, size: f32) with pub STAMP_OFFSET_FACTOR = 0.04 / STAMP_OFFSET_MIN = 0.35 -- single owner of the double-stamp weight approximation; NOT a blessing of the approximation, see unresolved_dependencies",
     "new_constants": ["BUTTON_HEIGHT 30.0", "BUTTON_TEXT_SIZE 12.0", "BUTTON_ICON 14.0", "BUTTON_ICON_GAP 6.0", "STAMP_OFFSET_FACTOR 0.04", "STAMP_OFFSET_MIN 0.35"]
   },
   "migration_requirements_T3_worker_2": [
     "mapping.rs: delete the local secondary_button/Icon/paint_icon/action_icon_ink and the six BUTTON_* consts; import theme::{Icon, paint_icon, secondary_button} (a pub use re-export keeps internal paths unchanged). Keep the existing mapping tests green: the_restore_button_paints_its_label_in_the_state_ink, the_restore_icon_keeps_the_iced_slate_ink_on_hover (shape-level) and the dimensions all transfer to theme behaviour; the unit-level other_action_icons_follow_the_button_ink can be dropped because theme::controls_tests::the_restore_icon_keeps_the_iced_slate_ink_rule pins the same rule (theme's action_icon_ink is private, so mapping cannot unit-test it after the move).",
     "keycap.rs: delete stamp_galley, replace with pub use super::theme::stamp_galley; so mapping.rs::text()/esc_button()/paint_text_block call sites keep compiling (paint_text_block is keycap-internal and stays).",
-    "Behaviour notes: theme's disabled arm is inert for both current always-enabled call sites; the double-stamp offset math is byte-identical to keycap's."
+    "Behaviour notes: theme's disabled arm is inert for both current always-enabled call sites; the double-stamp offset math is byte-identical to keycap's.",
+    "Status at R2 round 3: mapping.rs still carries its private duplicates (R2 round-3 residual risk); this requirement is not yet consumed."
   ],
   "migration_requirements_T4_worker_3": [
-    "timing.rs:971-977: replace the bare egui::Button (CHIP_RADIUS corner, no icon, no state inks) with theme::secondary_button(ui, theme::Icon::Restore, language.text(\"Restore timing defaults\")) and keep the clicked() -> Message::RestoreTimingDefaults push.",
-    "R2's cross-card assertion is still owed by the consumer wave: one test that the timing Restore reports the same accessible role and the same rest/hover inks as the mapping Restore. theme::controls_tests pins the shared behaviour once; the per-card test proves each card actually calls it.",
-    "This step did NOT touch frame-builder margins (R2 round-2 issue 1 is Worker 3's margin restoration with the theme constants at the call sites)."
+    "Observed satisfied on agent/integration@6d25b0c (read-only): timing.rs calls theme::secondary_button(ui, theme::Icon::Restore, ...) for the Restore control and carries test_restore_control_matches_the_mapping_card_control, the cross-card assertion R2 round-2 owed. R2 round 3 confirms the round-2 timing findings are fixed."
   ],
   "tests": [
     { "command": "cargo fmt --all -- --check", "result": "pass" },
-    { "command": "cargo test --no-default-features --features egui-ui --lib", "result": "pass" },
+    { "command": "cargo test --no-default-features --features egui-ui --lib", "result": "pass (105 Wave 0 tests; theme.rs not registered on this branch)" },
     { "command": "cargo clippy --no-default-features --features egui-ui --all-targets -- -D warnings", "result": "pass" },
-    { "command": "rustfmt --edition 2024 --check src/ui2/theme.rs", "result": "pass" },
-    { "command": "cargo test --manifest-path %TEMP%/kilo/t2-theme-harness/Cargo.toml (#[path] include of the real src/ui2/theme.rs, real egui 0.36.2 + egui_kittest 0.36.2, SocdMode stub)", "result": "pass" },
-    { "command": "cargo clippy --manifest-path %TEMP%/kilo/t2-theme-harness/Cargo.toml --all-targets -- -D warnings", "result": "pass" }
+    { "command": "cargo test --manifest-path %TEMP%/kilo/t2-theme-harness/Cargo.toml (#[path] include of the real src/ui2/theme.rs, real egui 0.36.2 + egui_kittest 0.36.2, SocdMode stub)", "result": "pass (17 theme tests: 10 token + 7 controls)" },
+    { "command": "cargo clippy --manifest-path %TEMP%/kilo/t2-theme-harness/Cargo.toml --all-targets -- -D warnings", "result": "pass" },
+    { "command": "git diff --check", "result": "pass (clean)" }
   ],
-  "tests_actually_executed_note": "17 theme tests executed and passed in the #[path] harness ONLY: the 10 token/tint tests plus 7 new controls_tests (named_button_node, state_inks, stamped_twice, source_dimensions, disabled_pair, restore_ink_rule, state_triples). This branch still lacks `pub mod theme;` (registration lives on agent/integration; no unauthorized mod.rs edit), so the crate-level egui-ui run (105 Wave 0 tests) cannot see theme.rs; after the Integrator merges this into the registered tree the egui-ui lib total should be 122 (105 + 17). egui_kittest is a real dev-dependency only on the integrated tree (869a78a); the harness mirrors that so the kittest-based tests compile exactly as they will in-tree.",
+  "tests_actually_executed_note": "This branch still lacks `pub mod theme;` (registration lives on agent/integration; no unauthorized mod.rs edit), so the crate-level egui-ui run cannot compile theme.rs and stays at the 105 Wave 0 tests. The 17 theme tests executed and passed in the #[path] harness against the real, edited file; the harness is unchanged from its first creation and points at this worktree's src/ui2/theme.rs by absolute path. The edit is comment-only, so no rendered behaviour changed and this rework makes no new visual claim.",
   "unresolved_dependencies_for_master": [
-    "FONT WEIGHT STRATEGY (carried, unchanged by this step): theme::stamp_galley is now the single owner of the double-stamp, but that is a consolidation of the approximation, not its approval. The decision stays open: register a weighted face and reduce stamp_galley to one pass, or record the stamp as accepted in docs/architecture/ui.md (ui.md:112-119 requires bold key names/footer typography; native visual acceptance of the stamp is still zero). No new font assets were registered.",
-    "R2 round-2 issue 1 (timing card margins flattened by frame-builder consolidation): Worker 3's call-site restoration is required before any visual claim; theme builders intentionally carry no inner_margin (dispatch forbade changing them).",
+    "FONT WEIGHT STRATEGY (carried, unchanged): theme::stamp_galley is the single owner of the double-stamp, but that is a consolidation of the approximation, not its approval. The decision stays open: register a weighted face and reduce stamp_galley to one pass, or record the stamp as accepted in docs/architecture/ui.md (ui.md:112-119 requires bold key names/footer typography; native visual acceptance of the stamp is still zero). No new font assets were registered.",
     "Accessible-name localization policy (R1 round-2 open item, R2 round-1 issue 11): Master/T8 decision.",
     "Preview ownership + transport glyph icons (R2 round-1 issue 7 / round-2 low): T5/Master."
   ],
   "risks": [
-    "Temporary duplication by Master authorization: mapping.rs's private secondary_button/Icon/stamp_galley copies and theme's new owners coexist until the consumer wave; they are byte-identical renderings today and theme's controls_tests pin the shared one. The duplication must not outlive that wave (Rule 2).",
+    "Temporary duplication by Master authorization (R2 round-3 residual risk): mapping.rs's private secondary_button/Icon/stamp_galley copies and theme's owners coexist until the consumer wave; they are byte-identical renderings and theme's controls_tests pin the shared one. The duplication must not outlive that wave (Rule 2).",
     "egui's global disabled fade (gamma_multiply(disabled_alpha), style.rs:1179) sits on top of the Iced Disabled arm, so rendered disabled bytes are SLATE_300@~50% premultiplied (#656B7180); the test asserts the faded expression, and the control doc states the difference. A native visual pass may want to revisit whether the double-dim is acceptable, which is a behaviour question, not a value change.",
     "stamp_galley takes &Arc<Galley> (matching keycap's signature to keep call sites unchanged); a caller holding a plain Galley must wrap it - mapping/keycap already pass Arc.",
-    "T3/T4 worktrees compile concurrently; only agent/integration files were read (git show, read-only); no breakage from their files was observed in this worktree."
+    "This rework read agent/integration@6d25b0c and agent/review-2 review files read-only (git show) to verify the documented contract; only src/ui2/theme.rs and this report were written.",
+    "Comment-only change: it cannot alter rendered output, and it does not advance or refresh native visual acceptance, which remains uncovered per docs/architecture/verification.md."
   ],
   "blockers": []
 }
