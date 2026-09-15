@@ -395,8 +395,8 @@ pub const DOT_RADIUS: CornerRadius = CornerRadius::same(3);
 pub const CIRCLE_RADIUS: CornerRadius = CornerRadius::same(255);
 
 /// Slider geometry from the Iced `accent_slider`: a 10pt rail rounded to 5, a
-/// hollow handle that swells from 7 to 8 while grabbed, ringed 3pt in the
-/// accent.
+/// hollow handle that swells from 7 to 8 while hovered or grabbed, ringed 3pt
+/// in the accent.
 pub const SLIDER_RAIL_WIDTH: f32 = 10.0;
 pub const SLIDER_RAIL_RADIUS: CornerRadius = CornerRadius::same(5);
 pub const SLIDER_HANDLE_RADIUS: f32 = 7.0;
@@ -934,9 +934,10 @@ pub fn slot_mode_ink(mode: SocdMode, state: SlotState) -> Color32 {
 /// `nav_button`, `keycap` (their state colours are all named constants above,
 /// plus [`SEGMENT_RADIUS`]/[`CONTROL_RADIUS`]/[`PILL_RADIUS`]/[`CIRCLE_RADIUS`]
 /// and the shadow constants); `accent_slider`, `mixer_slider` (geometry above;
-/// the rails are [`PRIMARY_TEXT`]/[`SLATE_100`], the mixer's filled rail
-/// [`RELEASE_TEXT`] and ring [`MIX_TEXT`], the handle [`SURFACE`] ringed 3pt,
-/// and the disabled ink [`SLIDER_RAIL_DISABLED`]);
+/// the rails are [`PRIMARY_TEXT`]/[`SLATE_100`], the mixer instead splits
+/// [`PRIMARY_TEXT`] left of the handle and [`RELEASE_TEXT`] right of it, with
+/// no neutral [`SLATE_100`] track, ring [`MIX_TEXT`], the handle [`SURFACE`]
+/// ringed 3pt, and the disabled ink [`SLIDER_RAIL_DISABLED`]);
 /// `monitor_toggler` (track [`INDIGO_600`]/[`SLATE_300`], knob [`SURFACE`]);
 /// `value_input`, `facade_button`, `profile_name_input` (fills and edges above;
 /// the selection tint is [`TEXT_SELECTION`]); `table_rule` (a 1px [`BORDER`]
