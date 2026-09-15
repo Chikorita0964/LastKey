@@ -1,152 +1,23 @@
 {
   "status": "completed",
-  "batch": ["T2-rework", "T3-rework", "T4-rework"],
-  "branch": "agent/integration",
-  "reviewed_base": "f3dc2d903eabeebc6141b7e267e04caa34d16864",
-  "reviewed_candidate": "7e5c117",
   "merged_branches": [
     "agent/worker-1",
     "agent/worker-2",
     "agent/worker-3"
   ],
-  "merged_branches_in_order": [
-    {
-      "order": 1,
-      "branch": "agent/worker-1",
-      "tip": "8b93cabab9458ba903c6e843770e72a6b9092197",
-      "implementation_commit": "35d5343",
-      "report_commit": "8b93cab",
-      "task": "T2 theme prerequisite follow-up",
-      "merge_commit": "74de063"
-    },
-    {
-      "order": 2,
-      "branch": "agent/worker-2",
-      "tip": "01358c75e8bda1455188c8850149873b1d83011d",
-      "implementation_commits": ["494c848", "586fe95"],
-      "report_commit": "01358c7",
-      "task": "T3 follow-up incl. earlier rework",
-      "merge_commit": "87d46d4"
-    },
-    {
-      "order": 3,
-      "branch": "agent/worker-3",
-      "tip": "7e05f3a336cf39e65fd1d88e60962735fd10556b",
-      "implementation_commit": "5f16f4f",
-      "report_commit": "7e05f3a",
-      "task": "T4 rework",
-      "merge_commit": "7e5c117"
-    }
-  ],
-  "merge_commits": ["74de063", "87d46d4", "7e5c117"],
-  "files_changed_vs_reviewed_base": [
-    ".orchestrator/reports/T2.json",
-    ".orchestrator/reports/T3.json",
-    ".orchestrator/reports/T4.json",
-    "src/ui2/keycap.rs",
-    "src/ui2/mapping.rs",
-    "src/ui2/theme.rs",
-    "src/ui2/timing.rs"
-  ],
-  "mechanical_glue": "none added in this step; mod.rs registration (keycap/mapping/theme/timing) and windows-gated egui_kittest 0.36.2 from the prior integration (869a78a) already present and verified untouched (git diff on src/ui2/mod.rs and Cargo.toml empty). No duplicate glue, no redesign of Worker code.",
-  "conflicts_resolved": [],
-  "unresolved_conflicts": [],
-  "review_inputs": [
-    "agent/review-1:.orchestrator/reviews/R1.json (verdict PASS, reviewed f3dc2d9, 10 issues: 4 medium T4, 3 medium T3, 3 low)",
-    "agent/review-2:.orchestrator/reviews/R2.json (verdict FAIL, reviewed f3dc2d9, 3 high + 5 medium + 3 low + 1 INTEGRATION note)"
-  ],
-  "finding_validation_against_merged_modules": [
-    {
-      "id": "R2-high-1 Restore label white-on-white",
-      "status": "resolved",
-      "evidence": "secondary_button lays the galley out with Color32::PLACEHOLDER (mapping.rs:421-424) with doc comment stating the fallback-colour trap; regression test the_restore_button_paints_its_label_in_the_state_ink asserts rest #47_55_69 / hover #4F_39_F6; esc_button/text use PLACEHOLDER likewise. Executed in-tree in the 143-test run."
-    },
-    {
-      "id": "R1-low-9 single-ink suggestion vs original fixed-slate Restore icon",
-      "status": "resolved-deviating",
-      "evidence": "Worker deliberately did NOT apply R1's shared-ink edit: action_icon_ink (mapping.rs:473) keeps Icon::Restore at theme::ICON_SECONDARY in every state per src/ui/app.rs icon_label; tests other_action_icons_follow_the_button_ink + the_restore_icon_keeps_the_iced_slate_ink_on_hover pin both branches including a shape-level hovered probe; scratch probe re-applying single-ink fails the test (exit 101). Recorded for re-review; ui.md untouched; migration constraint 5 cited over reviewer suggestion."
-    },
-    {
-      "id": "R1-low-7 char-safe format_key_for_display",
-      "status": "resolved",
-      "evidence": "keycap.rs:175 uses chars().count(), split via char_indices boundary lookup (245-246), sizes from chars().count() (219); new test multi_byte_names_split_without_panicking in the 143-test run."
-    },
-    {
-      "id": "R1-med-3/R2-med-5 shared KeycapMode + palette tokens",
-      "status": "resolved",
-      "evidence": "keycap.rs:98 pub use super::theme::KeycapMode (local enum deleted, mapping.rs import path unchanged); HOVER_FILL/HOVER_BORDER replaced by theme::KEYCAP_HOVER_BG/BORDER; mapping CARD_BORDER/BUTTON hovers/SECTION_GAP/HEADING_SIZE route to theme::CARD_BORDER/HOVER_WASH/NAME_HOVER_BORDER/SECTION_GAP/HEADING_SIZE with pixel metrics local; six new theme tokens SLIDER_RAIL_DISABLED + 5 DPAD_* exist (theme.rs:403-431) with regression test + assert_ne!(SLIDER_RAIL_DISABLED, SLATE_300); D-pad tile/ring/edge on SLATE_100/BORDER and dots/glow on DPAD_* (mapping.rs:382-399)."
-    },
-    {
-      "id": "R1-med-2/R2-med-4 timing palette incl. SLIDER_RAIL_DISABLED distinct from SLATE_300",
-      "status": "resolved",
-      "evidence": "timing.rs:27-45 local block deleted; imports canonical theme tokens incl. SLIDER_RAIL_DISABLED; disabled rail uses it; frames use theme::card_style/group_style/slot_style/pill_style. No duplicated color consts remain."
-    },
-    {
-      "id": "R2-high-3 T4 real kittest edit/read-back",
-      "status": "resolved",
-      "evidence": "test_value_box_edit_and_read_back replaced with Harness test: get_by_label Transition Minimum, click, type_text 15.5, Enter, assert draft micros 15500 + buffer 15.5 + node value read-back. Executed in-tree (143-test run), not scratch-only."
-    },
-    {
-      "id": "R1-med-1/R2-high-2 select-all gating + second-click caret + rearm",
-      "status": "resolved",
-      "evidence": "value_box gates select_all on !editing && (gained_focus || clicked) with frame-local text; two kittest tests: second click leaves collapsed caret (range.start==end), focus-move rearm re-selects. Executed in-tree."
-    },
-    {
-      "id": "R1-med-5/R2-low-11 range names + enabled state",
-      "status": "resolved",
-      "evidence": "accessible_name format '{} duration range' over localized group label (timing.rs:580) giving distinct New Key Press Delay vs Previous Key Release Delay ranges; mode_selector WidgetInfo::selected uses col.is_enabled() (468)."
-    },
-    {
-      "id": "R2-med-6 mixer rail",
-      "status": "resolved",
-      "evidence": "custom mixer_slider with SLATE_100 track, RELEASE_TEXT fill, MIX_TEXT ring, 7px/8px radii; test_mixer_slider_draw in the 143-test run."
-    },
-    {
-      "id": "R1-low-6 preview bounds check",
-      "status": "resolved",
-      "evidence": "timing_preview_section guards p.example via get(p.example % 3).copied().unwrap_or(Immediate); transport buttons carry real labels Previous example / Play|Pause preview / Next example with procedural icons."
-    },
-    {
-      "id": "R1-low-8 resolve_dpad comment",
-      "status": "resolved",
-      "evidence": "mapping.rs:274 states the winner path applies while showing filtered output (!physical)."
-    },
-    {
-      "id": "R1-low-10 rate-box accent",
-      "status": "resolved-documented",
-      "evidence": "RELEASE_TEXT kept for preservation rate box with code comment citing src/ui/app.rs:3317 as intentional; no silent change."
-    }
-  ],
-  "localization_coverage": "Recorded, not claimed full: group/card/mode/step/preview labels route through language.text with en/es/zh dictionary entries verified (incl. New/Previous delay labels, Input timings, Restore timing defaults, Preview/Previous/Next/Play/Pause, Delay Mix Ratio). Value-box field names (Transition Minimum/Maximum) and range accessible-name suffix 'duration range' are hardcoded English (timing.rs:141-142, 580); transport labels Previous/Next example are hardcoded English in WidgetInfo while visible text is localized. Worker reports do not claim full localization; R2 issue-11 policy decision (localized vs stable-English accessible names before T8) is still Master's to make. No mixed-language label accepted as full localization.",
-  "overclaims_corrected": [
-    "T4 report's 143-test scratch total is its branch evidence only; in-tree execution on the merged tree is 143 lib tests and is reported separately below with real discovery counts.",
-    "T4 report documents a T5 mount dependency but does not solve preview: timing_preview_section remains an Immediate-only illustrative section with an explicit T5-ownership note (timing.rs:791-796); preview ownership/transport labels/phase display are NOT marked solved; T5 retains preview ownership and was not started here.",
-    "T3 report explicitly leaves font-weight strategy (stamp_galley stays keycap-local), hover-scroll, and pulsing banner open; nothing here claims them solved.",
-    "No pixel-fidelity claim is made from headless tests; native visual acceptance remains zero for all cards."
+  "merge_commits": [
+    "3250cde453cd351455202a0e0d2937cda860dcee",
+    "ed6d42545ed58e4c7b7012db007c0356c1d5a033",
+    "5bef4148715206b508d0d63182d0d52aaec231ed"
   ],
   "tests": [
-    {
-      "command": "cargo test --no-default-features --features egui-ui --lib",
-      "result": "pass",
-      "note": "scoped loop on merged rework: 143 passed, 0 failed"
-    },
-    {
-      "command": "cargo test --no-default-features --features egui-ui --lib -- --list",
-      "result": "pass",
-      "note": "real discovery: 10 theme + 6 keycap + 8 mapping + 14 timing = 38 module tests (listed by name), remainder Wave-0/state/ipc/settings"
-    },
     {
       "command": "cargo fmt --all -- --check",
       "result": "pass"
     },
     {
-      "command": "cargo clippy --no-default-features --features egui-ui --all-targets -- -D warnings",
-      "result": "pass"
-    },
-    {
       "command": "cargo test --locked --all-targets",
-      "result": "pass",
-      "note": "full gate default: 72 lib + 0 lastkey bin + 9 delivery_recovery + 15 measurement + 18 settings + 18 timing"
+      "result": "pass"
     },
     {
       "command": "cargo clippy --locked --all-targets -- -D warnings",
@@ -154,8 +25,7 @@
     },
     {
       "command": "cargo test --locked --no-default-features --features egui-ui --lib --bin lastkey-settings",
-      "result": "pass",
-      "note": "full gate egui-ui: 143 lib + 0 settings bin"
+      "result": "pass"
     },
     {
       "command": "cargo clippy --locked --no-default-features --features egui-ui --all-targets -- -D warnings",
@@ -167,8 +37,7 @@
     },
     {
       "command": "cargo tree --no-default-features -e normal",
-      "result": "pass",
-      "note": "zero matches for egui/eframe/wgpu/winit/accesskit/iced/lyon; default tree GUI-free"
+      "result": "pass"
     },
     {
       "command": "git diff --check",
@@ -179,28 +48,11 @@
       "result": "pass"
     }
   ],
-  "test_coverage": {
-    "compilation": "pass: merged rework compiles in-tree under egui-ui; both clippy configs clean with -D warnings; correct merge order (T2 tokens before T3 consumers) verified by clean build",
-    "semantic_behavior": "pass with noted limits: 38 module tests execute in-tree (10 theme incl. new iced-bytes pin; 6 keycap incl. char-safe test; 8 mapping incl. 3 pre-existing + label-ink + icon-ink kittest tests; 14 timing incl. 4 kittest: edit/read-back, second-click caret, rearm, plus per-mode/run_ui/mixer tests)",
-    "native_visual_acceptance": "unknown: zero on-screen checks; verification.md Unverified Areas apply in full; nothing mounted (app.rs still Wave-0 shell per R2 residual risk)"
-  },
-  "remaining_acceptance_items": [
-    "T5 owns preview: timing_preview_section is a documented mount point only; ownership/transport/phase contract unsolved here.",
-    "T3 owns font-weight strategy (Master decision: weighted face vs stamped approximation in ui.md), long-label hover-scroll, pulsing banner.",
-    "Accessible-name localization policy (R2 issue 11) undecided: mapping localizes, timing mixes localized groups with hardcoded English field/range/transport names.",
-    "R2 INTEGRATION note carried: windows default test build compiles GUI dev-deps; record cost in T8 handoff (tests/ui_semantic.rs gating) and verification.md.",
-    "Native visual acceptance for all reworked cards still pending."
-  ],
+  "conflicts_resolved": [],
+  "unresolved_conflicts": [],
   "risks": [
-    "Reviewer branches (agent/review-1/2) hold review commits and were not touched; they may no longer fast-forward.",
-    "Restore-icon deviation (fixed slate vs R1 single-ink) needs explicit re-review verdict before parity.",
-    "Premultiplied-Color32 caveat persists: translucent DPAD_* tokens must be compared by constructor, not channel getters.",
-    "Value-box read-only fix is behavior-neutral only while TimingTextChanged update arm stays a plain store."
-  ],
-  "ready_for_independent_rereview": true,
-  "parity_claim": "none: rework integration is not migration parity. Full gate passes on the merged tree; acceptance items above remain.",
-  "env": "VsDevCmd.bat -arch=x64 -host_arch=x64 before cargo; egui 0.36.2 / eframe 0.36.2 / egui_kittest 0.36.2 from local cargo registry",
-  "pushed": false,
-  "no_fetch_no_pr": true,
-  "notes": "Three merges conflict-free (ort). No worker file redesigned; no glue duplicated. No .agent/ or AGENTS.md staged. No T5/T6/T7 started; reviewer branches untouched. No passing check repeated on unchanged code beyond the single full gate on the final tree."
+    "Worker file ownership is disjoint (theme.rs by worker-1, mapping.rs by worker-2, timing.rs by worker-3); all three merges were conflict-free via ort, so no mechanical resolution was needed and no Worker intent was altered.",
+    "egui-ui suite reports 154 lib tests passed on the merged tree (up from 143 in the prior round); default-tree GUI-freedom confirmed by zero matches for egui/eframe/wgpu/winit/accesskit/iced/lyon.",
+    "Native visual acceptance remains uncovered per docs/architecture/verification.md Unverified Areas; test success is not visual evidence."
+  ]
 }
