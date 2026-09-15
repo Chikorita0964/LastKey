@@ -4,6 +4,11 @@
   "branch": "agent/integration",
   "reviewed_base": "f3dc2d903eabeebc6141b7e267e04caa34d16864",
   "reviewed_candidate": "7e5c117",
+  "merged_branches": [
+    "agent/worker-1",
+    "agent/worker-2",
+    "agent/worker-3"
+  ],
   "merged_branches_in_order": [
     {
       "order": 1,
