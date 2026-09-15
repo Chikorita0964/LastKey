@@ -1,41 +1,65 @@
 {
   "task_id": "T2",
   "status": "completed",
-  "summary": "src/ui2/theme.rs ports the Iced theme (colour constants, spacing/padding, text sizes, slot tint/ink model, container frames, and a global egui Style/Visuals setup) with names and exact values preserved; all 9 ported theme tests pass against real egui 0.36.2 in a scoped #[path] harness because the module is not yet registered in src/ui2/mod.rs, which is outside this task's ownership.",
+  "phase": "review-follow-up prerequisite (theme-owned tokens only; T3/T4 consumer edits belong to Workers 2/3)",
+  "summary": "src/ui2/theme.rs ports the Iced theme with names and exact values preserved; this follow-up adds the six canonical tokens R1/R2 identified as missing (SLIDER_RAIL_DISABLED from src/ui/widgets.rs:234 and five D-pad dot/glow tokens from src/ui/icons.rs:215-245), each pinned by a new regression test, without touching any consumer file. Existing theme::SLATE_300 (#cad5e2) is unchanged and kept distinct from the new #cbd5e1 rail ink. No review issue outside theme.rs is claimed resolved by this step.",
   "branch": "agent/worker-1",
-  "commit": "1053066",
+  "commit": "35d5343",
+  "prior_commits": {
+    "t2_initial": "1053066",
+    "t2_initial_report": "e328d98",
+    "integrated_as": "agent/integration 7febf4a (merge) + 869a78a (module registration)"
+  },
+  "review_references": {
+    "reviewed_commit": "f3dc2d903eabeebc6141b7e267e04caa34d16864 (agent/integration)",
+    "R1": "agent/review-1:.orchestrator/reviews/R1.json - PASS with required follow-ups; T2-relevant: issue 4 (D-pad tile/ring/dot literals need theme tokens or missing ones added)",
+    "R2": "agent/review-2:.orchestrator/reviews/R2.json - FAIL; T2-relevant: issue 4 (disabled-rail #cbd5e1 has no theme counterpart; do not conflate with SLATE_300), issue 5 (theme::KeycapMode kept as canonical owner - no theme change needed, keycap.rs local enum is Worker 2's deletion), issue 8 (weight strategy) explicitly deferred by dispatch - see unresolved_dependencies"
+  },
   "owned_files": ["src/ui2/theme.rs"],
   "changed_files": ["src/ui2/theme.rs", ".orchestrator/reports/T2.json"],
+  "exported_token_contract": {
+    "new_in_this_step": {
+      "SLIDER_RAIL_DISABLED": "#CBD5E1 opaque - src/ui/widgets.rs:234/235, replaces the per-mode accent on filled rail segment + thumb ring while disabled. T4 must map its timing::SLATE_300 (#cbd5e1) here, NOT onto theme::SLATE_300 (#cad5e2).",
+      "DPAD_GUIDE_DOT": "rgba(204,214,224,153) - src/ui/icons.rs:215 resting centre guide dot (Iced comment 'slate-300/60' does NOT resolve to SLATE_300)",
+      "DPAD_ACTIVE_GLOW": "rgba(59,84,232,64) - src/ui/icons.rs:224 24px halo",
+      "DPAD_ACTIVE_DOT_SHADOW": "rgba(59,84,232,77) - src/ui/icons.rs:229 shadow under active dot",
+      "DPAD_IDLE_DOT_SHADOW": "rgba(0,0,0,20) - src/ui/icons.rs:240 shadow under resting dot",
+      "DPAD_IDLE_DOT": "rgba(148,163,184,204) - src/ui/icons.rs:245 resting dot, ICON_MUTED at 80%"
+    },
+    "existing_counterparts_for_T3_imports": "mapping.rs CARD_BORDER -> theme::CARD_BORDER; BUTTON_HOVER_FILL -> theme::HOVER_WASH; BUTTON_HOVER_BORDER -> theme::NAME_HOVER_BORDER; SECTION_GAP -> theme::SECTION_GAP; HEADING_SIZE -> theme::HEADING_SIZE; keycap.rs HOVER_FILL -> theme::KEYCAP_HOVER_BG; HOVER_BORDER -> theme::KEYCAP_HOVER_BORDER; local KeycapMode -> theme::KeycapMode (canonical, keep the re-export path so mapping.rs imports are unchanged). D-pad tile fill/ring/edge already resolve to theme::SLATE_100/theme::BORDER. Pixel metrics (sizes, radii, paddings, dash lengths) stay local per R1 issue 4.",
+    "existing_counterparts_for_T4_imports": "the 18 palette constants (IMMEDIATE_ACCENT, INDIGO_600/700/800, VIOLET_600, MIX_TEXT, PRIMARY_TEXT, MUTED_TEXT, BODY_TEXT, BORDER, SURFACE, INSET, SLATE_100, SLATE_300, ERROR_TEXT, ERROR_BG, ERROR_BORDER, RELEASE_TEXT, PURPLE_600) plus geometry: theme::SECTION_GAP, theme::HEADING_SIZE, theme::CONTROL_RADIUS/GROUP_RADIUS/SEGMENT_RADIUS, theme::SLIDER_RAIL_WIDTH/SLIDER_RAIL_RADIUS/SLIDER_HANDLE_RADIUS/SLIDER_HANDLE_RADIUS_DRAG/SLIDER_HANDLE_BORDER, and the new theme::SLIDER_RAIL_DISABLED.",
+    "values_unchanged": "No existing constant value was modified. The only colour that changes on screen after consumers migrate is the deliberate one: the disabled rail keeps rendering #cbd5e1 (it was always that colour in Iced; the rename only moves the literal into its canonical owner)."
+  },
   "tests": [
     { "command": "cargo fmt --all -- --check", "result": "pass" },
+    { "command": "rustfmt --edition 2024 --check src/ui2/theme.rs", "result": "pass" },
     { "command": "cargo test --no-default-features --features egui-ui --lib", "result": "pass" },
     { "command": "cargo clippy --no-default-features --features egui-ui --all-targets -- -D warnings", "result": "pass" },
-    { "command": "rustfmt --edition 2024 --check src/ui2/theme.rs", "result": "pass" },
-    { "command": "cargo test --manifest-path %TEMP%/kilo/t2-theme-harness/Cargo.toml (harness #[path]-includes the real src/ui2/theme.rs against egui 0.36.2 with a SocdMode stub mirroring src/settings.rs)", "result": "pass" },
-    { "command": "cargo clippy --manifest-path %TEMP%/kilo/t2-theme-harness/Cargo.toml --all-targets -- -D warnings", "result": "pass" },
-    { "command": "cargo test --locked --all-targets (full gate, default features: 72 lib + 60 integration)", "result": "pass" },
-    { "command": "cargo clippy --locked --all-targets -- -D warnings (full gate, default features)", "result": "pass" },
-    { "command": "cargo test --locked --no-default-features --features egui-ui --lib --bin lastkey-settings (105 lib tests)", "result": "pass" },
-    { "command": "cargo check --locked --target x86_64-unknown-linux-gnu --all-targets", "result": "pass" },
-    { "command": "cargo tree --no-default-features -e normal (no egui/eframe/wgpu/winit present)", "result": "pass" },
-    { "command": ".github/scripts/Test-ReleaseFormDefault.ps1", "result": "pass" },
-    { "command": "git diff --cached --check", "result": "pass" }
+    { "command": "cargo test --manifest-path %TEMP%/kilo/t2-theme-harness/Cargo.toml ( #[path] include of the real src/ui2/theme.rs, real egui 0.36.2, SocdMode stub)", "result": "pass" },
+    { "command": "cargo clippy --manifest-path %TEMP%/kilo/t2-theme-harness/Cargo.toml --all-targets -- -D warnings", "result": "pass" }
   ],
-  "tests_actually_executed_note": "The 9 theme tests (immediate/random_mix/press_delay/release_delay tints, opacity, idle ink, name-box hover, mode label ink, hover-vs-active distinguishability) executed and passed ONLY in the #[path] harness. The crate-level egui-ui run executed the 105 Wave 0 tests and cannot see theme.rs until it is registered; it is reported as pass for the tree, not as execution of the theme tests.",
-  "constant_accounting": {
-    "ported_same_name_same_value": "All named constants of src/ui/theme.rs: 46 colour constants (incl. the previously private CANVAS/SURFACE/INSET/BORDER/INDIGO_50-400/VIOLET_50-400/NAME_HOVER_*/ERROR_BG/ERROR_BORDER, widened to pub because egui has no central style closures to consume them), UI_FONT and MONO_FONT (as FontFamily::Proportional/Monospace), BODY_TEXT_SIZE, HEADING_SIZE, PAGE_PADDING, SECTION_GAP, ROW_GAP, CARD_PADDING, GROUP_PADDING, BUTTON_PADDING(_WIDE), HEADER_ICON_PADDING/HEIGHT, MODE_PADDING, PROFILE_PANEL_WIDTH, LANGUAGE_PANEL_WIDTH, PANEL_PADDING, PROFILE_HEADER_PADDING, PROFILE_SCROLLER_PADDING, LANGUAGE_SCROLLER_PADDING, SLOT_GAP, LANGUAGE_ROW_GAP, SLOT_ROW_GAP, SLOT_CARD_PADDING, SLOT_NAME_PADDING, SLOT_NAME_GAP, SLOT_NAME_INPUT_PADDING, PROFILE_HEADER_GAP, CHIP_SIZE, CHIP_GAP, CHIP_PADDING, CHIP_CONTENT_MIN, PRESS_*/RELEASE_* SlotTint consts, SlotState/SlotTint/SlotInk/KeycapMode, over/dim/accent_tint/ramp_tint/slot_tint/slot_ink/slot_ink_hovering/slot_mode_ink, shade.",
-    "omitted_with_reason": {
-      "UI_FONT_BOLD, UI_FONT_SEMIBOLD, UI_FONT_ITALIC, UI_FONT_BLACK, CHIP_FONT": "egui 0.36 selects faces by FontFamily + registered variant; eframe's default_fonts ships no bold/semibold/italic/black faces, so there is no value-preserving counterpart. The generic families they derived from (UI_FONT, MONO_FONT) are ported; weight emphasis is raised as a behaviour question (migration constraint 5), not decided here.",
-      "iced style closures (canvas_style..value_input)": "Container styles ported as same-named egui::Frame builders (values embedded verbatim). Widget-state closures (buttons/slider/toggler/text_input/rule) have no egui counterpart mechanism - egui styles widgets at the call site - so their state-independent literals are exposed as named constants (CARD_BORDER, HOVER_WASH, KEYCAP_HOVER_BG/BORDER, KEYCAP_REBIND_EDGE, ACTIVE_OPTION_BG/HOVER_BG, TEXT_SELECTION, DIRTY_BADGE_BG/EDGE, CONFIRM_OVERLAY_FILL, SHADOW_*, *_RADIUS, SLIDER_* geometry) and each closure's disposition is documented in style()'s doc comment."
-    }
-  },
-  "integration_prereq": "Add `pub mod theme;` to src/ui2/mod.rs (one line, outside T2 ownership). Until then the crate build/test/clippy never read theme.rs and the 9 theme tests do not run in the repo gate; after registration the egui-ui lib run should report 114 tests. T3-T6 should import tokens from ui2::theme instead of re-inlining hexes.",
+  "tests_actually_executed_note": "The 10 theme tests (9 ported from src/ui/theme_tests.rs + the new widget_sourced_tokens_match_their_iced_bytes pin) executed and passed ONLY in the #[path] harness: this branch still lacks `pub mod theme;` in src/ui2/mod.rs (registration lives on agent/integration 869a78a, outside this task's ownership; no unauthorized mod.rs edit was made). The crate-level egui-ui run executed the 105 Wave 0 tests and cannot see theme.rs until the Integrator merges this follow-up into the registered tree; after that run the egui-ui lib total should be 115.",
+  "unresolved_dependencies_for_master": [
+    "FONT WEIGHT STRATEGY (R2 issue 8): deliberately NOT acted on per dispatch - no font assets registered, double-stamp approximation not blessed, ui.md untouched, stamp_galley not relocated into theme.rs. Needs a Master decision: register a weighted face (and drop the approximation) or record in docs/architecture/ui.md that egui's bundled single-weight faces make emphasis a stamped approximation. Until then UI_FONT_BOLD/SEMIBOLD/ITALIC/BLACK and CHIP_FONT stay omitted with written reasons in the theme module header.",
+    "PREVIEW OWNERSHIP (R2 issue 7): timing_preview_section duplicates T5's preview contract; ownership decision belongs to Master before pixels move. T5 retains preview ownership; nothing in this step implements preview work.",
+    "LABEL LOCALIZATION POLICY (R2 issue 11): mapping.rs localizes accessible names, timing.rs hardcodes English - one policy must be agreed before T8.",
+    "ACCESSKIT FALLBACK-COLOUR TRAP (R2 issue 1): Painter::galley's colour argument is a fallback only; relevant to all future stamping code, and the theme module cannot express a guard for it - consumer-side concern, recorded here so it is not lost."
+  ],
+  "followups_for_T3_worker_2": [
+    "Replace keycap.rs HOVER_FILL/HOVER_BORDER and the local KeycapMode with the theme counterparts listed above.",
+    "Replace mapping.rs CARD_BORDER/BUTTON_HOVER_FILL/BUTTON_HOVER_BORDER/SECTION_GAP/HEADING_SIZE with the theme counterparts.",
+    "Replace the five D-pad dot/glow inline literals with the new DPAD_* tokens (values are byte-identical; the one-LSB glow near-miss vs IMMEDIATE_ACCENT is documented on the constants and must not be 'fixed').",
+    "R2 issues 1/9 (galley fallback colour, char-safe format_key_for_display) and R1 issues 3/8/9 remain Worker 2's own follow-ups; this step did not touch those files."
+  ],
+  "followups_for_T4_worker_3": [
+    "Delete the timing.rs:27-45 palette block and import the theme counterparts; map the local disabled-rail constant onto theme::SLIDER_RAIL_DISABLED, not theme::SLATE_300.",
+    "Route local geometry through theme::SECTION_GAP/HEADING_SIZE/CornerRadius/SLIDER_* instead of re-inlining numbers.",
+    "R2 issues 2/3/6/7 and R1 issues 1/2/5/10 remain Worker 3's own follow-ups; this step did not touch timing.rs."
+  ],
   "risks": [
-    "Style::light() does not exist in egui 0.36.2; the global style() builds Style { visuals: Visuals::light(), ..Default::default() }. Widgets fields are hovered (not hovering), WidgetVisuals uses corner_radius (not rounding), and there is no disabled colour set (Visuals::disabled_alpha fades instead) - the reference's disabled pair (SLATE_300 ink on SURFACE) is exposed as constants and must be applied by view modules where controls can actually be disabled.",
-    "f32 alphas (0.04/0.05/0.06/0.12/0.15/0.25/0.4/0.7/0.9/0.95) are stored as nearest 8-bit bytes (10/13/15/31/38/64/102/179/230/242); the module header lists every quantization. Screen output is unchanged by construction (8-bit display), but a pixel-diff harness comparing against float alphas would see sub-LSB differences.",
-    "style()'s global Visuals mapping (outlined-control hover/press pattern on widgets.hovered/active, BODY_TEXT ink, CONTROL_RADIUS) is a conservative baseline derived from the Iced closures' shared Hovered|Pressed grouping; individual filled variants (primary indigo, warning amber, selected mode segment, keycap accents) deliberately stay call-site concerns of T3-T6.",
-    "T3/T4 compile the same crate concurrently in separate worktrees; no breakage from their files was observed in this worktree (tree at 8ad8457 + 1053066, both builds green).",
-    "If the Integrator registers theme.rs and any view file later references a name not present here (e.g. mode_color accents live in app:: per the old comment), that is a finding for the owning task, not a reason to duplicate the value in theme.rs."
+    "Color32 stores premultiplied bytes and to_srgba_unmultiplied is not an exact inverse (e.g. 204 at alpha 153 reads back 203); the new token test pins construction-argument equality via from_rgba_unmultiplied for that reason. Consumers must not assert translucent tokens by channel getters.",
+    "egui 0.36.2 has no Style::light(), Widgets::hovering, WidgetVisuals::rounding, or disabled colour set (uses Visuals::disabled_alpha) - verified from registry source; style() documents the mapping and view modules apply the reference's disabled pair (SLATE_300/SURFACE) where controls can actually be disabled.",
+    "T3/T4 worktrees are compiling concurrently; no files outside src/ui2/theme.rs and this report were read-write touched (integrated mapping.rs was inspected read-only via git show agent/integration)."
   ],
   "blockers": []
 }

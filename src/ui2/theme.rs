@@ -40,6 +40,10 @@
 //! - Constants the Iced file kept private are public here: with the style
 //!   closures gone, the view modules are the consumers, and re-inlining a
 //!   hex there would duplicate the contract this file owns.
+//! - A few tokens the Iced spec held inside *widget* code rather than
+//!   `theme.rs` (`src/ui/widgets.rs`, `src/ui/icons.rs`) are canonicalised
+//!   here too, each citing its source line, so the view modules import one
+//!   named value instead of repeating the literal per call site.
 
 use crate::settings::SocdMode;
 use egui::epaint::MarginF32;
@@ -388,6 +392,43 @@ pub const SLIDER_RAIL_RADIUS: CornerRadius = CornerRadius::same(5);
 pub const SLIDER_HANDLE_RADIUS: f32 = 7.0;
 pub const SLIDER_HANDLE_RADIUS_DRAG: f32 = 8.0;
 pub const SLIDER_HANDLE_BORDER: f32 = 3.0;
+/// The range slider's disabled ink (`src/ui/widgets.rs:234`,
+/// `Color::from_rgb8(203, 213, 225)`), which replaces the per-mode accent on
+/// both the filled rail segment and the thumb ring while the slider is
+/// disabled (`src/ui/widgets.rs:235`). Deliberately NOT [`SLATE_300`]
+/// (`#cad5e2`, from the Iced theme): the two are distinct source colours one
+/// byte apart, and conflating them recolours the disabled rail (R2 finding
+/// 4). The rail's base track stays [`SLATE_100`]
+/// (`src/ui/widgets.rs:242`).
+pub const SLIDER_RAIL_DISABLED: Color32 = rgb(203, 213, 225);
+
+// The D-pad centre tile's dots and glow (`src/ui/icons.rs`, `DpadTile`). The
+// tile's fill, edge, and guide ring are already canonical here
+// ([`SLATE_100`], [`BORDER`]); these are the values the Iced widget painted
+// inline.
+
+/// The resting centre guide dot (`src/ui/icons.rs:215`,
+/// `Color::from_rgba(0.80, 0.84, 0.88, 0.6)`). The Iced comment calls it
+/// "slate-300/60", but its decimals resolve to `#ccd6e0` at 60% -- not
+/// [`SLATE_300`] `#cad5e2`; the rendered bytes are kept.
+pub const DPAD_GUIDE_DOT: Color32 = Color32::from_rgba_unmultiplied_const(204, 214, 224, 153);
+/// The 24px halo behind the active dot (`src/ui/icons.rs:224`,
+/// `Color::from_rgba(0.23, 0.33, 0.91, 0.25)`). The Iced source wrote the
+/// glow's base as rounded f32 decimals of the Immediate accent, so its bytes
+/// are `#3b54e8` -- one LSB off [`IMMEDIATE_ACCENT`]'s `#3a55e8` in two
+/// channels. The port keeps what the reference rendered rather than
+/// "correcting" it (migration constraint 5); the near-miss is a finding, not
+/// a licence.
+pub const DPAD_ACTIVE_GLOW: Color32 = Color32::from_rgba_unmultiplied_const(59, 84, 232, 64);
+/// The shadow under the active dot, one pixel below it
+/// (`src/ui/icons.rs:229`, same `#3b54e8` base at 0.30 -> 77).
+pub const DPAD_ACTIVE_DOT_SHADOW: Color32 = Color32::from_rgba_unmultiplied_const(59, 84, 232, 77);
+/// The shadow under the resting dot (`src/ui/icons.rs:240`,
+/// `Color::from_rgba(0.0, 0.0, 0.0, 0.08)`).
+pub const DPAD_IDLE_DOT_SHADOW: Color32 = Color32::from_black_alpha(20);
+/// The resting dot itself (`src/ui/icons.rs:245`,
+/// `Color::from_rgba(0.58, 0.64, 0.72, 0.8)`) -- [`ICON_MUTED`] at 80%.
+pub const DPAD_IDLE_DOT: Color32 = with_alpha(ICON_MUTED, 204);
 
 /// Shadows, named after the surfaces that cast them. Iced's f32 shadow alphas
 /// are the same colours quantized to a byte (see the module note); the offsets
@@ -1002,7 +1043,11 @@ mod theme_tests {
     //! ink sets `currentColor`, so the two must land on the same colour in both
     //! states).
 
-    use super::{SlotState, slot_ink, slot_ink_hovering, slot_mode_ink, slot_tint};
+    use super::{
+        DPAD_ACTIVE_DOT_SHADOW, DPAD_ACTIVE_GLOW, DPAD_GUIDE_DOT, DPAD_IDLE_DOT,
+        DPAD_IDLE_DOT_SHADOW, ICON_MUTED, IMMEDIATE_ACCENT, SLATE_300, SLIDER_RAIL_DISABLED,
+        SlotState, rgb, slot_ink, slot_ink_hovering, slot_mode_ink, slot_tint,
+    };
     use crate::settings::SocdMode;
     use egui::Color32;
 
@@ -1227,5 +1272,49 @@ mod theme_tests {
                 "{mode:?} must draw a different card when hovered than when loaded"
             );
         }
+    }
+
+    #[test]
+    fn widget_sourced_tokens_match_their_iced_bytes() {
+        // The tokens canonicalised from Iced *widget* code (not theme.rs)
+        // are pinned to the exact straight-alpha bytes the Iced source
+        // wrote. The pins go through `from_rgba_unmultiplied` because
+        // `Color32` stores premultiplied bytes and the unmultiplied read
+        // back is not an exact inverse (204 at alpha 153 reads back 203);
+        // construction-argument equality is the exact claim.
+        //
+        // The disabled range-slider ink (src/ui/widgets.rs:234) is
+        // #cbd5e1; the theme's slate-300 (src/ui/theme.rs) is #cad5e2. A
+        // dedup that merged them would recolour the disabled rail (R2
+        // finding 4).
+        assert_eq!(
+            SLIDER_RAIL_DISABLED.to_srgba_unmultiplied(),
+            [203, 213, 225, 255]
+        );
+        assert_eq!(SLATE_300.to_srgba_unmultiplied(), [0xca, 0xd5, 0xe2, 255]);
+        assert_ne!(SLIDER_RAIL_DISABLED, SLATE_300);
+        // The D-pad dots and glow (src/ui/icons.rs:215-245).
+        assert_eq!(
+            DPAD_GUIDE_DOT,
+            Color32::from_rgba_unmultiplied(204, 214, 224, 153)
+        );
+        assert_eq!(
+            DPAD_ACTIVE_GLOW,
+            Color32::from_rgba_unmultiplied(59, 84, 232, 64)
+        );
+        assert_eq!(
+            DPAD_ACTIVE_DOT_SHADOW,
+            Color32::from_rgba_unmultiplied(59, 84, 232, 77)
+        );
+        assert_eq!(DPAD_IDLE_DOT_SHADOW, Color32::from_black_alpha(20));
+        assert_eq!(
+            DPAD_IDLE_DOT,
+            Color32::from_rgba_unmultiplied(148, 163, 184, 204)
+        );
+        // The resting dot's base is ICON_MUTED, and the glow base is the
+        // Iced decimal rounding -- one LSB off the accent in two channels,
+        // kept deliberately (see the constants' docs).
+        assert_eq!(&ICON_MUTED.to_srgba_unmultiplied()[..3], &[148, 163, 184]);
+        assert_ne!(rgb(59, 84, 232), IMMEDIATE_ACCENT);
     }
 }
