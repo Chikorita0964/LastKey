@@ -18,10 +18,11 @@ use super::{
     preview::Preview,
     state::{TimingInputs, format_rate, parse_ms_text, parse_rate_text},
     theme::{
-        self, BODY_TEXT, BORDER, ERROR_TEXT, HEADING_SIZE, IMMEDIATE_ACCENT, INDIGO_600, INSET,
-        MIX_TEXT, MUTED_TEXT, PRIMARY_TEXT, PURPLE_600, RELEASE_TEXT, SECTION_GAP, SLATE_100,
-        SLIDER_HANDLE_BORDER, SLIDER_HANDLE_RADIUS, SLIDER_HANDLE_RADIUS_DRAG,
-        SLIDER_RAIL_DISABLED, SLIDER_RAIL_RADIUS, SLIDER_RAIL_WIDTH, SURFACE, VIOLET_600,
+        self, BODY_TEXT, BORDER, CARD_PADDING, ERROR_TEXT, GROUP_PADDING, HEADING_SIZE,
+        IMMEDIATE_ACCENT, INDIGO_600, INSET, MIX_TEXT, MUTED_TEXT, PRIMARY_TEXT, PURPLE_600,
+        RELEASE_TEXT, SECTION_GAP, SLATE_100, SLIDER_HANDLE_BORDER, SLIDER_HANDLE_RADIUS,
+        SLIDER_HANDLE_RADIUS_DRAG, SLIDER_RAIL_DISABLED, SLIDER_RAIL_RADIUS, SLIDER_RAIL_WIDTH,
+        SURFACE, VIOLET_600,
     },
 };
 
@@ -193,6 +194,17 @@ struct RangeDragState {
     offset: f32,
 }
 
+/// Radius of slider handles matching the theme contract:
+/// 7.0 at rest and hover ([`SLIDER_HANDLE_RADIUS`]), swelling to 8.0 while grabbed ([`SLIDER_HANDLE_RADIUS_DRAG`]).
+#[inline]
+pub const fn slider_handle_radius(dragged: bool) -> f32 {
+    if dragged {
+        SLIDER_HANDLE_RADIUS_DRAG
+    } else {
+        SLIDER_HANDLE_RADIUS
+    }
+}
+
 /// Dual-thumb range slider operating over 0.0..=20.0 ms.
 /// Clamps to `floor` on the lower bound, preserves drag offsets for near-thumb clicks,
 /// jumps thumbs for distant presses, and sorts automatically when handles cross.
@@ -295,11 +307,7 @@ pub fn range_slider(ui: &mut Ui, props: RangeSliderProps<'_>) -> Option<(f32, f3
     }
 
     // Two thumbs: white background, 3px accent stroke
-    let thumb_radius = if response.dragged() {
-        SLIDER_HANDLE_RADIUS_DRAG
-    } else {
-        SLIDER_HANDLE_RADIUS
-    };
+    let thumb_radius = slider_handle_radius(response.dragged());
     for val in [props.min_val, props.max_val] {
         let thumb_x = to_x(val);
         let center = Pos2::new(thumb_x, center_y);
@@ -384,13 +392,9 @@ pub fn mixer_slider(
         painter.rect_filled(span_rect, SLIDER_RAIL_RADIUS, RELEASE_TEXT);
     }
 
-    // Handle thumb: Circle at handle_x, center_y, radius 7.0 (8.0 while dragged/hovered),
+    // Handle thumb: Circle at handle_x, center_y, radius 7.0 (8.0 while dragged),
     // white fill, 3.0 border in MIX_TEXT.
-    let handle_radius = if response.dragged() || response.hovered() {
-        SLIDER_HANDLE_RADIUS_DRAG
-    } else {
-        SLIDER_HANDLE_RADIUS
-    };
+    let handle_radius = slider_handle_radius(response.dragged());
     painter.circle(
         Pos2::new(handle_x, center_y),
         handle_radius,
@@ -522,76 +526,80 @@ pub fn duration_range(
     let max_val = max_micros as f32 / 1000.0;
     let invalid = props.minimum.pair_invalid(timing);
 
-    theme::slot_style().show(ui, |ui| {
-        ui.spacing_mut().item_spacing = vec2(0.0, 8.0);
+    theme::slot_style()
+        .inner_margin(Margin::same(12))
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing = vec2(0.0, 8.0);
 
-        // Row 1: dot + label + space + pill
-        ui.horizontal(|ui| {
-            // Color dot
-            let (dot_rect, _) = ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
-            ui.painter()
-                .circle_filled(dot_rect.center(), 3.5, props.accent);
+            // Row 1: dot + label + space + pill
+            ui.horizontal(|ui| {
+                // Color dot
+                let (dot_rect, _) = ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
+                ui.painter()
+                    .circle_filled(dot_rect.center(), 3.5, props.accent);
 
-            ui.colored_label(
-                BODY_TEXT,
-                egui::RichText::new(language.text(props.label))
-                    .font(FontId::new(12.0, egui::FontFamily::Proportional))
-                    .strong(),
-            );
+                ui.colored_label(
+                    BODY_TEXT,
+                    egui::RichText::new(language.text(props.label))
+                        .font(FontId::new(12.0, egui::FontFamily::Proportional))
+                        .strong(),
+                );
 
-            ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                theme::pill_style(invalid).show(ui, |ui| {
-                    ui.spacing_mut().item_spacing = vec2(4.0, 0.0);
-                    ui.colored_label(props.accent, "ms");
+                ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                    theme::pill_style(invalid)
+                        .inner_margin(Margin::symmetric(6, 1))
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing = vec2(4.0, 0.0);
+                            ui.colored_label(props.accent, "ms");
 
-                    let max_str = inputs.buffer(props.maximum);
-                    let max_invalid = invalid || parse_ms_text(max_str).is_none();
-                    let max_box_props = ValueBoxProps::new(
-                        props.maximum,
-                        editing[props.maximum.index()],
-                        max_invalid,
-                        32.0,
-                        props.accent,
-                    );
-                    value_box(ui, max_box_props, max_str, messages);
+                            let max_str = inputs.buffer(props.maximum);
+                            let max_invalid = invalid || parse_ms_text(max_str).is_none();
+                            let max_box_props = ValueBoxProps::new(
+                                props.maximum,
+                                editing[props.maximum.index()],
+                                max_invalid,
+                                32.0,
+                                props.accent,
+                            );
+                            value_box(ui, max_box_props, max_str, messages);
 
-                    ui.colored_label(props.accent, "~");
+                            ui.colored_label(props.accent, "~");
 
-                    let min_str = inputs.buffer(props.minimum);
-                    let min_invalid = invalid || parse_ms_text(min_str).is_none();
-                    let min_box_props = ValueBoxProps::new(
-                        props.minimum,
-                        editing[props.minimum.index()],
-                        min_invalid,
-                        32.0,
-                        props.accent,
-                    );
-                    value_box(ui, min_box_props, min_str, messages);
+                            let min_str = inputs.buffer(props.minimum);
+                            let min_invalid = invalid || parse_ms_text(min_str).is_none();
+                            let min_box_props = ValueBoxProps::new(
+                                props.minimum,
+                                editing[props.minimum.index()],
+                                min_invalid,
+                                32.0,
+                                props.accent,
+                            );
+                            value_box(ui, min_box_props, min_str, messages);
+                        });
                 });
             });
-        });
 
-        // Row 2: dual-handle slider with unambiguous group-identifying accessible name
-        let floor = if props.minimum == TimingField::PreservedMinimum {
-            0.1
-        } else {
-            0.0
-        };
-        let accessible_name = format!("{} duration range", language.text(props.label));
-        let slider_props = RangeSliderProps {
-            min_val,
-            max_val,
-            floor,
-            enabled: true,
-            accent: props.accent,
-            id: Id::new("rail").with(props.minimum.index()),
-            accessible_name: &accessible_name,
-        };
-        if let Some((n_min, n_max)) = range_slider(ui, slider_props) {
-            messages.push(Message::TimingSliderChanged(props.minimum, n_min));
-            messages.push(Message::TimingSliderChanged(props.maximum, n_max));
-        }
-    });
+            // Row 2: dual-handle slider with unambiguous group-identifying accessible name
+            let floor = if props.minimum == TimingField::PreservedMinimum {
+                0.1
+            } else {
+                0.0
+            };
+            let accessible_name = format!("{} duration range", language.text(props.label));
+            let slider_props = RangeSliderProps {
+                min_val,
+                max_val,
+                floor,
+                enabled: true,
+                accent: props.accent,
+                id: Id::new("rail").with(props.minimum.index()),
+                accessible_name: &accessible_name,
+            };
+            if let Some((n_min, n_max)) = range_slider(ui, slider_props) {
+                messages.push(Message::TimingSliderChanged(props.minimum, n_min));
+                messages.push(Message::TimingSliderChanged(props.maximum, n_max));
+            }
+        });
 }
 
 // ----------------------------------------------------------------------------
@@ -612,63 +620,67 @@ pub fn rate_group(
     let rate_str = inputs.buffer(TimingField::PreservationRate);
     let invalid = parse_rate_text(rate_str).is_none();
 
-    theme::slot_style().show(ui, |ui| {
-        ui.spacing_mut().item_spacing = vec2(0.0, 8.0);
+    theme::slot_style()
+        .inner_margin(Margin::same(12))
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing = vec2(0.0, 8.0);
 
-        // Row 1: dot + title + pill
-        ui.horizontal(|ui| {
-            let (dot_rect, _) = ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
-            ui.painter().circle_filled(dot_rect.center(), 3.5, MIX_TEXT);
+            // Row 1: dot + title + pill
+            ui.horizontal(|ui| {
+                let (dot_rect, _) = ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
+                ui.painter().circle_filled(dot_rect.center(), 3.5, MIX_TEXT);
 
-            ui.colored_label(
-                BODY_TEXT,
-                egui::RichText::new(language.text("Delay Mix Ratio"))
-                    .font(FontId::new(12.0, egui::FontFamily::Proportional))
-                    .strong(),
-            );
+                ui.colored_label(
+                    BODY_TEXT,
+                    egui::RichText::new(language.text("Delay Mix Ratio"))
+                        .font(FontId::new(12.0, egui::FontFamily::Proportional))
+                        .strong(),
+                );
 
-            ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                theme::pill_style(invalid).show(ui, |ui| {
-                    ui.spacing_mut().item_spacing = vec2(4.0, 0.0);
-                    ui.colored_label(MIX_TEXT, "%");
+                ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                    theme::pill_style(invalid)
+                        .inner_margin(Margin::symmetric(6, 1))
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing = vec2(4.0, 0.0);
+                            ui.colored_label(MIX_TEXT, "%");
 
-                    // R1 issue 10: RELEASE_TEXT is intentional for the preservation rate box
-                    // per src/ui/app.rs:3317 (matching the release-delay accent).
-                    let rate_props = ValueBoxProps::new(
-                        TimingField::PreservationRate,
-                        editing[TimingField::PreservationRate.index()],
-                        invalid,
-                        32.0,
-                        RELEASE_TEXT,
-                    );
-                    value_box(ui, rate_props, rate_str, messages);
+                            // R1 issue 10: RELEASE_TEXT is intentional for the preservation rate box
+                            // per src/ui/app.rs:3317 (matching the release-delay accent).
+                            let rate_props = ValueBoxProps::new(
+                                TimingField::PreservationRate,
+                                editing[TimingField::PreservationRate.index()],
+                                invalid,
+                                32.0,
+                                RELEASE_TEXT,
+                            );
+                            value_box(ui, rate_props, rate_str, messages);
 
-                    ui.colored_label(MIX_TEXT, ":");
+                            ui.colored_label(MIX_TEXT, ":");
 
-                    ui.colored_label(
-                        MIX_TEXT,
-                        egui::RichText::new(format_rate(press_share))
-                            .font(FontId::new(12.0, egui::FontFamily::Proportional))
-                            .strong(),
-                    );
+                            ui.colored_label(
+                                MIX_TEXT,
+                                egui::RichText::new(format_rate(press_share))
+                                    .font(FontId::new(12.0, egui::FontFamily::Proportional))
+                                    .strong(),
+                            );
+                        });
                 });
             });
+
+            // Row 2: custom mixer rail (RELEASE_TEXT filled rail, MIX_TEXT handle ring)
+            if let Some(new_share) = mixer_slider(ui, press_share as f32, true, language) {
+                messages.push(Message::MixChanged(new_share));
+            }
+
+            // Row 3: helper caption
+            ui.colored_label(
+                MUTED_TEXT,
+                egui::RichText::new(
+                    language.text("Each overlap randomly picks one of the two delays below."),
+                )
+                .font(FontId::new(12.0, egui::FontFamily::Proportional)),
+            );
         });
-
-        // Row 2: custom mixer rail (RELEASE_TEXT filled rail, MIX_TEXT handle ring)
-        if let Some(new_share) = mixer_slider(ui, press_share as f32, true, language) {
-            messages.push(Message::MixChanged(new_share));
-        }
-
-        // Row 3: helper caption
-        ui.colored_label(
-            MUTED_TEXT,
-            egui::RichText::new(
-                language.text("Each overlap randomly picks one of the two delays below."),
-            )
-            .font(FontId::new(12.0, egui::FontFamily::Proportional)),
-        );
-    });
 }
 
 // ----------------------------------------------------------------------------
@@ -735,53 +747,55 @@ pub fn mechanism_steps(ui: &mut Ui, mode: SocdMode, timing: &TimingSettings, lan
 
     let accent = mode_color(mode);
 
-    theme::slot_style().show(ui, |ui| {
-        ui.spacing_mut().item_spacing = vec2(0.0, 8.0);
+    theme::slot_style()
+        .inner_margin(Margin::same(12))
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing = vec2(0.0, 8.0);
 
-        // Header
-        ui.horizontal(|ui| {
-            let (dot_rect, _) = ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
-            ui.painter()
-                .circle_filled(dot_rect.center(), 3.5, MUTED_TEXT);
-            ui.colored_label(
-                BODY_TEXT,
-                egui::RichText::new(language.text("How it works"))
-                    .font(FontId::new(11.0, egui::FontFamily::Proportional))
-                    .strong(),
-            );
-        });
-
-        // Steps list
-        for (index, (label, accented)) in steps.into_iter().enumerate() {
+            // Header
             ui.horizontal(|ui| {
-                let (badge_rect, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
-                let (bg, ink) = if accented {
-                    (
-                        Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 30),
-                        accent,
-                    )
-                } else {
-                    (INSET, MUTED_TEXT)
-                };
-
+                let (dot_rect, _) = ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
                 ui.painter()
-                    .rect_filled(badge_rect, theme::BADGE_RADIUS, bg);
-                ui.painter().text(
-                    badge_rect.center(),
-                    Align2::CENTER_CENTER,
-                    format!("{}", index + 1),
-                    FontId::new(9.0, egui::FontFamily::Proportional),
-                    ink,
-                );
-
+                    .circle_filled(dot_rect.center(), 3.5, MUTED_TEXT);
                 ui.colored_label(
-                    MUTED_TEXT,
-                    egui::RichText::new(label)
-                        .font(FontId::new(11.0, egui::FontFamily::Proportional)),
+                    BODY_TEXT,
+                    egui::RichText::new(language.text("How it works"))
+                        .font(FontId::new(11.0, egui::FontFamily::Proportional))
+                        .strong(),
                 );
             });
-        }
-    });
+
+            // Steps list
+            for (index, (label, accented)) in steps.into_iter().enumerate() {
+                ui.horizontal(|ui| {
+                    let (badge_rect, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
+                    let (bg, ink) = if accented {
+                        (
+                            Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 30),
+                            accent,
+                        )
+                    } else {
+                        (INSET, MUTED_TEXT)
+                    };
+
+                    ui.painter()
+                        .rect_filled(badge_rect, theme::BADGE_RADIUS, bg);
+                    ui.painter().text(
+                        badge_rect.center(),
+                        Align2::CENTER_CENTER,
+                        format!("{}", index + 1),
+                        FontId::new(9.0, egui::FontFamily::Proportional),
+                        ink,
+                    );
+
+                    ui.colored_label(
+                        MUTED_TEXT,
+                        egui::RichText::new(label)
+                            .font(FontId::new(11.0, egui::FontFamily::Proportional)),
+                    );
+                });
+            }
+        });
 }
 
 // ----------------------------------------------------------------------------
@@ -827,110 +841,112 @@ pub fn timing_preview_section(
     };
     let delay = super::preview::delay_label(min, max);
 
-    theme::slot_style().show(ui, |ui| {
-        ui.spacing_mut().item_spacing = vec2(0.0, 8.0);
+    theme::slot_style()
+        .inner_margin(Margin::same(12))
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing = vec2(0.0, 8.0);
 
-        // Controls header: Previous / Play-Pause Pill / Next
-        // With accessible labels for label-driven testing
-        ui.horizontal(|ui| {
-            let prev_btn = ui.button("⏴");
-            prev_btn.widget_info(|| {
-                WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), "Previous example")
-            });
-            if prev_btn.clicked() {
-                messages.push(Message::Preview(PreviewAction::Previous));
-            }
-
-            let pill_text = format!(
-                "{} {} {}",
-                language.text("Preview"),
-                mode_label(mode, language),
-                if p.playing { "⏸" } else { "▶" }
-            );
-            let pill_btn = ui.add(
-                egui::Button::new(
-                    egui::RichText::new(pill_text)
-                        .font(FontId::new(11.0, egui::FontFamily::Proportional))
-                        .strong(),
-                )
-                .corner_radius(theme::CONTROL_RADIUS),
-            );
-            pill_btn.widget_info(|| {
-                WidgetInfo::labeled(
-                    WidgetType::Button,
-                    ui.is_enabled(),
-                    if p.playing {
-                        "Pause preview"
-                    } else {
-                        "Play preview"
-                    },
-                )
-            });
-            if pill_btn.clicked() {
-                messages.push(Message::Preview(PreviewAction::Toggle));
-            }
-
-            let next_btn = ui.button("⏵");
-            next_btn.widget_info(|| {
-                WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), "Next example")
-            });
-            if next_btn.clicked() {
-                messages.push(Message::Preview(PreviewAction::Next));
-            }
-
-            // 3-example position dots
+            // Controls header: Previous / Play-Pause Pill / Next
+            // With accessible labels for label-driven testing
             ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing = vec2(4.0, 0.0);
-                for i in 0..3 {
-                    let dot_color = if (p.example % 3) == i {
-                        mode_color(mode)
-                    } else {
-                        BORDER
-                    };
-                    theme::example_dot(dot_color).show(ui, |ui| {
-                        ui.allocate_exact_size(vec2(6.0, 6.0), Sense::hover());
-                    });
+                let prev_btn = ui.button("⏴");
+                prev_btn.widget_info(|| {
+                    WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), "Previous example")
+                });
+                if prev_btn.clicked() {
+                    messages.push(Message::Preview(PreviewAction::Previous));
                 }
+
+                let pill_text = format!(
+                    "{} {} {}",
+                    language.text("Preview"),
+                    mode_label(mode, language),
+                    if p.playing { "⏸" } else { "▶" }
+                );
+                let pill_btn = ui.add(
+                    egui::Button::new(
+                        egui::RichText::new(pill_text)
+                            .font(FontId::new(11.0, egui::FontFamily::Proportional))
+                            .strong(),
+                    )
+                    .corner_radius(theme::CONTROL_RADIUS),
+                );
+                pill_btn.widget_info(|| {
+                    WidgetInfo::labeled(
+                        WidgetType::Button,
+                        ui.is_enabled(),
+                        if p.playing {
+                            "Pause preview"
+                        } else {
+                            "Play preview"
+                        },
+                    )
+                });
+                if pill_btn.clicked() {
+                    messages.push(Message::Preview(PreviewAction::Toggle));
+                }
+
+                let next_btn = ui.button("⏵");
+                next_btn.widget_info(|| {
+                    WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), "Next example")
+                });
+                if next_btn.clicked() {
+                    messages.push(Message::Preview(PreviewAction::Next));
+                }
+
+                // 3-example position dots
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(4.0, 0.0);
+                    for i in 0..3 {
+                        let dot_color = if (p.example % 3) == i {
+                            mode_color(mode)
+                        } else {
+                            BORDER
+                        };
+                        theme::example_dot(dot_color).show(ui, |ui| {
+                            ui.allocate_exact_size(vec2(6.0, 6.0), Sense::hover());
+                        });
+                    }
+                });
+            });
+
+            // Key state visualization (A / D)
+            ui.horizontal(|ui| {
+                let render_key = |ui: &mut Ui, name: &str, held: bool, accent: Color32| {
+                    let fill = if held { accent } else { SURFACE };
+                    let stroke = Stroke::new(1.0, if held { accent } else { BORDER });
+                    let text_color = if held { SURFACE } else { accent };
+
+                    Frame::NONE
+                        .fill(fill)
+                        .stroke(stroke)
+                        .corner_radius(theme::CHIP_RADIUS)
+                        .inner_margin(Margin::same(10))
+                        .show(ui, |ui| {
+                            ui.colored_label(
+                                text_color,
+                                egui::RichText::new(name)
+                                    .font(FontId::new(16.0, egui::FontFamily::Proportional))
+                                    .strong(),
+                            );
+                        });
+                };
+
+                render_key(ui, "A", old, PRIMARY_TEXT);
+
+                // Phase 1 highlights delay range per ui.md line 143
+                let delay_bg = if p.phase == 1 {
+                    theme::step_badge(Some(mode_color(mode)))
+                } else {
+                    Frame::NONE.fill(INSET)
+                };
+                delay_bg.show(ui, |ui| {
+                    ui.colored_label(MUTED_TEXT, format!("Delay: {delay}"));
+                });
+
+                render_key(ui, "D", new, PURPLE_600);
             });
         });
-
-        // Key state visualization (A / D)
-        ui.horizontal(|ui| {
-            let render_key = |ui: &mut Ui, name: &str, held: bool, accent: Color32| {
-                let fill = if held { accent } else { SURFACE };
-                let stroke = Stroke::new(1.0, if held { accent } else { BORDER });
-                let text_color = if held { SURFACE } else { accent };
-
-                Frame::NONE
-                    .fill(fill)
-                    .stroke(stroke)
-                    .corner_radius(theme::CHIP_RADIUS)
-                    .inner_margin(Margin::same(10))
-                    .show(ui, |ui| {
-                        ui.colored_label(
-                            text_color,
-                            egui::RichText::new(name)
-                                .font(FontId::new(16.0, egui::FontFamily::Proportional))
-                                .strong(),
-                        );
-                    });
-            };
-
-            render_key(ui, "A", old, PRIMARY_TEXT);
-
-            // Phase 1 highlights delay range per ui.md line 143
-            let delay_bg = if p.phase == 1 {
-                theme::step_badge(Some(mode_color(mode)))
-            } else {
-                Frame::NONE.fill(INSET)
-            };
-            delay_bg.show(ui, |ui| {
-                ui.colored_label(MUTED_TEXT, format!("Delay: {delay}"));
-            });
-
-            render_key(ui, "D", new, PURPLE_600);
-        });
-    });
 }
 
 // ----------------------------------------------------------------------------
@@ -947,85 +963,92 @@ pub fn timing_card(
     language: Language,
     preview: Option<&Preview>,
     messages: &mut Vec<Message>,
-) {
-    theme::card_style().show(ui, |ui| {
-        ui.spacing_mut().item_spacing = vec2(0.0, SECTION_GAP);
+) -> Response {
+    theme::card_style()
+        .inner_margin(Margin::same(CARD_PADDING as i8))
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing = vec2(0.0, SECTION_GAP);
 
-        // Card title row
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                ui.colored_label(
-                    BODY_TEXT,
-                    egui::RichText::new(language.text("Input timings"))
-                        .font(FontId::new(HEADING_SIZE, egui::FontFamily::Proportional))
-                        .strong(),
-                );
-                ui.colored_label(
-                    MUTED_TEXT,
-                    egui::RichText::new(language.text("How opposite-direction overlaps resolve."))
+            // Card title row
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.colored_label(
+                        BODY_TEXT,
+                        egui::RichText::new(language.text("Input timings"))
+                            .font(FontId::new(HEADING_SIZE, egui::FontFamily::Proportional))
+                            .strong(),
+                    );
+                    ui.colored_label(
+                        MUTED_TEXT,
+                        egui::RichText::new(
+                            language.text("How opposite-direction overlaps resolve."),
+                        )
                         .font(FontId::new(12.0, egui::FontFamily::Proportional)),
-                );
+                    );
+                });
+
+                ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                    let restore_btn = ui.add(
+                        egui::Button::new(
+                            egui::RichText::new(language.text("Restore timing defaults"))
+                                .font(FontId::new(12.0, egui::FontFamily::Proportional)),
+                        )
+                        .corner_radius(theme::CHIP_RADIUS),
+                    );
+                    if restore_btn.clicked() {
+                        messages.push(Message::RestoreTimingDefaults);
+                    }
+                });
             });
 
-            ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                let restore_btn = ui.add(
-                    egui::Button::new(
-                        egui::RichText::new(language.text("Restore timing defaults"))
-                            .font(FontId::new(12.0, egui::FontFamily::Proportional)),
-                    )
-                    .corner_radius(theme::CHIP_RADIUS),
-                );
-                if restore_btn.clicked() {
-                    messages.push(Message::RestoreTimingDefaults);
-                }
-            });
-        });
+            // Card content container
+            theme::group_style()
+                .inner_margin(Margin::same(GROUP_PADDING as i8))
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing = vec2(0.0, 12.0);
 
-        // Card content container
-        theme::group_style().show(ui, |ui| {
-            ui.spacing_mut().item_spacing = vec2(0.0, 12.0);
+                    // 1. Mode selector
+                    mode_selector(ui, timing.mode, language, messages);
 
-            // 1. Mode selector
-            mode_selector(ui, timing.mode, language, messages);
+                    // 2. Immediate mode illustrative preview
+                    if timing.mode == SocdMode::Immediate {
+                        timing_preview_section(ui, timing, preview, language, messages);
+                    }
 
-            // 2. Immediate mode illustrative preview
-            if timing.mode == SocdMode::Immediate {
-                timing_preview_section(ui, timing, preview, language, messages);
-            }
+                    // 3. Random Mix ratio group
+                    if timing.mode == SocdMode::RandomMix {
+                        rate_group(ui, timing, inputs, editing, language, messages);
+                    }
 
-            // 3. Random Mix ratio group
-            if timing.mode == SocdMode::RandomMix {
-                rate_group(ui, timing, inputs, editing, language, messages);
-            }
+                    // 4. New Key Press Delay duration group
+                    if matches!(timing.mode, SocdMode::PressDelay | SocdMode::RandomMix) {
+                        let props = DurationRangeProps::new(
+                            TimingField::TransitionMinimum,
+                            TimingField::TransitionMaximum,
+                            "New Key Press Delay",
+                            PRIMARY_TEXT,
+                        );
+                        duration_range(ui, props, timing, inputs, editing, language, messages);
+                    }
 
-            // 4. New Key Press Delay duration group
-            if matches!(timing.mode, SocdMode::PressDelay | SocdMode::RandomMix) {
-                let props = DurationRangeProps::new(
-                    TimingField::TransitionMinimum,
-                    TimingField::TransitionMaximum,
-                    "New Key Press Delay",
-                    PRIMARY_TEXT,
-                );
-                duration_range(ui, props, timing, inputs, editing, language, messages);
-            }
+                    // 5. Previous Key Release Delay duration group
+                    if matches!(timing.mode, SocdMode::ReleaseDelay | SocdMode::RandomMix) {
+                        let props = DurationRangeProps::new(
+                            TimingField::PreservedMinimum,
+                            TimingField::PreservedMaximum,
+                            "Previous Key Release Delay",
+                            VIOLET_600,
+                        );
+                        duration_range(ui, props, timing, inputs, editing, language, messages);
+                    }
 
-            // 5. Previous Key Release Delay duration group
-            if matches!(timing.mode, SocdMode::ReleaseDelay | SocdMode::RandomMix) {
-                let props = DurationRangeProps::new(
-                    TimingField::PreservedMinimum,
-                    TimingField::PreservedMaximum,
-                    "Previous Key Release Delay",
-                    VIOLET_600,
-                );
-                duration_range(ui, props, timing, inputs, editing, language, messages);
-            }
-
-            // 6. Mechanism steps ("How it works")
-            if timing.mode != SocdMode::RandomMix {
-                mechanism_steps(ui, timing.mode, timing, language);
-            }
-        });
-    });
+                    // 6. Mechanism steps ("How it works")
+                    if timing.mode != SocdMode::RandomMix {
+                        mechanism_steps(ui, timing.mode, timing, language);
+                    }
+                });
+        })
+        .response
 }
 
 // ----------------------------------------------------------------------------
@@ -1231,13 +1254,22 @@ mod tests {
     struct FakeRuntime {
         state: State,
         sent: Vec<crate::protocol::UiCommand>,
+        card_rect: Rect,
     }
 
     impl FakeRuntime {
+        fn new(state: State) -> Self {
+            Self {
+                state,
+                sent: Vec::new(),
+                card_rect: Rect::NOTHING,
+            }
+        }
+
         fn frame(&mut self, ui: &mut Ui) {
             let mut messages = Vec::new();
             if let Some(draft) = &self.state.draft {
-                timing_card(
+                let resp = timing_card(
                     ui,
                     &draft.timing,
                     &self.state.inputs,
@@ -1246,6 +1278,7 @@ mod tests {
                     Some(&self.state.preview),
                     &mut messages,
                 );
+                self.card_rect = resp.rect;
             }
             for message in messages {
                 for effect in super::super::state::update(&mut self.state, message) {
@@ -1276,10 +1309,7 @@ mod tests {
             .with_size(egui::vec2(1040.0, 800.0))
             .build_ui_state(
                 |ui, runtime: &mut FakeRuntime| runtime.frame(ui),
-                FakeRuntime {
-                    state: test_state(),
-                    sent: Vec::new(),
-                },
+                FakeRuntime::new(test_state()),
             );
 
         // 1. Find box by accessible name ("Transition Minimum")
@@ -1332,10 +1362,7 @@ mod tests {
             .with_size(egui::vec2(1040.0, 800.0))
             .build_ui_state(
                 |ui, runtime: &mut FakeRuntime| runtime.frame(ui),
-                FakeRuntime {
-                    state: test_state(),
-                    sent: Vec::new(),
-                },
+                FakeRuntime::new(test_state()),
             );
 
         let id = value_box_id(TimingField::TransitionMinimum);
@@ -1375,10 +1402,7 @@ mod tests {
             .with_size(egui::vec2(1040.0, 800.0))
             .build_ui_state(
                 |ui, runtime: &mut FakeRuntime| runtime.frame(ui),
-                FakeRuntime {
-                    state: test_state(),
-                    sent: Vec::new(),
-                },
+                FakeRuntime::new(test_state()),
             );
 
         let id = value_box_id(TimingField::TransitionMinimum);
@@ -1410,6 +1434,54 @@ mod tests {
         assert_ne!(
             sr, er,
             "press after focus moved elsewhere must select all again"
+        );
+    }
+
+    #[test]
+    fn test_slider_handle_radius_contract() {
+        // Rest: 7.0
+        assert_eq!(slider_handle_radius(false), SLIDER_HANDLE_RADIUS);
+        assert_eq!(slider_handle_radius(false), 7.0);
+        // Hovered (dragged = false): still 7.0, does not swell on hover alone
+        let hovered = true;
+        let dragged = false;
+        let _ = hovered;
+        assert_eq!(slider_handle_radius(dragged), 7.0);
+        // Dragged (grabbed): swells to 8.0
+        assert_eq!(slider_handle_radius(true), SLIDER_HANDLE_RADIUS_DRAG);
+        assert_eq!(slider_handle_radius(true), 8.0);
+    }
+
+    #[test]
+    fn test_timing_card_has_non_zero_frame_padding() {
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1040.0, 800.0))
+            .build_ui_state(
+                |ui, runtime: &mut FakeRuntime| runtime.frame(ui),
+                FakeRuntime::new(test_state()),
+            );
+
+        harness.run();
+
+        // The first child widget inside timing_card is the "Input timings" section title
+        let title_node = harness.get_by_label("Input timings");
+        let title_rect = title_node.rect();
+        let card_rect = harness.state().card_rect;
+
+        assert_ne!(card_rect, Rect::NOTHING, "card rect must be recorded");
+
+        let left_gap = title_rect.min.x - card_rect.min.x;
+        let top_gap = title_rect.min.y - card_rect.min.y;
+
+        assert!(
+            left_gap >= CARD_PADDING - 1.0,
+            "left gap must be at least CARD_PADDING: left_gap={left_gap}, CARD_PADDING={CARD_PADDING}"
+        );
+        assert!(
+            top_gap >= CARD_PADDING - 1.0,
+            "top gap must be at least CARD_PADDING: top_gap={top_gap}, CARD_PADDING={CARD_PADDING}"
         );
     }
 }
