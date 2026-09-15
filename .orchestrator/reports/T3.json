@@ -1,9 +1,9 @@
 {
   "task_id": "T3",
   "status": "completed",
-  "summary": "T3 follow-up after report 494c848. Completed the remaining R1 substitutions: the five D-pad dot/glow literals now use T2's new theme tokens (values verified byte-identical against agent/worker-1 35d5343), with tile fill/edge/ring already on theme::SLATE_100/theme::BORDER and all pixel metrics kept local. Reverted the Restore icon ink to the original Iced behaviour (fixed slate-600; other action icons still inherit the label ink) under migration constraint 5, keeping the readable placeholder-based label and the content + 2 * 13px width, and added regression coverage that fails if the single-ink change is applied. T2's five D-pad tokens do NOT yet exist on agent/integration (f3dc2d9), so the integrator must merge T2's follow-up before this branch. Font weight, long-label hover-scroll and banner behaviour remain open and untouched.",
+  "summary": "T3 round-3 rework (target 4ab6ce2c) is complete in src/ui2/mapping.rs: painted text now publishes a WidgetType::Label node so the footer's duplicate/uniqueness status is observable by label, with a kittest test that flips two bindings onto one PhysicalKey and asserts the status both ways, and the duplicated trailing line of the resolve_dpad doc comment is deleted. All earlier regressions (paint colour, icon ink, UTF-8 split, localized accessible text) stay green; the secondary_button migration to Worker 1's shared outlined action and the open font-weight, hover-scroll and banner items are untouched.",
   "branch": "agent/worker-2",
-  "commit": "586fe95",
+  "commit": "58c102c",
   "owned_files": [
     "src/ui2/mapping.rs",
     "src/ui2/keycap.rs",
@@ -15,43 +15,56 @@
   ],
   "review_actions": [
     {
-      "id": "R1 follow-up - D-pad tile/ring/dot literals need theme tokens",
-      "required": "Replace the D-pad tile/ring/dot literals in mapping.rs with the matching theme tokens (or add the missing ones to theme.rs); keep pixel metrics local.",
-      "changed": "mapping.rs now paints the D-pad dots/glow entirely from theme: DPAD_GUIDE_DOT (resting guide dot), DPAD_ACTIVE_GLOW (24px halo), DPAD_ACTIVE_DOT_SHADOW, DPAD_IDLE_DOT_SHADOW, DPAD_IDLE_DOT; the tile fill and edge/ring were already theme::SLATE_100 and theme::BORDER. Kept local as metrics: 80px tile, radius 16, 24px guide ring, 3/3 dash, dot radii 4/9/10/12 and the 1px shadow offset. theme.rs was NOT edited.",
-      "evidence": "Byte-identical check against agent/worker-1:src/ui2/theme.rs at 35d5343: DPAD_GUIDE_DOT = from_rgba_unmultiplied_const(204,214,224,153); DPAD_ACTIVE_GLOW = (59,84,232,64); DPAD_ACTIVE_DOT_SHADOW = (59,84,232,77); DPAD_IDLE_DOT_SHADOW = from_black_alpha(20); DPAD_IDLE_DOT = with_alpha(ICON_MUTED, 204) = from_rgba_unmultiplied(148,163,184,204) - each exactly the constructor this file used, so no colour changes. T2's own regression test pins the same values. The modules compile and their tests pass against that exact theme.rs in the scratch harness. T2's warning is respected: the translucent tokens are substituted directly, never compared through channel getters. My earlier report's claim that these literals had no theme owner is now stale and superseded by this change.",
+      "id": "R2 round-2 medium (T3) - painted text was not published to AccessKit",
+      "required": "In `text()`, call `response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, ui.is_enabled(), content))` on the allocated response (take the response from `allocate_exact_size` instead of discarding it); leave decorative glyphs (`icon`, `dot`) unlabelled and keep the D-pad tile's label; add a kittest test that flips two bindings to the same PhysicalKey and asserts get_by_label(\"Duplicate key bindings detected.\") resolves while the unique string does not, and the reverse for distinct bindings.",
+      "changed": "`text()` now takes the response from `allocate_exact_size` and publishes a `WidgetType::Label` node whose label is the painted `content`, so the card title, subtitle, rebind hint, banner prompt and both footer statuses are reachable by label; the text stays localized because `content` is the localized string. `icon()` and `dot()` keep `let (rect, _) = ...` and publish nothing, and the D-pad tile keeps its existing `WidgetType::Other` \"D-pad direction preview\" label. New test `the_footer_status_follows_the_duplicate_bindings`: baseline (distinct bindings) asserts \"All keys uniquely assigned.\" resolves and the duplicate string does not; then bindings[1] is set to bindings[0] and the assertions are reversed after `harness.run()`.",
+      "evidence": "Scratch harness on the real theme: 130 passed, 0 failed, including the new footer test. Probe (guard proof): with the single `response.widget_info(...)` line deleted from `text()`, the same test fails with 'No nodes found matching the query' (exit 101); restored by re-syncing from the worktree. Existing label-driven tests still pass unchanged (keycap buttons, Restore button, D-pad tile), so the new Label nodes create no ambiguous duplicate labels.",
       "result": "done"
     },
     {
-      "id": "R1 earlier - one shared ink variable for the secondary button",
-      "required": "Paint the icon with the same ink variable as the label (rework of 494c848).",
-      "changed": "Deliberately NOT preserved: migration constraint 5 outranks the reviewer suggestion. The icon ink rule is restored to the original Iced `icon_label`: `action_icon_ink(kind, label_ink)` returns ICON_SECONDARY for an `Icon::Restore` glyph in every state and the label ink for other icons. The label still follows its state ink (slate-600 at rest, indigo-600 on hover) and is still laid out with PLACEHOLDER, so the readable-label fix stands; the width stays `content + 2.0 * BUTTON_PAD_X` with the 30px height.",
-      "evidence": "Original behaviour verified in the source of truth: src/ui/app.rs `icon_label` carries the comment 'Restore affordances use the reference's slate-600 ink; other action icons inherit the button text color so hover states keep working.' and codes it as `matches!(name, Icon::Restore).then_some(theme::ICON_SECONDARY)`, so the Restore glyph never recolours while src/ui/theme.rs `secondary_button` moves text_color to INDIGO_600 on hover. Two new tests cover it: `other_action_icons_follow_the_button_ink` (both branches of the rule) and `the_restore_icon_keeps_the_iced_slate_ink_on_hover`, a shape-level test that reads the strokes clips to the button rect and asserts ICON_SECONDARY is present and INDIGO_600 is absent, at rest and while hovered. Probe: with the single-ink change re-applied in the scratch copy the test fails at 'the Restore glyph must paint in the secondary slate (hovered: true)' (exit 101), then the scratch was re-synced and the suite passed again. This deviation is stated here for re-review; ui.md was not touched and no parity was silently waived.",
-      "result": "done-deviating"
-    },
-    {
-      "id": "R2 high - secondary_button label colour (earlier rework, retained)",
-      "required": "Lay the galley out with Color32::PLACEHOLDER or with `ink` after it is computed; audit the other layout calls; add regression coverage.",
-      "changed": "Unchanged from 494c848: all five `layout_no_wrap` calls in the two files pass Color32::PLACEHOLDER and the state colour is supplied at paint time. `secondary_button` now names its label colour `label_ink` to keep it distinct from the icon ink rule.",
-      "evidence": "`the_restore_button_paints_its_label_in_the_state_ink` still passes: at rest #47_55_69_FF (ICON_SECONDARY), hovered #4F_39_F6_FF (INDIGO_600). The earlier probe (reverting the layout colour to WHITE) failed with #FF_FF_FF_FF.",
+      "id": "R2 round-2 low (T3) - duplicated trailing doc line on resolve_dpad",
+      "required": "Delete the duplicated trailing line at mapping.rs:278; the sentence at 276-277 already states the port fidelity.",
+      "changed": "Deleted the standalone line 'Ported unchanged from the Iced `resolve_dpad`.' The preceding sentence still documents the `!physical` condition and the press-timestamp fallback; no code changed.",
+      "evidence": "Current file at 273-276 carries the `!physical` documentation once; `cargo fmt --check` and the resolve_dpad test pass.",
       "result": "done"
     },
     {
-      "id": "Earlier rework items (tokens, KeycapMode owner, char-safe split, resolve_dpad comment)",
-      "required": "As recorded in the previous report revision.",
-      "changed": "No change in this follow-up; all stay as committed in 494c848.",
-      "evidence": "All previously listed tests still pass in the 129-test scratch run.",
-      "result": "done"
-    },
-    {
-      "id": "R2 - stamp_galley ownership (weight strategy)",
-      "required": "Do not act in T3 beyond reporting.",
-      "changed": "Nothing. Still keycap.rs-local. Open, not claimed solved.",
+      "id": "R2 round-2 medium (T4/T3) - one owner for the outlined secondary action",
+      "required": "Move `secondary_button` (with what it needs) to a shared module once the Master/Worker 1 confirms the API; do not copy it around.",
+      "changed": "Nothing in this slice. mapping.rs keeps its private `secondary_button` and its `Icon`/`paint_icon` set; theme.rs was not edited. This is deferred per the dispatch: Worker 1 is preparing the shared outlined action in theme.rs and the consumer migration follows its confirmed API.",
       "result": "not_done"
     },
     {
-      "id": "long-label hover-scroll and the pulsing capture banner",
-      "required": "Not ported in this rework.",
-      "changed": "Nothing. Both remain open behaviour gaps; this follow-up did not expand into them.",
+      "id": "R2 round-2 low (INTEGRATION) - transport glyph claim",
+      "required": "INTEGRATION report line; not a T3 file.",
+      "changed": "Nothing; T3 does not own timing.rs or INTEGRATION.json.",
+      "result": "not_applicable"
+    },
+    {
+      "id": "R1 follow-up - D-pad tile/ring/dot literals",
+      "required": "Replace the D-pad dot/glow literals with the theme tokens; keep metrics local.",
+      "changed": "Unchanged from 586fe95: theme::DPAD_GUIDE_DOT, DPAD_ACTIVE_GLOW, DPAD_ACTIVE_DOT_SHADOW, DPAD_IDLE_DOT_SHADOW, DPAD_IDLE_DOT; fill/edge/ring on SLATE_100/BORDER; metrics local.",
+      "evidence": "Values construction-identical to agent/worker-1 35d5343; still green in the 130-test scratch run.",
+      "result": "done"
+    },
+    {
+      "id": "R1 earlier - shared icon ink (deviation, accepted by R2)",
+      "required": "Preserve the original Iced behavior instead of the reviewer suggestion.",
+      "changed": "Unchanged from 586fe95: `action_icon_ink` keeps the Restore glyph at slate-600 in every state and lets other icons inherit the label ink; the label still follows its state ink through the PLACEHOLDER-based layout.",
+      "evidence": "R2 round 2 accepted the deviation after checking src/ui/app.rs:2411-2428. Both guards still pass: other_action_icons_follow_the_button_ink and the shape-level the_restore_icon_keeps_the_iced_slate_ink_on_hover.",
+      "result": "done"
+    },
+    {
+      "id": "R2 high - secondary_button label colour; and the token/KeycapMode/UTF-8 items",
+      "required": "As recorded in the previous report revisions.",
+      "changed": "Unchanged from 494c848/586fe95.",
+      "evidence": "All still green in the 130-test scratch run: the_restore_button_paints_its_label_in_the_state_ink, multi_byte_names_split_without_panicking, and the token substitutions.",
+      "result": "done"
+    },
+    {
+      "id": "Open and untouched: font-weight strategy, long-label hover-scroll, pulsing banner",
+      "required": "Do not expand this slice into them.",
+      "changed": "Nothing. Still open, nothing claimed.",
       "result": "not_done"
     }
   ],
@@ -77,17 +90,21 @@
     {
       "command": "scratch harness (mod.rs registration + agent/worker-1 35d5343 theme.rs + egui_kittest dev-dep): cargo test --no-default-features --features egui-ui --lib",
       "result": "pass",
-      "note": "129 passed, 0 failed. This is where the T3 modules actually executed: 6 keycap tests and 8 mapping tests (duplicate_slots, resolve_dpad, other_action_icons_follow_the_button_ink, a_physically_held_key_renders_the_pressed_state, the_restore_icon_keeps_the_iced_slate_ink_on_hover, the_restore_button_paints_its_label_in_the_state_ink, the_restore_button_emits_the_mapping_command, clicking_a_keycap_starts_and_cancels_rebinding), plus T2's theme tests and the Wave 0 suite."
+      "note": "130 passed, 0 failed. This is where the T3 modules actually executed: 6 keycap tests and 9 mapping tests - duplicate_slots_flag_every_sharer, the_footer_status_follows_the_duplicate_bindings (new), resolve_dpad_handles_opposing_presses_and_diagonals, other_action_icons_follow_the_button_ink, a_physically_held_key_renders_the_pressed_state, the_restore_icon_keeps_the_iced_slate_ink_on_hover, the_restore_button_paints_its_label_in_the_state_ink, the_restore_button_emits_the_mapping_command, clicking_a_keycap_starts_and_cancels_rebinding - plus T2's theme tests and the Wave 0 suite."
     },
     {
       "command": "scratch harness: cargo clippy --no-default-features --features egui-ui --all-targets -- -D warnings",
-      "result": "pass",
-      "note": "Clean on the T3 modules and their test code against the updated theme."
+      "result": "pass"
     },
     {
-      "command": "scratch harness with `action_icon_ink(kind, label_ink)` replaced by `label_ink` (R1's requested single ink): cargo test ... the_restore_icon_keeps_the_iced_slate_ink_on_hover",
+      "command": "scratch harness with the `text()` widget_info call removed: cargo test ... the_footer_status_follows_the_duplicate_bindings",
       "result": "fail",
-      "note": "Intentional probe: fails with 'the Restore glyph must paint in the secondary slate (hovered: true)' (exit 101), proving the test observes the behaviour difference. Reverted by re-syncing from the worktree."
+      "note": "Intentional probe: 'No nodes found matching the query' (exit 101), proving the new test observes the published node rather than the painting. Reverted by re-syncing from the worktree."
+    },
+    {
+      "command": "earlier probes retained as guards: layout colour reverted to WHITE (fails the label-ink test), and action_icon_ink replaced by label_ink (fails the icon test)",
+      "result": "pass",
+      "note": "Both were re-run in their own rounds and still describe the current guards; the tests they exercise pass in the 130-test run above."
     },
     {
       "command": "cargo test --locked --all-targets",
@@ -97,6 +114,11 @@
     {
       "command": "cargo clippy --locked --all-targets -- -D warnings",
       "result": "pass"
+    },
+    {
+      "command": "cargo test --locked --no-default-features --features egui-ui --lib --bin lastkey-settings",
+      "result": "pass",
+      "note": "105 + 0 passed; T3 modules not compiled on this branch."
     },
     {
       "command": "cargo check --locked --target x86_64-unknown-linux-gnu --all-targets",
@@ -117,12 +139,13 @@
     }
   ],
   "risks": [
-    "Merge order: this branch now imports theme::DPAD_GUIDE_DOT, theme::DPAD_ACTIVE_GLOW, theme::DPAD_ACTIVE_DOT_SHADOW, theme::DPAD_IDLE_DOT_SHADOW and theme::DPAD_IDLE_DOT, which exist on agent/worker-1 (35d5343) but NOT on agent/integration (f3dc2d9). Merging T3 before T2's follow-up will fail to compile; T2's token commit must land first.",
-    "The full theme surface T3 imports is BODY_TEXT, MUTED_TEXT, ICON_MUTED, ICON_SECONDARY, PRIMARY_TEXT, INDIGO_600, INDIGO_700, INDIGO_800, IMMEDIATE_ACCENT, VIOLET_600, MIX_TEXT, SLATE_100, ERROR_BG, ERROR_BORDER, ERROR_TEXT, GREEN_CHECK, RED_600, EMERALD_700, BORDER, INSET, SURFACE, CARD_BORDER, HOVER_WASH, NAME_HOVER_BORDER, KEYCAP_HOVER_BG, KEYCAP_HOVER_BORDER, KEYCAP_REBIND_EDGE, SHADOW_KEYCAP, SHADOW_CARD, SHADOW_BANNER, KEYCAP_REBIND_GLOW_BLUR, KEYCAP_PRESSED_GLOW_BLUR, HEADING_SIZE, SECTION_GAP and KeycapMode. All verified present (the first block on agent/integration f3dc2d9, the DPAD_* block on agent/worker-1 35d5343); a rename or removal breaks the merge.",
+    "Merge order: mapping.rs imports theme::DPAD_GUIDE_DOT, DPAD_ACTIVE_GLOW, DPAD_ACTIVE_DOT_SHADOW, DPAD_IDLE_DOT_SHADOW and DPAD_IDLE_DOT, which exist on agent/worker-1 (35d5343) but not on the previously reviewed integration tree. T2's token commit must be in the merge before this branch.",
+    "Label nodes carry the localized string (`content` is already the localized text), so any label-driven suite is language-dependent until the accessible-name localization policy is decided; that policy is still open and is not changed here.",
     "Branch limitation: this branch does not register the modules and has no egui_kittest dev-dependency, so no in-tree command compiles T3. All T3 execution evidence comes from the scratch harness at %TEMP%/kilo/t3scratch, which mirrors this worktree's src, registers the modules, copies agent/worker-1's theme.rs read-only and appends the dev-dependency (sync.ps1 is in that directory). It is outside the repo and not committed.",
-    "Secondary-button icon ink is deliberately back to the Iced behaviour (Restore glyph fixed at slate-600), which deviates from R1's requested shared ink variable. Recorded for re-review; if ui.md parity is judged to require the shared ink instead, the change is a one-line call-site edit and the test would need to be inverted.",
-    "Still open and NOT solved by this follow-up: the font-weight strategy (egui has no bold face; keycap.rs keeps the double-stamp approximation), long-keycap-label hover-scroll, and the pulsing capture banner. No claim is made about them here.",
-    "Native visual acceptance remains pending as docs/architecture/verification.md records; the kittest tests cover semantics, painted text colour and painted stroke colour, not the whole rendered layout."
+    "Deferred consumer migration: mapping.rs still renders the Restore action through its private `secondary_button`. When Worker 1's shared outlined action lands, this call site must migrate so the two cards do not drift; `secondary_button` and `Icon`/`paint_icon` are still private to mapping.rs, and T4's bare egui::Button remains the other half of R2's medium.",
+    "Secondary-button icon ink stays at the Iced behavior (Restore glyph fixed at slate-600) - a deviation R2 round 2 accepted; if that judgement is ever reversed, the change is one call site plus inverting the shape-level test.",
+    "Still open and NOT solved by this slice: the font-weight strategy (keycap.rs keeps the double-stamp approximation), long-keycap-label hover-scroll, and the pulsing capture banner.",
+    "Native visual acceptance remains pending as docs/architecture/verification.md records; the kittest tests cover semantics, painted text colour, painted stroke colour and now the published text labels, not the whole rendered layout."
   ],
   "blockers": []
 }
