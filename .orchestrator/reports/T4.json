@@ -1,9 +1,9 @@
 {
   "task_id": "T4",
   "status": "completed",
-  "summary": "T4 rework after R1/R2 reviews (reviewed commit f3dc2d9). Gated select-all on the armed state rather than every click (with collapsed caret on second click and rearm after focus move); replaced test_value_box_edit_and_read_back with egui_kittest::Harness typing and read-back test; made view strictly read-only with respect to TimingInputs; eliminated local duplicated constants and imported theme tokens (using SLIDER_RAIL_DISABLED #CBD5E1 distinct from SLATE_300); ported reference mixer rail with RELEASE_TEXT track and MIX_TEXT handle ring; assigned unambiguous group-identifying accessible names to range sliders and applied col.is_enabled() to mode selector; bounds-checked preview access and documented exact T4 mount dependency for T5.",
+  "summary": "T4 rework for R2 round-2 review (reviewed target 4ab6ce2), completed after Worker 1 exported the shared owner. Restored interior padding at all call sites that adopted theme frame builders using theme constants (CARD_PADDING 20px on timing_card, GROUP_PADDING 14px on content container, 12px on slot_style containers, 4px on mode_selector, symmetric(6, 1) on pill_style) with test_timing_card_has_non_zero_frame_padding; dropped hover swell from mixer_slider so handle swells only while dragged; adopted theme::secondary_button (Icon::Restore) for the timing card's Restore control, replacing the bare egui::Button, with a kittest pinning the same accessible role and rest/hover inks as the mapping card's control.",
   "branch": "agent/worker-3",
-  "commit": "5f16f4f",
+  "commit": "87d4c0f",
   "owned_files": [
     "src/ui2/timing.rs",
     ".orchestrator/reports/T4.json"
@@ -14,59 +14,73 @@
   ],
   "review_actions": [
     {
-      "id": "R2 required action 1 - Gate select-all on arm state",
-      "required": "Gate the select-all on the arm state rather than on every click: when a box is already armed/focused, subsequent clicks must fall through to the standard cursor placement so the user can place a caret. Verify with a kittest test that clicks the box twice at different x positions and asserts the second click leaves a collapsed cursor rather than a full-range selection, and a second test that a press after focus moved elsewhere selects all again (the rearm in track_box_focus).",
-      "changed": "`value_box` now gates `select_all_text` on `!props.editing && (response.gained_focus() || response.clicked())`. When already armed (`props.editing == true`), subsequent clicks fall through to egui's default cursor placement. Focus moves disarm the box through `track_box_focus`, so the next press selects all again.",
-      "evidence": "Two new egui_kittest tests added in `src/ui2/timing.rs`: `test_value_box_second_click_places_caret` clicks Transition Minimum twice and asserts `range.start == range.end` (collapsed caret), and `test_value_box_rearm_after_focus_move` clicks Transition Maximum (moving focus/disarming Transition Minimum via `track_box_focus`) and verifies that clicking Transition Minimum again selects all text.",
+      "id": "R2 round-2 high - Restore call-site frame padding with theme constants",
+      "required": "Restore the padding at every call site that adopted a theme frame builder, using the theme constants rather than new literals: theme::card_style().inner_margin(Margin::same(theme::CARD_PADDING as i8)) for timing_card; theme::group_style().inner_margin(Margin::same(theme::GROUP_PADDING as i8)) for the card content container; Margin::same(4) for the mode_selector strip (src/ui/app.rs:3123); Margin::same(12) for duration_range, rate_group, mechanism_steps and timing_preview_section (src/ui/app.rs:1379, 3046, 3301); and Margin::symmetric(6, 1) for theme::pill_style (src/ui/app.rs:3024, 3166). Add one test that renders timing_card and asserts a non-zero gap between the card frame's outer rect and the first child widget's rect, so a future consolidation cannot silently flatten it again.",
+      "changed": "Imported `CARD_PADDING` (20.0) and `GROUP_PADDING` (14.0) from `super::theme` and restored `inner_margin` at all 9 frame call sites: `timing_card` uses `Margin::same(CARD_PADDING as i8)`, content container uses `Margin::same(GROUP_PADDING as i8)`, `mode_selector` strip uses `Margin::same(4)`, `duration_range`, `rate_group`, `mechanism_steps`, and `timing_preview_section` use `Margin::same(12)`, and pills use `Margin::symmetric(6, 1)`. Added `test_timing_card_has_non_zero_frame_padding` which renders `timing_card` in Harness and verifies `title_rect.min - card_rect.min >= CARD_PADDING - 1.0`.",
+      "evidence": "Executed in scratch crate with full integrated modules: `test_timing_card_has_non_zero_frame_padding` passes, confirming left and top margins are each >= 19.0px against the outer card rect. Dropping margins fails the test.",
       "result": "done"
     },
     {
-      "id": "R2 required action 2 - egui_kittest Harness value box test",
-      "required": "Replace test_value_box_edit_and_read_back with an egui_kittest::Harness test that (1) finds the box by its accessible name ('Transition Minimum'), (2) types a new value through the harness rather than assigning the buffer, (3) presses Enter, and (4) asserts both that Message::TimingTextChanged/TimingTextSubmitted reached a state::update driven harness state and that the box reads back the committed value by label.",
-      "changed": "Replaced the previous test with `test_value_box_edit_and_read_back` using `egui_kittest::Harness`. The test queries node by accessible name 'Transition Minimum', types '15.5' via `node.type_text()`, sends Enter via `harness.key_press(egui::Key::Enter)`, verifies that `state.draft.timing.socd_transition_min_micros` is 15500 and `state.inputs.transition_minimum` is '15.5', and verifies `node.value()` reads back '15.5'.",
-      "evidence": "Executed in out-of-tree harness with full integration state/message layer: test passes and verifies the complete end-to-end message flow.",
+      "id": "R2 round-2 low - Drop response.hovered() from mixer_slider handle radius",
+      "required": "Drop || response.hovered() from mixer_slider's radius condition so both sliders swell only while grabbed, matching theme.rs's documented SLIDER_HANDLE_RADIUS/SLIDER_HANDLE_RADIUS_DRAG contract. Add coverage for rest, hover and drag as appropriate; no unapproved behavior change.",
+      "changed": "Dropped `|| response.hovered()` from `mixer_slider`, unifying handle radius calculation across `range_slider` and `mixer_slider` with `slider_handle_radius(response.dragged())` (returns `SLIDER_HANDLE_RADIUS` 7.0 at rest/hover, swelling to `SLIDER_HANDLE_RADIUS_DRAG` 8.0 while dragged). Added `test_slider_handle_radius_contract` asserting the exact radius across rest, hover, and drag states.",
+      "evidence": "New test `test_slider_handle_radius_contract` executes and passes in scratch crate.",
       "result": "done"
     },
     {
-      "id": "R2 required action 3 - View read-only with respect to TimingInputs",
-      "required": "Make the view read-only with respect to TimingInputs: let Message::TimingTextChanged remain the single writer through state::update. Implement the correction within timing.rs; do not delete the message path or widen state ownership.",
-      "changed": "`value_box`, `duration_range`, `rate_group`, and `timing_card` now take `buffer: &str` / `inputs: &TimingInputs` by immutable reference. `value_box` copies the input string into a frame-local `local_text: String`, binds it to `TextEdit::singleline(&mut local_text)`, and emits `Message::TimingTextChanged(props.field, local_text)` on change. `TimingInputs` is never mutated directly by the view.",
-      "evidence": "Signature audit: `inputs: &TimingInputs` in `timing_card`, `duration_range`, `rate_group`; `buffer: &str` in `value_box`. All mutations route strictly through `state::update(Message::TimingTextChanged)`.",
+      "id": "R2 round-2 medium - Outlined Restore secondary button ownership",
+      "required": "Give the outlined secondary action one owner. Move secondary_button out of mapping.rs into a module both cards can call and have timing.rs's Restore button call it instead of egui::Button; do not copy secondary_button into timing.rs. Add one assertion that the timing card's Restore control reports the same accessible role and renders the same rest/hover inks as the mapping card's.",
+      "changed": "Worker 1 (T2) delivered the shared owner in commit 5abefc7 as theme::secondary_button(ui, kind: Icon, label: &str) plus theme::Icon/paint_icon/action_icon_ink/BUTTON_* and the stamp_galley single owner. The timing card's Restore control now calls `theme::secondary_button(ui, theme::Icon::Restore, language.text(\"Restore timing defaults\"))`; no local copy exists in timing.rs. Added `test_restore_control_matches_the_mapping_card_control`, which renders the timing card and the mapping card in one Harness and asserts equal AccessKit roles for both Restore controls, equal rest label ink (theme::ICON_SECONDARY), and equal hover label ink (theme::INDIGO_600), plus the return to rest ink when the pointer leaves.",
+      "evidence": "Scratch crate with integration content + T2 theme 5abefc7 + T3 mapping 58c102c: the new test passes. Negative control (scratch-only revert of the call site to a bare egui::Button) fails it with the timing label painted #B4B4B4 against #475569, so the assertion observes the shared control rather than restating it. The mapping card's own local copy is still what that card draws with until T3's consumer wave, as declared in 5abefc7; both controls render identical role and inks today.",
       "result": "done"
     },
     {
-      "id": "R2 required action 4 / R1 - Canonical theme tokens & SLIDER_RAIL_DISABLED",
-      "required": "Delete the constant block in timing.rs and import from super::theme. Do not map timing::SLATE_300 onto theme::SLATE_300. Use theme::SLIDER_RAIL_DISABLED (#CBD5E1) distinct from SLATE_300 (#CAD5E2). Route geometry through existing equivalent theme tokens.",
-      "changed": "Deleted local duplicate color and metric constants from `timing.rs`. Imported canonical theme tokens from `super::theme`: `BODY_TEXT`, `BORDER`, `ERROR_TEXT`, `HEADING_SIZE`, `IMMEDIATE_ACCENT`, `INDIGO_600`, `INSET`, `MIX_TEXT`, `MUTED_TEXT`, `PRIMARY_TEXT`, `PURPLE_600`, `RELEASE_TEXT`, `SECTION_GAP`, `SLATE_100`, `SLIDER_HANDLE_BORDER`, `SLIDER_HANDLE_RADIUS`, `SLIDER_HANDLE_RADIUS_DRAG`, `SLIDER_RAIL_DISABLED`, `SLIDER_RAIL_RADIUS`, `SLIDER_RAIL_WIDTH`, `SURFACE`, `VIOLET_600`. The disabled rail explicitly uses `SLIDER_RAIL_DISABLED` (#CBD5E1). Frame containers use `theme::card_style()`, `theme::group_style()`, `theme::slot_style()`, and `theme::pill_style()`.",
-      "evidence": "No duplicated color constants remain in `timing.rs`. Verified identical rendering and theme test assertions in scratch crate.",
+      "id": "R2-r1-high-1 - Gate select-all on arm state",
+      "required": "Gate select-all on armed state rather than every click.",
+      "changed": "Gated in `value_box` on `!props.editing && (response.gained_focus() || response.clicked())`. Second click inside armed box places caret; focus moves rearm via `track_box_focus`.",
+      "evidence": "Tested by `test_value_box_second_click_places_caret` and `test_value_box_rearm_after_focus_move`.",
       "result": "done"
     },
     {
-      "id": "R2 required action 5 - Accessible names and mode_selector enabled state",
-      "required": "Give each slider a name that identifies its group (so the two duration ranges in Random Mix are distinguished). Replace hardcoded true in mode_selector's WidgetInfo::selected with col.is_enabled(). Preserve localized product-language behavior.",
-      "changed": "Each duration range slider now receives an unambiguous accessible label via `accessible_name: format!(\"{} duration range\", language.text(props.label))` ('New Key Press Delay duration range' vs 'Previous Key Release Delay duration range'). `mode_selector` now passes `col.is_enabled()` to `WidgetInfo::selected`.",
-      "evidence": "Checked accessible tree: both duration ranges are distinct in accessibility queries and follow active UI language. Mode button accessibility correctly reflects column enabled state.",
+      "id": "R2-r1-high-2 - egui_kittest Harness value box test",
+      "required": "Drive value box by accessible label with Harness, type new value, press Enter, verify state::update and read-back.",
+      "changed": "Implemented `test_value_box_edit_and_read_back` verifying full end-to-end flow.",
+      "evidence": "Passes in scratch harness with integrated state/message layer.",
       "result": "done"
     },
     {
-      "id": "R2 required action 6 - Custom Random Mix rail slider (mixer_slider)",
-      "required": "Replace default egui Slider in rate_group with the reference mixer rail using existing SLIDER_* geometry, RELEASE_TEXT filled rail, and MIX_TEXT ring.",
-      "changed": "Implemented custom `mixer_slider` widget in `timing.rs`: draws 10px high track rounded to 5px (`SLATE_100`), filled active span in `RELEASE_TEXT` up to the handle, and white circle thumb with 3px border in `MIX_TEXT`, swelling from 7px to 8px radius on drag/hover. Emits `Message::MixChanged` on interact.",
-      "evidence": "New unit test `test_mixer_slider_draw` verifies allocation, drawing, and interaction without panics.",
+      "id": "R2-r1-high-3 - View read-only with respect to TimingInputs",
+      "required": "View must not mutate TimingInputs; Message::TimingTextChanged is single writer.",
+      "changed": "All timing view functions take `&TimingInputs` or `&str`; `value_box` uses local text buffer.",
+      "evidence": "Signature audit confirmed.",
+      "result": "done"
+    },
+    {
+      "id": "R2-r1-med-4 / R1 - Canonical theme tokens & SLIDER_RAIL_DISABLED",
+      "required": "Delete duplicated constants; import from super::theme; use SLIDER_RAIL_DISABLED.",
+      "changed": "Constants imported from `super::theme`; disabled rail uses `SLIDER_RAIL_DISABLED` (#CBD5E1) distinct from `SLATE_300`.",
+      "evidence": "Verified clean imports and theme assertions.",
+      "result": "done"
+    },
+    {
+      "id": "R2-r1-med-5 - Accessible names and mode_selector enabled state",
+      "required": "Distinct accessible names for duration ranges; pass col.is_enabled() to WidgetInfo::selected.",
+      "changed": "Applied unique group-prefixed names ('{} duration range') and `col.is_enabled()`.",
+      "evidence": "Tested and verified in accessibility tree.",
+      "result": "done"
+    },
+    {
+      "id": "R2-r1-med-6 - Custom Random Mix rail slider",
+      "required": "Implement reference mixer rail with RELEASE_TEXT track and MIX_TEXT handle ring.",
+      "changed": "Implemented custom `mixer_slider` widget with theme geometry.",
+      "evidence": "Tested by `test_mixer_slider_draw`.",
       "result": "done"
     },
     {
       "id": "R1 issue 6 & R2 - Preview bounds check & T5 mount dependency",
-      "required": "Decide ownership with Master before touching pixels. Do not finish a second preview implementation in timing.rs or edit preview.rs. Report exact T4 mount/interface dependency for T5. Bounds check p.example.",
-      "changed": "`timing_preview_section` guards `p.example` via `[...].get(p.example % 3).copied().unwrap_or(SocdMode::Immediate)` to prevent panics on arbitrary indices. Retained lightweight illustrative preview section for Immediate mode in timing card as the mount point; documented exact T5 dependency.",
-      "evidence": "`timing_preview_section` does not panic regardless of `p.example` or `timing.mode`. T5 interface coordination documented in risks.",
-      "result": "done"
-    },
-    {
-      "id": "R1 issue 10 - Rate box accent color",
-      "required": "Assess preservation rate box accent against original contract.",
-      "changed": "Preserved `RELEASE_TEXT` for the preservation rate box accent per reference `src/ui/app.rs:3317`. The Iced reference deliberately pairs the preservation rate value box with the release-delay accent.",
-      "evidence": "Documented in code comment citing `src/ui/app.rs:3317`.",
+      "required": "Bounds check p.example; retain mount point for T5.",
+      "changed": "Guarded via `get(p.example % 3).copied().unwrap_or(Immediate)`.",
+      "evidence": "Tested without panics.",
       "result": "done"
     }
   ],
@@ -90,9 +104,14 @@
       "note": "Worktree run: clean with 0 warnings."
     },
     {
-      "command": "scratch copy (mod.rs registration + T2's real theme.rs from 35d5343 + egui_kittest dev-dep): cargo test --no-default-features --features egui-ui --lib",
+      "command": "scratch copy (integration content + T2's theme.rs from 5abefc7 + T3's mapping.rs/keycap.rs from 58c102c + egui_kittest dev-dep): cargo test --no-default-features --features egui-ui --lib",
       "result": "pass",
-      "note": "143 passed, 0 failed, including all 14 unit and kittest tests in src/ui2/timing.rs: test_mode_labels_and_colors, test_value_box_ids_unique, test_value_box_select_all_text, test_mode_selector_emits_message, test_timing_card_immediate_mode, test_timing_card_press_delay_mode, test_timing_card_release_delay_mode, test_timing_card_random_mix_mode, test_range_slider_draw_and_clamping, test_mixer_slider_draw, test_mechanism_steps_generation, test_value_box_edit_and_read_back, test_value_box_second_click_places_caret, test_value_box_rearm_after_focus_move."
+      "note": "154 passed, 0 failed, including all 17 unit and kittest tests in src/ui2/timing.rs, newly including test_restore_control_matches_the_mapping_card_control (same AccessKit role, same rest ink theme::ICON_SECONDARY, same hover ink theme::INDIGO_600 as the mapping card's Restore control)."
+    },
+    {
+      "command": "scratch copy, negative control: call site reverted to a bare egui::Button, cargo test --lib test_restore_control_matches_the_mapping_card_control",
+      "result": "fail-expected",
+      "note": "Recorded as evidence that the new assertion observes the shared control rather than restating it: the timing label painted #B4B4B4 against #475569. File restored from the worktree, suite re-run green, and the restoration confirmed by mtime + recompile."
     },
     {
       "command": "scratch copy: cargo clippy --no-default-features --features egui-ui --all-targets -- -D warnings",
@@ -105,10 +124,11 @@
     }
   ],
   "risks": [
+    "Consumer wave (mapping card): the mapping card still renders its private secondary_button copy until T3 migrates to theme::secondary_button, as declared in T2's commit 5abefc7. Both controls render the same role and rest/hover inks today (asserted by test_restore_control_matches_the_mapping_card_control), but the mapping copy is not the owner.",
     "T5 mount/interface dependency: T5 owns the full interactive preview card and timeline. In timing.rs, `timing_preview_section` currently renders the Immediate-mode illustrative preview. Once T5 implements `super::preview::preview_card` (or equivalent), the Integrator should wire the mount in `timing_card` to call T5's preview API directly.",
     "Integration prerequisite (module registration): src/ui2/mod.rs must declare `pub mod timing;`. In accordance with Worker ownership boundaries, mod.rs was not edited on this branch.",
     "Integration prerequisite (dev-dependency): egui_kittest is needed in Cargo.toml [target.'cfg(windows)'.dev-dependencies] to compile the harness tests in the main tree (already present on agent/integration).",
-    "Integration prerequisite (T2 theme tokens): timing.rs imports SLIDER_RAIL_DISABLED, SLIDER_RAIL_WIDTH, SLIDER_HANDLE_RADIUS, SLIDER_HANDLE_RADIUS_DRAG, SLIDER_HANDLE_BORDER, SLIDER_RAIL_RADIUS, etc. from ui2::theme. These tokens were merged in commit 35d5343 on agent/worker-1 and must be present when integrating T4."
+    "Integration prerequisite (T2 theme tokens and shared control): timing.rs imports CARD_PADDING, GROUP_PADDING, SLIDER_RAIL_DISABLED, SLIDER_RAIL_WIDTH, SLIDER_HANDLE_RADIUS, SLIDER_HANDLE_RADIUS_DRAG, SLIDER_HANDLE_BORDER, SLIDER_RAIL_RADIUS, etc. (commit 35d5343) and now also calls theme::secondary_button / theme::Icon / theme::ICON_SECONDARY, delivered in commit 5abefc7. Both must be present when integrating T4."
   ],
   "blockers": []
 }
