@@ -275,7 +275,6 @@ fn assignment_status(ui: &mut Ui, duplicates: &[bool; 4], state: &State) {
 /// window's own press set with its timestamps resolves it otherwise: the later
 /// press takes a contested pair. The `!physical` condition is unchanged from
 /// the Iced `resolve_dpad`.
-/// Ported unchanged from the Iced `resolve_dpad`.
 fn resolve_dpad(
     pressed_keys: &[bool; 4],
     press_timestamps: &[Option<std::time::Instant>; 4],
@@ -519,13 +518,20 @@ fn esc_button(ui: &mut Ui, label: &str) -> Response {
 /// local weight approximation in [`keycap::stamp_galley`]. The galley is laid
 /// out with [`Color32::PLACEHOLDER`] so the `color` handed to the painter is
 /// the one that renders.
+///
+/// Painted text still publishes a [`WidgetType::Label`] node: the footer's
+/// duplicate/uniqueness status is the card's only correctness signal, and
+/// without a node neither `egui_kittest` nor a screen reader could see it.
+/// Decorative glyphs (`icon`, `dot`) stay unlabelled; the D-pad tile keeps the
+/// label it already had.
 fn text(ui: &mut Ui, content: &str, size: f32, color: Color32, bold: bool) -> Rect {
     let galley = ui.painter().layout_no_wrap(
         content.to_owned(),
         FontId::proportional(size),
         Color32::PLACEHOLDER,
     );
-    let (rect, _) = ui.allocate_exact_size(galley.size(), Sense::hover());
+    let (rect, response) = ui.allocate_exact_size(galley.size(), Sense::hover());
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, ui.is_enabled(), content));
     if bold {
         keycap::stamp_galley(ui.painter(), rect.min, &galley, color, size);
     } else {
@@ -704,6 +710,58 @@ mod tests {
             PhysicalKey::new(0x11, false),
         ];
         assert_eq!(duplicate_slots(&triple), [true, false, true, true]);
+    }
+
+    /// The footer's status is painted text, so this is also the regression
+    /// guard for `text()` publishing a labelled node: if the painted status
+    /// stops reaching AccessKit, no label can be found either way.
+    #[test]
+    fn the_footer_status_follows_the_duplicate_bindings() {
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1040.0, 800.0))
+            .build_ui_state(
+                |ui, runtime: &mut FakeRuntime| runtime.frame(ui),
+                FakeRuntime {
+                    state: baseline_state(),
+                    sent: Vec::new(),
+                },
+            );
+
+        // Distinct bindings publish only the unique status.
+        harness.get_by_label("All keys uniquely assigned.");
+        assert!(
+            harness
+                .query_by_label("Duplicate key bindings detected.")
+                .is_none()
+        );
+
+        // Sharing one physical key between two slots must flip the footer, and
+        // the flipped status must be reachable by label.
+        let shared = harness
+            .state()
+            .state
+            .snapshot
+            .as_ref()
+            .unwrap()
+            .draft
+            .bindings[0];
+        harness
+            .state_mut()
+            .state
+            .snapshot
+            .as_mut()
+            .unwrap()
+            .draft
+            .bindings[1] = shared;
+        harness.run();
+        harness.get_by_label("Duplicate key bindings detected.");
+        assert!(
+            harness
+                .query_by_label("All keys uniquely assigned.")
+                .is_none()
+        );
     }
 
     #[test]
