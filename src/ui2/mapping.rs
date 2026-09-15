@@ -379,32 +379,24 @@ fn dpad_center_tile(ui: &mut Ui, shift_x: f32, shift_y: f32, active: bool) {
         3.0,
         3.0,
     ));
-    painter.circle_filled(
-        center,
-        4.0,
-        Color32::from_rgba_unmultiplied(204, 214, 224, 153),
-    );
+    painter.circle_filled(center, 4.0, theme::DPAD_GUIDE_DOT);
 
     let dot = Pos2::new(center.x + shift_x, center.y + shift_y);
     if active {
-        painter.circle_filled(dot, 12.0, Color32::from_rgba_unmultiplied(59, 84, 232, 64));
+        painter.circle_filled(dot, 12.0, theme::DPAD_ACTIVE_GLOW);
         painter.circle_filled(
             Pos2::new(dot.x, dot.y + 1.0),
             10.0,
-            Color32::from_rgba_unmultiplied(59, 84, 232, 77),
+            theme::DPAD_ACTIVE_DOT_SHADOW,
         );
         painter.circle_filled(dot, 10.0, theme::IMMEDIATE_ACCENT);
     } else {
         painter.circle_filled(
             Pos2::new(dot.x, dot.y + 1.0),
             9.0,
-            Color32::from_black_alpha(20),
+            theme::DPAD_IDLE_DOT_SHADOW,
         );
-        painter.circle_filled(
-            dot,
-            9.0,
-            Color32::from_rgba_unmultiplied(148, 163, 184, 204),
-        );
+        painter.circle_filled(dot, 9.0, theme::DPAD_IDLE_DOT);
     }
 }
 
@@ -438,7 +430,7 @@ fn secondary_button(ui: &mut Ui, kind: Icon, label: &str) -> Response {
     );
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), label));
     let hovered = response.hovered();
-    let (fill, edge, ink) = if hovered {
+    let (fill, edge, label_ink) = if hovered {
         (
             theme::HOVER_WASH,
             theme::NAME_HOVER_BORDER,
@@ -459,7 +451,7 @@ fn secondary_button(ui: &mut Ui, kind: Icon, label: &str) -> Response {
             Vec2::splat(BUTTON_ICON),
         ),
         kind,
-        ink,
+        action_icon_ink(kind, label_ink),
     );
     keycap::stamp_galley(
         &painter,
@@ -468,10 +460,22 @@ fn secondary_button(ui: &mut Ui, kind: Icon, label: &str) -> Response {
             rect.center().y - galley.size().y / 2.0,
         ),
         &galley,
-        ink,
+        label_ink,
         BUTTON_TEXT_SIZE,
     );
     response
+}
+
+/// The icon ink rule from the Iced `icon_label`: a Restore glyph keeps the
+/// reference's slate-600 ink in every state, while other action icons inherit
+/// the button's text colour so their hover states keep working. The label
+/// itself follows the hover ink either way.
+fn action_icon_ink(kind: Icon, label_ink: Color32) -> Color32 {
+    if kind == Icon::Restore {
+        theme::ICON_SECONDARY
+    } else {
+        label_ink
+    }
 }
 
 /// The banner's ESC chip (reference `bg-indigo-700 hover:bg-indigo-800`).
@@ -788,6 +792,84 @@ mod tests {
             Some(theme::INDIGO_600),
             "hover must move the label to the indigo ink"
         );
+    }
+
+    #[test]
+    fn other_action_icons_follow_the_button_ink() {
+        assert_eq!(
+            action_icon_ink(Icon::Restore, theme::INDIGO_600),
+            theme::ICON_SECONDARY
+        );
+        assert_eq!(
+            action_icon_ink(Icon::Keyboard, theme::INDIGO_600),
+            theme::INDIGO_600
+        );
+    }
+
+    /// Every solid stroke colour painted by a widget's own painter, i.e. the
+    /// shapes clipped to that widget's rect.
+    fn painted_stroke_colors(
+        harness: &egui_kittest::Harness<'_, FakeRuntime>,
+        clip: Rect,
+    ) -> Vec<Color32> {
+        use egui::epaint::ColorMode;
+
+        fn stroke_colors(shape: &egui::Shape) -> Vec<Color32> {
+            match shape {
+                egui::Shape::Path(path) => match path.stroke.color {
+                    ColorMode::Solid(color) => vec![color],
+                    ColorMode::UV(_) => Vec::new(),
+                },
+                egui::Shape::LineSegment { stroke, .. } => vec![stroke.color],
+                egui::Shape::Rect(rect) => vec![rect.stroke.color],
+                egui::Shape::Circle(circle) => vec![circle.stroke.color],
+                _ => Vec::new(),
+            }
+        }
+
+        harness
+            .output()
+            .shapes
+            .iter()
+            .filter(|clipped| clipped.clip_rect == clip)
+            .flat_map(|clipped| stroke_colors(&clipped.shape))
+            .collect()
+    }
+
+    #[test]
+    fn the_restore_icon_keeps_the_iced_slate_ink_on_hover() {
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1040.0, 800.0))
+            .build_ui_state(
+                |ui, runtime: &mut FakeRuntime| runtime.frame(ui),
+                FakeRuntime {
+                    state: baseline_state(),
+                    sent: Vec::new(),
+                },
+            );
+        let button = harness.get_by_label("Restore mapping defaults").rect();
+
+        // Migration constraint 5 preserves the Iced `icon_label` rule: the
+        // Restore glyph keeps slate-600 in every state while the label moves to
+        // the hover ink. R1 asked for one shared ink variable, which would have
+        // recoloured the icon; this test records the evidence-backed deviation.
+        for hovered in [false, true] {
+            if hovered {
+                harness.get_by_label("Restore mapping defaults").hover();
+                harness.run();
+            }
+            let strokes = painted_stroke_colors(&harness, button);
+            assert!(
+                strokes.contains(&theme::ICON_SECONDARY),
+                "the Restore glyph must paint in the secondary slate (hovered: {hovered})"
+            );
+            assert!(
+                !strokes.contains(&theme::INDIGO_600),
+                "the Restore glyph must not follow the label's hover ink (hovered: {hovered})"
+            );
+        }
     }
 
     #[test]
