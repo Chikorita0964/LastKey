@@ -1,9 +1,9 @@
 {
   "task_id": "T4",
   "status": "completed",
-  "summary": "T4 rework for R2 round-2 review (reviewed target 4ab6ce2). Restored interior padding at all call sites that adopted theme frame builders using theme constants and verified Iced call-site insets (CARD_PADDING 20px on timing_card, GROUP_PADDING 14px on content container, 12px on slot_style containers, 4px on mode_selector, symmetric(6, 1) on pill_style); added test_timing_card_has_non_zero_frame_padding asserting a non-zero gap (>= CARD_PADDING) between card frame and first child widget; dropped hover swell from mixer_slider so handle swells only while dragged (matching theme contract and range_slider); added test_slider_handle_radius_contract; documented Restore secondary button consolidation pending Worker 1's theme-owned common control export.",
+  "summary": "T4 rework for R2 round-2 review (reviewed target 4ab6ce2), completed after Worker 1 exported the shared owner. Restored interior padding at all call sites that adopted theme frame builders using theme constants (CARD_PADDING 20px on timing_card, GROUP_PADDING 14px on content container, 12px on slot_style containers, 4px on mode_selector, symmetric(6, 1) on pill_style) with test_timing_card_has_non_zero_frame_padding; dropped hover swell from mixer_slider so handle swells only while dragged; adopted theme::secondary_button (Icon::Restore) for the timing card's Restore control, replacing the bare egui::Button, with a kittest pinning the same accessible role and rest/hover inks as the mapping card's control.",
   "branch": "agent/worker-3",
-  "commit": "75bcf3d",
+  "commit": "87d4c0f",
   "owned_files": [
     "src/ui2/timing.rs",
     ".orchestrator/reports/T4.json"
@@ -29,10 +29,10 @@
     },
     {
       "id": "R2 round-2 medium - Outlined Restore secondary button ownership",
-      "required": "Give the outlined secondary action one owner. Do not copy secondary_button into timing.rs; report pending common API from theme owner.",
-      "changed": "Maintained existing Restore button in `timing.rs` without duplicating `mapping.rs`'s private `secondary_button`. Migration of the Restore control is deferred to Worker 1's theme-owned common control export per Master decision.",
-      "evidence": "Documented in report risks as pending consumer migration.",
-      "result": "pending_theme_owner"
+      "required": "Give the outlined secondary action one owner. Move secondary_button out of mapping.rs into a module both cards can call and have timing.rs's Restore button call it instead of egui::Button; do not copy secondary_button into timing.rs. Add one assertion that the timing card's Restore control reports the same accessible role and renders the same rest/hover inks as the mapping card's.",
+      "changed": "Worker 1 (T2) delivered the shared owner in commit 5abefc7 as theme::secondary_button(ui, kind: Icon, label: &str) plus theme::Icon/paint_icon/action_icon_ink/BUTTON_* and the stamp_galley single owner. The timing card's Restore control now calls `theme::secondary_button(ui, theme::Icon::Restore, language.text(\"Restore timing defaults\"))`; no local copy exists in timing.rs. Added `test_restore_control_matches_the_mapping_card_control`, which renders the timing card and the mapping card in one Harness and asserts equal AccessKit roles for both Restore controls, equal rest label ink (theme::ICON_SECONDARY), and equal hover label ink (theme::INDIGO_600), plus the return to rest ink when the pointer leaves.",
+      "evidence": "Scratch crate with integration content + T2 theme 5abefc7 + T3 mapping 58c102c: the new test passes. Negative control (scratch-only revert of the call site to a bare egui::Button) fails it with the timing label painted #B4B4B4 against #475569, so the assertion observes the shared control rather than restating it. The mapping card's own local copy is still what that card draws with until T3's consumer wave, as declared in 5abefc7; both controls render identical role and inks today.",
+      "result": "done"
     },
     {
       "id": "R2-r1-high-1 - Gate select-all on arm state",
@@ -104,9 +104,14 @@
       "note": "Worktree run: clean with 0 warnings."
     },
     {
-      "command": "scratch copy (mod.rs registration + T2's real theme.rs from 35d5343 + egui_kittest dev-dep): cargo test --no-default-features --features egui-ui --lib",
+      "command": "scratch copy (integration content + T2's theme.rs from 5abefc7 + T3's mapping.rs/keycap.rs from 58c102c + egui_kittest dev-dep): cargo test --no-default-features --features egui-ui --lib",
       "result": "pass",
-      "note": "145 passed, 0 failed, including all 16 unit and kittest tests in src/ui2/timing.rs: test_mode_labels_and_colors, test_value_box_ids_unique, test_value_box_select_all_text, test_mode_selector_emits_message, test_timing_card_immediate_mode, test_timing_card_press_delay_mode, test_timing_card_release_delay_mode, test_timing_card_random_mix_mode, test_range_slider_draw_and_clamping, test_mixer_slider_draw, test_mechanism_steps_generation, test_value_box_edit_and_read_back, test_value_box_second_click_places_caret, test_value_box_rearm_after_focus_move, test_slider_handle_radius_contract, test_timing_card_has_non_zero_frame_padding."
+      "note": "154 passed, 0 failed, including all 17 unit and kittest tests in src/ui2/timing.rs, newly including test_restore_control_matches_the_mapping_card_control (same AccessKit role, same rest ink theme::ICON_SECONDARY, same hover ink theme::INDIGO_600 as the mapping card's Restore control)."
+    },
+    {
+      "command": "scratch copy, negative control: call site reverted to a bare egui::Button, cargo test --lib test_restore_control_matches_the_mapping_card_control",
+      "result": "fail-expected",
+      "note": "Recorded as evidence that the new assertion observes the shared control rather than restating it: the timing label painted #B4B4B4 against #475569. File restored from the worktree, suite re-run green, and the restoration confirmed by mtime + recompile."
     },
     {
       "command": "scratch copy: cargo clippy --no-default-features --features egui-ui --all-targets -- -D warnings",
@@ -119,11 +124,11 @@
     }
   ],
   "risks": [
-    "Restore secondary button consolidation: The timing card's 'Restore timing defaults' button remains an egui::Button rather than duplicating mapping.rs's private secondary_button helper. When Worker 1 exports a shared secondary action component from theme/controls, timing_card will adopt it.",
+    "Consumer wave (mapping card): the mapping card still renders its private secondary_button copy until T3 migrates to theme::secondary_button, as declared in T2's commit 5abefc7. Both controls render the same role and rest/hover inks today (asserted by test_restore_control_matches_the_mapping_card_control), but the mapping copy is not the owner.",
     "T5 mount/interface dependency: T5 owns the full interactive preview card and timeline. In timing.rs, `timing_preview_section` currently renders the Immediate-mode illustrative preview. Once T5 implements `super::preview::preview_card` (or equivalent), the Integrator should wire the mount in `timing_card` to call T5's preview API directly.",
     "Integration prerequisite (module registration): src/ui2/mod.rs must declare `pub mod timing;`. In accordance with Worker ownership boundaries, mod.rs was not edited on this branch.",
     "Integration prerequisite (dev-dependency): egui_kittest is needed in Cargo.toml [target.'cfg(windows)'.dev-dependencies] to compile the harness tests in the main tree (already present on agent/integration).",
-    "Integration prerequisite (T2 theme tokens): timing.rs imports CARD_PADDING, GROUP_PADDING, SLIDER_RAIL_DISABLED, SLIDER_RAIL_WIDTH, SLIDER_HANDLE_RADIUS, SLIDER_HANDLE_RADIUS_DRAG, SLIDER_HANDLE_BORDER, SLIDER_RAIL_RADIUS, etc. from ui2::theme. These tokens were merged in commit 35d5343 on agent/worker-1 and are present on agent/integration."
+    "Integration prerequisite (T2 theme tokens and shared control): timing.rs imports CARD_PADDING, GROUP_PADDING, SLIDER_RAIL_DISABLED, SLIDER_RAIL_WIDTH, SLIDER_HANDLE_RADIUS, SLIDER_HANDLE_RADIUS_DRAG, SLIDER_HANDLE_BORDER, SLIDER_RAIL_RADIUS, etc. (commit 35d5343) and now also calls theme::secondary_button / theme::Icon / theme::ICON_SECONDARY, delivered in commit 5abefc7. Both must be present when integrating T4."
   ],
   "blockers": []
 }
