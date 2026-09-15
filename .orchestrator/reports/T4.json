@@ -1,15 +1,74 @@
 {
   "task_id": "T4",
   "status": "completed",
-  "summary": "Ported the timing card, dual-thumb range slider, two-row timing pills, and value boxes with select-all-on-focus to egui in src/ui2/timing.rs. All 4 SOCD modes (Immediate, PressDelay, ReleaseDelay, RandomMix), conditional timing groups, mix ratio slider, mechanism steps, and value editing/read-back are fully implemented and verified via 11 in-file unit tests; registration in src/ui2/mod.rs and egui_kittest in Cargo.toml are reported as integration prerequisites.",
+  "summary": "T4 rework after R1/R2 reviews (reviewed commit f3dc2d9). Gated select-all on the armed state rather than every click (with collapsed caret on second click and rearm after focus move); replaced test_value_box_edit_and_read_back with egui_kittest::Harness typing and read-back test; made view strictly read-only with respect to TimingInputs; eliminated local duplicated constants and imported theme tokens (using SLIDER_RAIL_DISABLED #CBD5E1 distinct from SLATE_300); ported reference mixer rail with RELEASE_TEXT track and MIX_TEXT handle ring; assigned unambiguous group-identifying accessible names to range sliders and applied col.is_enabled() to mode selector; bounds-checked preview access and documented exact T4 mount dependency for T5.",
   "branch": "agent/worker-3",
-  "commit": "deb3e43",
+  "commit": "5f16f4f",
   "owned_files": [
-    "src/ui2/timing.rs"
+    "src/ui2/timing.rs",
+    ".orchestrator/reports/T4.json"
   ],
   "changed_files": [
     "src/ui2/timing.rs",
     ".orchestrator/reports/T4.json"
+  ],
+  "review_actions": [
+    {
+      "id": "R2 required action 1 - Gate select-all on arm state",
+      "required": "Gate the select-all on the arm state rather than on every click: when a box is already armed/focused, subsequent clicks must fall through to the standard cursor placement so the user can place a caret. Verify with a kittest test that clicks the box twice at different x positions and asserts the second click leaves a collapsed cursor rather than a full-range selection, and a second test that a press after focus moved elsewhere selects all again (the rearm in track_box_focus).",
+      "changed": "`value_box` now gates `select_all_text` on `!props.editing && (response.gained_focus() || response.clicked())`. When already armed (`props.editing == true`), subsequent clicks fall through to egui's default cursor placement. Focus moves disarm the box through `track_box_focus`, so the next press selects all again.",
+      "evidence": "Two new egui_kittest tests added in `src/ui2/timing.rs`: `test_value_box_second_click_places_caret` clicks Transition Minimum twice and asserts `range.start == range.end` (collapsed caret), and `test_value_box_rearm_after_focus_move` clicks Transition Maximum (moving focus/disarming Transition Minimum via `track_box_focus`) and verifies that clicking Transition Minimum again selects all text.",
+      "result": "done"
+    },
+    {
+      "id": "R2 required action 2 - egui_kittest Harness value box test",
+      "required": "Replace test_value_box_edit_and_read_back with an egui_kittest::Harness test that (1) finds the box by its accessible name ('Transition Minimum'), (2) types a new value through the harness rather than assigning the buffer, (3) presses Enter, and (4) asserts both that Message::TimingTextChanged/TimingTextSubmitted reached a state::update driven harness state and that the box reads back the committed value by label.",
+      "changed": "Replaced the previous test with `test_value_box_edit_and_read_back` using `egui_kittest::Harness`. The test queries node by accessible name 'Transition Minimum', types '15.5' via `node.type_text()`, sends Enter via `harness.key_press(egui::Key::Enter)`, verifies that `state.draft.timing.socd_transition_min_micros` is 15500 and `state.inputs.transition_minimum` is '15.5', and verifies `node.value()` reads back '15.5'.",
+      "evidence": "Executed in out-of-tree harness with full integration state/message layer: test passes and verifies the complete end-to-end message flow.",
+      "result": "done"
+    },
+    {
+      "id": "R2 required action 3 - View read-only with respect to TimingInputs",
+      "required": "Make the view read-only with respect to TimingInputs: let Message::TimingTextChanged remain the single writer through state::update. Implement the correction within timing.rs; do not delete the message path or widen state ownership.",
+      "changed": "`value_box`, `duration_range`, `rate_group`, and `timing_card` now take `buffer: &str` / `inputs: &TimingInputs` by immutable reference. `value_box` copies the input string into a frame-local `local_text: String`, binds it to `TextEdit::singleline(&mut local_text)`, and emits `Message::TimingTextChanged(props.field, local_text)` on change. `TimingInputs` is never mutated directly by the view.",
+      "evidence": "Signature audit: `inputs: &TimingInputs` in `timing_card`, `duration_range`, `rate_group`; `buffer: &str` in `value_box`. All mutations route strictly through `state::update(Message::TimingTextChanged)`.",
+      "result": "done"
+    },
+    {
+      "id": "R2 required action 4 / R1 - Canonical theme tokens & SLIDER_RAIL_DISABLED",
+      "required": "Delete the constant block in timing.rs and import from super::theme. Do not map timing::SLATE_300 onto theme::SLATE_300. Use theme::SLIDER_RAIL_DISABLED (#CBD5E1) distinct from SLATE_300 (#CAD5E2). Route geometry through existing equivalent theme tokens.",
+      "changed": "Deleted local duplicate color and metric constants from `timing.rs`. Imported canonical theme tokens from `super::theme`: `BODY_TEXT`, `BORDER`, `ERROR_TEXT`, `HEADING_SIZE`, `IMMEDIATE_ACCENT`, `INDIGO_600`, `INSET`, `MIX_TEXT`, `MUTED_TEXT`, `PRIMARY_TEXT`, `PURPLE_600`, `RELEASE_TEXT`, `SECTION_GAP`, `SLATE_100`, `SLIDER_HANDLE_BORDER`, `SLIDER_HANDLE_RADIUS`, `SLIDER_HANDLE_RADIUS_DRAG`, `SLIDER_RAIL_DISABLED`, `SLIDER_RAIL_RADIUS`, `SLIDER_RAIL_WIDTH`, `SURFACE`, `VIOLET_600`. The disabled rail explicitly uses `SLIDER_RAIL_DISABLED` (#CBD5E1). Frame containers use `theme::card_style()`, `theme::group_style()`, `theme::slot_style()`, and `theme::pill_style()`.",
+      "evidence": "No duplicated color constants remain in `timing.rs`. Verified identical rendering and theme test assertions in scratch crate.",
+      "result": "done"
+    },
+    {
+      "id": "R2 required action 5 - Accessible names and mode_selector enabled state",
+      "required": "Give each slider a name that identifies its group (so the two duration ranges in Random Mix are distinguished). Replace hardcoded true in mode_selector's WidgetInfo::selected with col.is_enabled(). Preserve localized product-language behavior.",
+      "changed": "Each duration range slider now receives an unambiguous accessible label via `accessible_name: format!(\"{} duration range\", language.text(props.label))` ('New Key Press Delay duration range' vs 'Previous Key Release Delay duration range'). `mode_selector` now passes `col.is_enabled()` to `WidgetInfo::selected`.",
+      "evidence": "Checked accessible tree: both duration ranges are distinct in accessibility queries and follow active UI language. Mode button accessibility correctly reflects column enabled state.",
+      "result": "done"
+    },
+    {
+      "id": "R2 required action 6 - Custom Random Mix rail slider (mixer_slider)",
+      "required": "Replace default egui Slider in rate_group with the reference mixer rail using existing SLIDER_* geometry, RELEASE_TEXT filled rail, and MIX_TEXT ring.",
+      "changed": "Implemented custom `mixer_slider` widget in `timing.rs`: draws 10px high track rounded to 5px (`SLATE_100`), filled active span in `RELEASE_TEXT` up to the handle, and white circle thumb with 3px border in `MIX_TEXT`, swelling from 7px to 8px radius on drag/hover. Emits `Message::MixChanged` on interact.",
+      "evidence": "New unit test `test_mixer_slider_draw` verifies allocation, drawing, and interaction without panics.",
+      "result": "done"
+    },
+    {
+      "id": "R1 issue 6 & R2 - Preview bounds check & T5 mount dependency",
+      "required": "Decide ownership with Master before touching pixels. Do not finish a second preview implementation in timing.rs or edit preview.rs. Report exact T4 mount/interface dependency for T5. Bounds check p.example.",
+      "changed": "`timing_preview_section` guards `p.example` via `[...].get(p.example % 3).copied().unwrap_or(SocdMode::Immediate)` to prevent panics on arbitrary indices. Retained lightweight illustrative preview section for Immediate mode in timing card as the mount point; documented exact T5 dependency.",
+      "evidence": "`timing_preview_section` does not panic regardless of `p.example` or `timing.mode`. T5 interface coordination documented in risks.",
+      "result": "done"
+    },
+    {
+      "id": "R1 issue 10 - Rate box accent color",
+      "required": "Assess preservation rate box accent against original contract.",
+      "changed": "Preserved `RELEASE_TEXT` for the preservation rate box accent per reference `src/ui/app.rs:3317`. The Iced reference deliberately pairs the preservation rate value box with the release-delay accent.",
+      "evidence": "Documented in code comment citing `src/ui/app.rs:3317`.",
+      "result": "done"
+    }
   ],
   "tests": [
     {
@@ -23,12 +82,22 @@
     {
       "command": "cargo test --no-default-features --features egui-ui --lib",
       "result": "pass",
-      "note": "Worktree run: 105 passed. When temporarily registered in src/ui2/mod.rs during implementation verification, all 116 tests passed, including all 11 unit tests in src/ui2/timing.rs."
+      "note": "Worktree run: 105 passed, 0 failed. In-tree execution does not compile unregistered modules on this branch."
     },
     {
       "command": "cargo clippy --no-default-features --features egui-ui --all-targets -- -D warnings",
       "result": "pass",
-      "note": "Worktree run: clean with 0 warnings. Verified clean both with and without timing.rs registration in mod.rs."
+      "note": "Worktree run: clean with 0 warnings."
+    },
+    {
+      "command": "scratch copy (mod.rs registration + T2's real theme.rs from 35d5343 + egui_kittest dev-dep): cargo test --no-default-features --features egui-ui --lib",
+      "result": "pass",
+      "note": "143 passed, 0 failed, including all 14 unit and kittest tests in src/ui2/timing.rs: test_mode_labels_and_colors, test_value_box_ids_unique, test_value_box_select_all_text, test_mode_selector_emits_message, test_timing_card_immediate_mode, test_timing_card_press_delay_mode, test_timing_card_release_delay_mode, test_timing_card_random_mix_mode, test_range_slider_draw_and_clamping, test_mixer_slider_draw, test_mechanism_steps_generation, test_value_box_edit_and_read_back, test_value_box_second_click_places_caret, test_value_box_rearm_after_focus_move."
+    },
+    {
+      "command": "scratch copy: cargo clippy --no-default-features --features egui-ui --all-targets -- -D warnings",
+      "result": "pass",
+      "note": "Clean with 0 warnings on the updated timing.rs and its harness tests."
     },
     {
       "command": "git diff --check",
@@ -36,10 +105,10 @@
     }
   ],
   "risks": [
-    "Integration prerequisite (module registration): src/ui2/mod.rs must declare `pub mod timing;`. Until then, src/ui2/timing.rs is an unregistered module in the worktree and cannot be compiled during standard crate builds.",
-    "Integration prerequisite (dev-dependency): egui_kittest is not yet in Cargo.toml [dev-dependencies]; adding it is owned by T8/Integrator. Value box editing and read-back were tested and verified using egui's built-in run_ui and TextEdit load_state/cursor range APIs.",
-    "Palette alignment: Theme constants in src/ui2/timing.rs match src/ui/theme.rs verbatim (IMMEDIATE_ACCENT, INDIGO_600/700/800, VIOLET_600, MIX_TEXT, PRIMARY_TEXT, MUTED_TEXT, BODY_TEXT, BORDER, SURFACE, INSET, SLATE_100, SLATE_300, ERROR_TEXT, ERROR_BG, ERROR_BORDER, RELEASE_TEXT). When T2's src/ui2/theme.rs is merged by the Integrator, timing.rs can cleanly import from ui2::theme.",
-    "Workers T2 and T3 are compiling concurrently in separate worktrees; their unmerged files are not present in this worktree and did not affect compilation."
+    "T5 mount/interface dependency: T5 owns the full interactive preview card and timeline. In timing.rs, `timing_preview_section` currently renders the Immediate-mode illustrative preview. Once T5 implements `super::preview::preview_card` (or equivalent), the Integrator should wire the mount in `timing_card` to call T5's preview API directly.",
+    "Integration prerequisite (module registration): src/ui2/mod.rs must declare `pub mod timing;`. In accordance with Worker ownership boundaries, mod.rs was not edited on this branch.",
+    "Integration prerequisite (dev-dependency): egui_kittest is needed in Cargo.toml [target.'cfg(windows)'.dev-dependencies] to compile the harness tests in the main tree (already present on agent/integration).",
+    "Integration prerequisite (T2 theme tokens): timing.rs imports SLIDER_RAIL_DISABLED, SLIDER_RAIL_WIDTH, SLIDER_HANDLE_RADIUS, SLIDER_HANDLE_RADIUS_DRAG, SLIDER_HANDLE_BORDER, SLIDER_RAIL_RADIUS, etc. from ui2::theme. These tokens were merged in commit 35d5343 on agent/worker-1 and must be present when integrating T4."
   ],
   "blockers": []
 }
