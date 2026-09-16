@@ -21,7 +21,7 @@ use super::{
     mapping,
     message::{IpcEvent, KeyPress, Message, TimingField},
     profiles,
-    state::{self, Effect, State},
+    state::{self, Effect, ProfileDialog, State},
     theme, timeline, timing,
 };
 use crate::{
@@ -51,6 +51,8 @@ pub fn run() -> eframe::Result {
         viewport: ViewportBuilder::default()
             .with_title(WINDOW_TITLE)
             .with_inner_size([WINDOW_WIDTH, WINDOW_HEIGHT])
+            // The Iced shell's minimum window size (src/ui/app.rs:43-47).
+            .with_min_inner_size([960.0, 600.0])
             .with_icon(window_icon()),
         ..Default::default()
     };
@@ -336,7 +338,11 @@ fn settings_cards(ui: &mut Ui, state: &State, messages: &mut Vec<Message>) {
                     &state.inputs,
                     &state.editing,
                     state.language,
-                    Some(&state.preview),
+                    Some(timing::PreviewMount {
+                        preview: &state.preview,
+                        awake: state.focused,
+                        clock_mounted: matches!(state.profiles, ProfileDialog::Closed),
+                    }),
                     messages,
                 );
             }
@@ -1402,6 +1408,107 @@ mod tests {
             )
     }
 
+    /// Every path this frame painted, flattened out of `Shape::Vec`.
+    fn painted_paths<State>(harness: &Harness<'_, State>) -> Vec<egui::epaint::PathShape> {
+        fn collect(shape: &egui::Shape, out: &mut Vec<egui::epaint::PathShape>) {
+            match shape {
+                egui::Shape::Path(path) => out.push(path.clone()),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for clipped in &harness.output().shapes {
+            collect(&clipped.shape, &mut out);
+        }
+        out
+    }
+
+    /// Every text drawn this frame, in paint order.
+    fn painted_texts<State>(harness: &Harness<'_, State>) -> Vec<String> {
+        fn collect(shape: &egui::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(text) => out.push(text.galley.text().to_owned()),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for clipped in &harness.output().shapes {
+            collect(&clipped.shape, &mut out);
+        }
+        out
+    }
+
+    /// R2 round-2 finding 1: the shipped page must mount `preview::preview_card`
+    /// (procedural paths, the 850 ms clock), not T4's placeholder. The
+    /// transport glyphs are paths here, and a tick advances the phase once the
+    /// clock's deadline passes.
+    #[test]
+    fn the_page_mounts_the_real_preview_and_advances_on_its_clock() {
+        let mut harness = harness(baseline_state());
+        harness.run();
+
+        // The transport controls are procedural paths, not font glyphs.
+        let paths = painted_paths(&harness);
+        assert!(
+            paths
+                .iter()
+                .any(|path| path.closed && path.fill == theme::MUTED_TEXT),
+            "the paused pill draws the Play triangle as a filled path"
+        );
+        assert!(
+            paths
+                .iter()
+                .filter(|path| {
+                    path.stroke.color == egui::epaint::ColorMode::Solid(theme::ICON_MUTED)
+                })
+                .count()
+                >= 2,
+            "both nav chevrons draw as stroked paths"
+        );
+        let texts = painted_texts(&harness);
+        for glyph in ['\u{23F4}', '\u{23F5}', '\u{23F8}', '\u{25B6}'] {
+            assert!(
+                !texts.iter().any(|text| text.contains(glyph)),
+                "the placeholder's font glyphs are gone ({glyph})"
+            );
+        }
+
+        // Start the clock, then hand it egui time; the phase advances on the
+        // 850 ms tick without the test sleeping. The clock needs the window
+        // focused, which the real loop feeds from `InputState::focused`.
+        harness.state_mut().state.focused = true;
+        harness.input_mut().time = Some(10.0);
+        harness.step();
+        harness.get_by_label("Play preview").click();
+        harness.input_mut().time = Some(10.1);
+        harness.step();
+        assert!(harness.state().state.preview.playing);
+        harness.input_mut().time = Some(10.2);
+        harness.step();
+        assert_eq!(
+            harness.state().state.preview.phase,
+            0,
+            "mounting schedules the first phase, it does not tick"
+        );
+        harness.input_mut().time = Some(11.1);
+        harness.step();
+        assert_eq!(
+            harness.state().state.preview.phase,
+            1,
+            "the first tick lands 850 ms after the clock mounted"
+        );
+    }
+
     #[test]
     fn key_press_carries_both_key_names() {
         let press = key_press(egui::Key::W, Some(egui::Key::W));
@@ -1419,20 +1526,10 @@ mod tests {
         harness.get_by_label("Request snapshot").click();
         harness.run();
         assert!(
-            harness
-                .state()
-                .sent
-                .iter()
-                .all(|command| !matches!(command, UiCommand::RequestSnapshot))
-                || harness
-                    .state()
-                    .sent
-                    .iter()
-                    .any(|command| matches!(command, UiCommand::RequestSnapshot)),
-            "the request is attempted; without a connection it surfaces as a disconnect"
+            harness.state().sent.contains(&UiCommand::RequestSnapshot),
+            "the manual snapshot request is dispatched: {:?}",
+            harness.state().sent
         );
-        // The failure path: no connection, so `send` reports disconnected.
-        assert!(!harness.state().state.connected);
     }
 
     #[test]
