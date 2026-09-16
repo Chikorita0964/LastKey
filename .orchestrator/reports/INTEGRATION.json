@@ -4,7 +4,7 @@
     "agent/worker-3"
   ],
   "merge_commits": [
-    "dd1f55610edf83c23a7d7c6540d4e6f2a7ed77ff"
+    "ff04e033fd5492ca63f132d0c78f8833541c1d63"
   ],
   "tests": [
     {
@@ -47,8 +47,8 @@
   "conflicts_resolved": [],
   "unresolved_conflicts": [],
   "risks": [
-    "agent/worker-3 T10 (f30af15 eframe feature trim + semantic-test gating, dd1f556 T10 report) was a direct descendant of agent/integration at 11f57b0, so git fast-forwarded to dd1f556 with no merge commit and no conflicts; changed files are Cargo.toml, Cargo.lock, docs/architecture/verification.md, .github/workflows/rust-tests.yml, and .orchestrator/reports/T10.json.",
-    "Gate run used the UPDATED verification.md command: `cargo test --locked --no-default-features --features egui-ui --lib --bin lastkey-settings --test ui_semantic` in a single invocation, reporting 199 lib + 0 settings bin + 6 semantic, all passing. The trimmed eframe graph (default-features=false + accesskit/default_fonts/wgpu, 37 crates dropped) builds and passes the full gate including Linux cross-check.",
+    "agent/worker-3 T10 round-2 rework (19032fc README §Tests alignment + ff04e03 T10 report) was a direct descendant of agent/integration at c8ee071, so git fast-forwarded to ff04e03 with no merge commit and no conflicts; changed files are README.md (2 test-command lines) and .orchestrator/reports/T10.json.",
+    "Docs-only production change: README §Tests now matches the gate (--test ui_semantic on the test line, --all-targets on the clippy line), closing the drift the prior round carried as a risk. Gate re-run on the final tree passes all 9 updated commands: 199 lib + 0 bin + 6 semantic.",
     "default-tree GUI-freedom still confirmed by zero matches for egui/eframe/wgpu/winit/accesskit/iced/lyon.",
     "Native visual acceptance remains uncovered per docs/architecture/verification.md Unverified Areas; test success is not visual evidence."
   ]
