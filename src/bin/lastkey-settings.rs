@@ -5,7 +5,7 @@ fn main() -> eframe::Result {
     let Some(_single_instance) = SettingsSingleInstance::acquire() else {
         return Ok(());
     };
-    lastkey::ui2::run()
+    lastkey::ui::run()
 }
 
 #[cfg(windows)]

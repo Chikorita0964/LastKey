@@ -14,10 +14,10 @@
 //!
 //! # Why this is `language.rs` and not `language/mod.rs`
 //!
-//! T6 owns the language panel, and its file list names `src/ui2/language.rs`.
+//! T6 owns the language panel, and its file list names `src/ui/language.rs`.
 //! Rust cannot have both `language.rs` and `language/mod.rs`, so the module
 //! entry moved into this file; the per-language files stay under
-//! `src/ui2/language/`. `src/ui2/mod.rs` already declares `pub mod language;`,
+//! `src/ui/language/`. `src/ui/mod.rs` already declares `pub mod language;`,
 //! so the move needs no registration change and this file compiles on the
 //! task branch before the integration step registers `header`/`profiles`.
 
@@ -67,7 +67,7 @@ impl Language {
 
 /// Draws the language panel's rows, one full-width option per [`Language::ALL`]
 /// with the session's language carrying the trailing check mark. Port of
-/// `profile_slots`'s languages arm (src/ui/app.rs:1615-1649): the scroller's
+/// `profile_slots`'s languages arm (iced-ui/app.rs:1615-1649): the scroller's
 /// `space-y-0.5` gap, the selected row's active-option pair, and the plain row
 /// that stays open on the panel surface.
 pub fn language_rows(ui: &mut Ui, state: &State) -> Vec<Message> {

@@ -5,4 +5,4 @@ pub mod protocol;
 pub mod settings;
 
 #[cfg(all(windows, feature = "egui-ui"))]
-pub mod ui2;
+pub mod ui;

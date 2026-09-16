@@ -1,8 +1,8 @@
 //! Page header: branding, connection status, the icon-only profile /
 //! language / engine controls, and the amber dirty badge.
 //!
-//! Ports the header row of `SettingsApp::view` (src/ui/app.rs:1071-1146) and
-//! the dirty badge of `settings_actions` (src/ui/app.rs:2162-2170). The Iced
+//! Ports the header row of `SettingsApp::view` (iced-ui/app.rs:1071-1146) and
+//! the dirty badge of `settings_actions` (iced-ui/app.rs:2162-2170). The Iced
 //! app mounts the badge in the pinned action bar; T6 owns it because the
 //! dispatch assigns it, and T7 mounts it there. The module paints and pushes
 //! [`Message`]s only: it never saves settings, sends IPC, or mutates state.
@@ -13,7 +13,7 @@
 //! `Restore`, `Edit`, `Check`, `Warning`. The page glyphs the header and the
 //! panel controls need -- `Layers`, `Languages`, `Power`, `Close` -- are
 //! painted here because this task owns no theme file. Each traces the same
-//! `src/ui/icons.rs` path with the same paint-only shape as the shared set,
+//! `iced-ui/icons.rs` path with the same paint-only shape as the shared set,
 //! so folding them into it later is a move, not a rewrite; `mapping.rs`
 //! carries its own five-glyph copy for the same boundary reason.
 //!
@@ -35,12 +35,12 @@ use egui::{
 use super::{message::Message, state::State, theme};
 
 /// The drawn height of the header bar. The Iced `HEADER_HEIGHT`
-/// (src/ui/app.rs:78) is the same 60, and `profiles::PROFILE_PANEL_TOP`
+/// (iced-ui/app.rs:78) is the same 60, and `profiles::PROFILE_PANEL_TOP`
 /// anchors the overlay one `PAGE_PADDING + HEADER_HEIGHT + 8` below the
 /// window top.
 pub const HEADER_HEIGHT: f32 = 60.0;
 
-/// Iced `Padding { left: 20.0, ..Padding::from(12) }` (src/ui/app.rs:1140).
+/// Iced `Padding { left: 20.0, ..Padding::from(12) }` (iced-ui/app.rs:1140).
 const HEADER_PADDING: Margin = Margin {
     left: 20,
     right: 12,
@@ -55,7 +55,7 @@ const HEADER_CONTENT_HEIGHT: f32 =
 
 /// The 14px glyphs the Iced header buttons drew (`icons::icon(name, 14.0, ..)`).
 const HEADER_ICON: f32 = 14.0;
-/// The status dot's 8px box (`fn dot`, src/ui/app.rs:2462).
+/// The status dot's 8px box (`fn dot`, iced-ui/app.rs:2462).
 const STATUS_DOT: f32 = 8.0;
 /// The dot-to-status gap (Iced `.spacing(14)`).
 const STATUS_GAP: f32 = 14.0;
@@ -266,7 +266,7 @@ pub(super) enum Icon {
 }
 
 /// Trace one [`Icon`] into `rect` at `color`. The geometry is
-/// `src/ui/icons.rs::draw_icon`'s, in the same normalized coordinates the
+/// `iced-ui/icons.rs::draw_icon`'s, in the same normalized coordinates the
 /// shared [`theme::paint_icon`] uses, so the two painters stay comparable.
 pub(super) fn paint_icon(painter: &Painter, rect: Rect, kind: Icon, color: Color32) {
     let size = rect.width().min(rect.height());
@@ -282,7 +282,7 @@ pub(super) fn paint_icon(painter: &Painter, rect: Rect, kind: Icon, color: Color
     match kind {
         Icon::Layers => {
             // Three stacked plates: the top one closed, the lower two open
-            // chevrons (src/ui/icons.rs:453-471).
+            // chevrons (iced-ui/icons.rs:453-471).
             polyline(
                 fine,
                 &[
@@ -298,7 +298,7 @@ pub(super) fn paint_icon(painter: &Painter, rect: Rect, kind: Icon, color: Color
         }
         Icon::Languages => {
             // The reference's translate glyph: six strokes in a 24-unit box,
-            // drawn at the reference's 0.09 stroke (src/ui/icons.rs:335-353).
+            // drawn at the reference's 0.09 stroke (iced-ui/icons.rs:335-353).
             let parts: &[&[(f32, f32)]] = &[
                 &[(8.0, 2.0), (8.0, 5.0)],
                 &[(2.0, 5.0), (14.0, 5.0)],
@@ -315,7 +315,7 @@ pub(super) fn paint_icon(painter: &Painter, rect: Rect, kind: Icon, color: Color
         }
         Icon::Power => {
             // An arc open at the top, with the stem down its centre
-            // (src/ui/icons.rs:483-493). The arc is sampled because epaint
+            // (iced-ui/icons.rs:483-493). The arc is sampled because epaint
             // shapes are polylines.
             let arc: Vec<Pos2> = (0..=24)
                 .map(|step| {

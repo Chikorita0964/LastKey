@@ -8,7 +8,7 @@ fn main() {
         resource
             .compile()
             .expect("failed to embed the LastKey application icon");
-        // The generated pixels are read only by `src/ui2/app.rs`, which is
+        // The generated pixels are read only by `src/ui/app.rs`, which is
         // behind the same feature, so the decode and its dependency belong
         // to it as well.
         #[cfg(feature = "egui-ui")]

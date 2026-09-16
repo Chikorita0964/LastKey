@@ -1,121 +1,22 @@
-//! Bounded, opt-in display history of the engine's monitor events. Never persisted.
-//!
-//! The graph mirrors the reference Gantt canvas: two axis pairs (vertical
-//! pair, then horizontal pair) split by a center time ruler, a keycap per
-//! lane, per-key signal blocks carrying their own hold duration, overlap
-//! columns with duration badges, and a `NOW` playhead. Every element is
-//! cached canvas geometry — the keycaps, rounded lanes, and in-block labels
-//! are not expressible as quads, so splitting the pass would only scatter
-//! one coordinate system across two renderers.
+//! The monitor timeline's data model. Framework-free on purpose: the painter
+//! that draws it (T5) is added beside this, and the state layer depends only
+//! on what is here.
 
-use crate::protocol::{KeySlot, MonitorDecision, MonitorEdge, MonitorSnapshot};
-use iced::{
-    Color, Element, Event, Font, Length, Point, Rectangle, Size, Theme, Vector,
-    advanced::{
-        Layout, Renderer as _, Shell, Widget,
-        graphics::geometry::Renderer as _,
-        layout, mouse,
-        text::{Alignment, Ellipsis, LineHeight, Shaping, Wrapping},
-        widget::{Tree, tree},
-    },
-    alignment::Vertical,
-    widget::canvas::{Cache, Frame, LineCap, LineJoin, Path, Stroke, Text},
-    window,
-};
 use std::{
-    cell::Cell,
     collections::VecDeque,
-    hash::{DefaultHasher, Hash, Hasher},
     time::{Duration, Instant},
 };
 
-/// Which way a lane's keycap arrow points.
-#[derive(Clone, Copy)]
-enum Arrow {
-    Up,
-    Down,
-    Left,
-    Right,
-}
+use egui::{
+    Color32, CornerRadius, FontId, Painter, Pos2, Rect, Response, Sense, Stroke, Ui, Vec2,
+    WidgetInfo, WidgetType,
+};
 
-/// One lane's display identity from the reference canvas theme: the signal
-/// color plus the tint, border, and ring it takes while its key is held.
-struct Lane {
-    signal: Color,
-    held_fill: Color,
-    held_border: Color,
-    held_ring: Color,
-    arrow: Arrow,
-}
+use super::{language::Language, message::Message, theme};
+use crate::protocol::{KeySlot, MonitorDecision, MonitorEdge, MonitorSnapshot};
 
-const LANES: [Lane; 4] = [
-    Lane {
-        signal: Color::from_rgb8(37, 99, 235),
-        held_fill: Color::from_rgba8(37, 99, 235, 0.12),
-        held_border: Color::from_rgb8(29, 78, 216),
-        held_ring: Color::from_rgba8(191, 219, 254, 0.90),
-        arrow: Arrow::Up,
-    },
-    Lane {
-        signal: Color::from_rgb8(124, 58, 237),
-        held_fill: Color::from_rgba8(139, 92, 246, 0.12),
-        held_border: Color::from_rgb8(109, 40, 217),
-        held_ring: Color::from_rgba8(221, 214, 254, 0.90),
-        arrow: Arrow::Down,
-    },
-    Lane {
-        signal: Color::from_rgb8(79, 70, 229),
-        held_fill: Color::from_rgba8(99, 102, 241, 0.12),
-        held_border: Color::from_rgb8(67, 56, 202),
-        held_ring: Color::from_rgba8(199, 210, 254, 0.90),
-        arrow: Arrow::Left,
-    },
-    Lane {
-        signal: Color::from_rgb8(147, 51, 234),
-        held_fill: Color::from_rgba8(147, 51, 234, 0.12),
-        held_border: Color::from_rgb8(126, 34, 206),
-        held_ring: Color::from_rgba8(233, 213, 255, 0.90),
-        arrow: Arrow::Right,
-    },
-];
-
-const LANE_IDLE: Color = Color::from_rgb8(248, 250, 252);
-const LANE_BORDER: Color = Color::from_rgb8(226, 232, 240);
-const CAP_SURFACE: Color = Color::WHITE;
-const CAP_SHADOW: Color = Color::from_rgba8(0, 0, 0, 0.05);
-const CAP_TEXT: Color = Color::from_rgb8(15, 23, 42);
-const OVERLAP_FILL: Color = Color::from_rgba8(99, 102, 241, 0.18);
-/// A still-open overlap reads stronger than a settled one.
-const OVERLAP_FILL_LIVE: Color = Color::from_rgba8(99, 102, 241, 0.26);
-const OVERLAP_EDGE: Color = Color::from_rgb8(79, 70, 229);
-const BADGE_FILL: Color = Color::from_rgb8(30, 27, 75);
-const BADGE_EDGE: Color = Color::from_rgb8(129, 140, 248);
-const RULER_LINE: Color = Color::from_rgb8(203, 213, 225);
-const RULER_TEXT: Color = Color::from_rgb8(71, 85, 105);
-const NEEDLE: Color = Color::from_rgb8(79, 70, 229);
-
-/// Left gutter holding the per-lane keycaps, matching the reference's 62 px
-/// label column.
-const LABEL_GUTTER: f32 = 62.0;
-const RIGHT_PAD: f32 = 12.0;
-const CAP_SIZE: f32 = 40.0;
-const CAP_RADIUS: f32 = 10.0;
-/// Lane metrics: the reference uses 46 px tracks with a 6 px gap, the center
-/// ruler block between the two axis pairs, and top/bottom margins that hold
-/// the overlap badges drawn outside the first and last track.
-const LANE_HEIGHT: f32 = 46.0;
-const LANE_GAP: f32 = 6.0;
-const LANE_RADIUS: f32 = 8.0;
-const PAIR_HEIGHT: f32 = 2.0 * LANE_HEIGHT + LANE_GAP;
-const RULER_BLOCK: f32 = 41.0;
-const TOP_MARGIN: f32 = 24.0;
-const BOTTOM_PAD: f32 = 24.0;
-const GRAPH_HEIGHT: f32 = TOP_MARGIN + 2.0 * PAIR_HEIGHT + RULER_BLOCK + BOTTOM_PAD;
-const BADGE_HEIGHT: f32 = 14.0;
-/// Ruler ticks every 200 ms across the 1 s window.
-const RULER_STEP_MICROS: u64 = 200_000;
-
-const WINDOW_MICROS: u64 = 1_000_000;
+/// How much history the graph keeps on screen.
+pub const WINDOW_MICROS: u64 = 1_000_000;
 const MAX_INTERVALS: usize = 512;
 
 #[derive(Default)]
@@ -134,6 +35,7 @@ impl MonitorState {
             _ => None,
         }
     }
+
     pub fn resynchronize(&mut self) {
         if let Self::Recording(timeline) | Self::Stopping(timeline) = self {
             timeline.clear();
@@ -175,6 +77,7 @@ impl Timeline {
         self.anchor = None;
         self.decision = MonitorDecision::Immediate;
     }
+
     pub fn accept(&mut self, event: MonitorSnapshot, measuring: bool, received: Instant) {
         let physical = !event.filter_enabled || measuring;
         if self.physical != physical {
@@ -204,6 +107,7 @@ impl Timeline {
             self.intervals.pop_front();
         }
     }
+
     fn edge(&mut self, edge: MonitorEdge, at: u64) {
         let key = index(edge.key);
         if edge.pressed {
@@ -219,20 +123,24 @@ impl Timeline {
             });
         }
     }
-    fn now(&self) -> u64 {
+
+    pub fn now(&self) -> u64 {
         self.anchor.map_or(0, |(arrival, offset)| {
             offset.saturating_add(arrival.elapsed().as_micros() as u64)
         })
     }
+
     pub fn held(&self, key: KeySlot) -> bool {
         self.held_since[index(key)].is_some()
     }
-    fn held_mask(&self) -> [bool; 4] {
+
+    pub fn held_mask(&self) -> [bool; 4] {
         std::array::from_fn(|key| self.held_since[key].is_some())
     }
+
     /// Visible `(start, end, still_held)` spans for one lane. A held key ends
     /// at `now`, which is what makes its block and any overlap grow live.
-    fn spans(&self, key: usize, now: u64) -> Vec<(u64, u64, bool)> {
+    pub fn spans(&self, key: usize, now: u64) -> Vec<(u64, u64, bool)> {
         let mut spans: Vec<(u64, u64, bool)> = self
             .intervals
             .iter()
@@ -246,6 +154,7 @@ impl Timeline {
         }
         spans
     }
+
     /// Last-press-wins resolution between two opposing keys, for the D-pad's
     /// center dot: when both are held, the key pressed later takes it.
     pub fn winner(&self, first: KeySlot, second: KeySlot) -> Option<KeySlot> {
@@ -261,7 +170,7 @@ impl Timeline {
     }
 }
 
-const fn index(key: KeySlot) -> usize {
+pub const fn index(key: KeySlot) -> usize {
     match key {
         KeySlot::VerticalFirst => 0,
         KeySlot::VerticalSecond => 1,
@@ -270,109 +179,168 @@ const fn index(key: KeySlot) -> usize {
     }
 }
 
-pub fn graph<'a, Message: 'a>(
-    timeline: Option<&'a Timeline>,
-    names: [&'a str; 4],
+// ---------------------------------------------------------------------------
+// Graph painter
+// ---------------------------------------------------------------------------
+
+/// Which way a lane's keycap arrow points.
+#[derive(Clone, Copy)]
+enum Arrow {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+/// One lane's display identity from the reference canvas theme: the signal
+/// color plus the tint, border, and ring it takes while its key is held.
+struct Lane {
+    signal: Color32,
+    held_fill: Color32,
+    held_border: Color32,
+    held_ring: Color32,
+    arrow: Arrow,
+}
+
+// The Iced source writes float alphas (`Color::from_rgba8(.., 0.12)`); egui
+// stores premultiplied bytes, so each alpha is rounded to the nearest byte
+// (0.12 * 255 = 30.6 -> 31). The colour channels are the Iced bytes verbatim.
+const LANES: [Lane; 4] = [
+    Lane {
+        signal: Color32::from_rgb(37, 99, 235),
+        held_fill: Color32::from_rgba_unmultiplied_const(37, 99, 235, 31),
+        held_border: Color32::from_rgb(29, 78, 216),
+        held_ring: Color32::from_rgba_unmultiplied_const(191, 219, 254, 230),
+        arrow: Arrow::Up,
+    },
+    Lane {
+        signal: Color32::from_rgb(124, 58, 237),
+        held_fill: Color32::from_rgba_unmultiplied_const(139, 92, 246, 31),
+        held_border: Color32::from_rgb(109, 40, 217),
+        held_ring: Color32::from_rgba_unmultiplied_const(221, 214, 254, 230),
+        arrow: Arrow::Down,
+    },
+    Lane {
+        signal: Color32::from_rgb(79, 70, 229),
+        held_fill: Color32::from_rgba_unmultiplied_const(99, 102, 241, 31),
+        held_border: Color32::from_rgb(67, 56, 202),
+        held_ring: Color32::from_rgba_unmultiplied_const(199, 210, 254, 230),
+        arrow: Arrow::Left,
+    },
+    Lane {
+        signal: Color32::from_rgb(147, 51, 234),
+        held_fill: Color32::from_rgba_unmultiplied_const(147, 51, 234, 31),
+        held_border: Color32::from_rgb(126, 34, 206),
+        held_ring: Color32::from_rgba_unmultiplied_const(233, 213, 255, 230),
+        arrow: Arrow::Right,
+    },
+];
+
+const LANE_IDLE: Color32 = Color32::from_rgb(248, 250, 252);
+const LANE_BORDER: Color32 = Color32::from_rgb(226, 232, 240);
+const CAP_SURFACE: Color32 = Color32::WHITE;
+const CAP_SHADOW: Color32 = Color32::from_rgba_unmultiplied_const(0, 0, 0, 13);
+const CAP_TEXT: Color32 = Color32::from_rgb(15, 23, 42);
+const OVERLAP_FILL: Color32 = Color32::from_rgba_unmultiplied_const(99, 102, 241, 46);
+/// A still-open overlap reads stronger than a settled one.
+const OVERLAP_FILL_LIVE: Color32 = Color32::from_rgba_unmultiplied_const(99, 102, 241, 66);
+const OVERLAP_EDGE: Color32 = Color32::from_rgb(79, 70, 229);
+const BADGE_FILL: Color32 = Color32::from_rgb(30, 27, 75);
+const BADGE_EDGE: Color32 = Color32::from_rgb(129, 140, 248);
+const RULER_LINE: Color32 = Color32::from_rgb(203, 213, 225);
+const RULER_TEXT: Color32 = Color32::from_rgb(71, 85, 105);
+const NEEDLE: Color32 = Color32::from_rgb(79, 70, 229);
+
+/// Left gutter holding the per-lane keycaps, matching the reference's 62 px
+/// label column.
+const LABEL_GUTTER: f32 = 62.0;
+const RIGHT_PAD: f32 = 12.0;
+const CAP_SIZE: f32 = 40.0;
+const CAP_RADIUS: f32 = 10.0;
+/// Lane metrics: the reference uses 46 px tracks with a 6 px gap, the center
+/// ruler block between the two axis pairs, and top/bottom margins that hold
+/// the overlap badges drawn outside the first and last track.
+const LANE_HEIGHT: f32 = 46.0;
+const LANE_GAP: f32 = 6.0;
+const LANE_RADIUS: f32 = 8.0;
+const PAIR_HEIGHT: f32 = 2.0 * LANE_HEIGHT + LANE_GAP;
+const RULER_BLOCK: f32 = 41.0;
+const TOP_MARGIN: f32 = 24.0;
+const BOTTOM_PAD: f32 = 24.0;
+const GRAPH_HEIGHT: f32 = TOP_MARGIN + 2.0 * PAIR_HEIGHT + RULER_BLOCK + BOTTOM_PAD;
+const BADGE_HEIGHT: f32 = 14.0;
+/// Ruler ticks every 200 ms across the 1 s window.
+const RULER_STEP_MICROS: u64 = 200_000;
+
+/// Paint the graph into the current layout and return its container response.
+///
+/// Display-only: the whole canvas publishes one container-level accessible
+/// label (the card title) so a tree dump can find it, and carries no
+/// interactive node. The graph renders its lanes, keycaps, and ruler even
+/// without a timeline, so the card does not flash empty between the start
+/// request and the first monitor event; blocks, overlaps, and the needle
+/// mount on top once data arrives. `awake` mirrors the window's focus: a
+/// deactivated window requests no animation frames.
+pub fn graph(
+    ui: &mut Ui,
+    timeline: Option<&Timeline>,
+    names: [&str; 4],
+    language: Language,
     awake: bool,
-) -> Element<'a, Message> {
-    Element::new(Graph {
-        timeline,
-        names,
-        awake,
-    })
+) -> Response {
+    let (rect, response) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), GRAPH_HEIGHT),
+        Sense::hover(),
+    );
+    response.widget_info(|| {
+        WidgetInfo::labeled(
+            WidgetType::Other,
+            ui.is_enabled(),
+            language.text("Key Input Timeline"),
+        )
+    });
+
+    let now = timeline.map_or(0, Timeline::now);
+    let painter = ui.painter_at(rect);
+    draw_graph(&painter, rect, timeline, &names, now);
+
+    let animate = timeline.is_some_and(|timeline| {
+        timeline.held_since.iter().any(Option::is_some)
+            || timeline
+                .intervals
+                .back()
+                .is_some_and(|interval| now.saturating_sub(interval.end) < WINDOW_MICROS)
+    });
+    if awake && animate {
+        ui.ctx().request_repaint_after(Duration::from_millis(16));
+    }
+    response
 }
 
-struct Graph<'a> {
-    timeline: Option<&'a Timeline>,
-    names: [&'a str; 4],
-    /// A deactivated window stops advancing the playhead; the engine keeps filtering.
-    awake: bool,
-}
-
-/// What the cached geometry was drawn for: the 60 Hz frame, which keys were
-/// held, the track width, and a hash of the key names.
-type CacheKey = (u64, [bool; 4], u64, u64);
-
-#[derive(Default)]
-struct GraphState {
-    cache: Cache,
-    key: Cell<Option<CacheKey>>,
-}
-
-impl<Message> Widget<Message, Theme, iced::Renderer> for Graph<'_> {
-    fn tag(&self) -> tree::Tag {
-        tree::Tag::of::<GraphState>()
+/// The whole graph in one pass. A stopped timeline still draws its lanes,
+/// keycaps, and ruler so the card does not flash empty between the start
+/// request and the first monitor event.
+fn draw_graph(
+    painter: &Painter,
+    rect: Rect,
+    timeline: Option<&Timeline>,
+    names: &[&str; 4],
+    now: u64,
+) {
+    let axis = Axis::new(rect, now);
+    for (row, lane) in LANES.iter().enumerate() {
+        let held = timeline.is_some_and(|timeline| timeline.held_since[row].is_some());
+        draw_track(painter, rect, &axis, row, lane, held);
+        draw_keycap(painter, rect, &axis, row, lane, names[row], held);
     }
-    fn state(&self) -> tree::State {
-        tree::State::new(GraphState::default())
-    }
-    fn size(&self) -> Size<Length> {
-        Size::new(Length::Fill, GRAPH_HEIGHT.into())
-    }
-    fn layout(
-        &mut self,
-        _: &mut Tree,
-        _: &iced::Renderer,
-        limits: &layout::Limits,
-    ) -> layout::Node {
-        layout::atomic(limits, Length::Fill, GRAPH_HEIGHT)
-    }
-    fn update(
-        &mut self,
-        _: &mut Tree,
-        event: &Event,
-        _: Layout<'_>,
-        _: mouse::Cursor,
-        _: &iced::Renderer,
-        shell: &mut Shell<'_, Message>,
-        _: &Rectangle,
-    ) {
-        if self.awake
-            && let Event::Window(window::Event::RedrawRequested(now)) = event
-            && let Some(timeline) = self.timeline
-        {
-            let animate = timeline.held_since.iter().any(Option::is_some)
-                || timeline.intervals.back().is_some_and(|interval| {
-                    timeline.now().saturating_sub(interval.end) < WINDOW_MICROS
-                });
-            if animate {
-                shell.request_redraw_at(*now + Duration::from_millis(16));
-            }
+    if let Some(timeline) = timeline {
+        for (row, lane) in LANES.iter().enumerate() {
+            draw_blocks(painter, rect, &axis, timeline, row, lane);
         }
+        draw_overlaps(painter, rect, &axis, timeline);
     }
-    fn draw(
-        &self,
-        tree: &Tree,
-        renderer: &mut iced::Renderer,
-        _: &Theme,
-        _: &iced::advanced::renderer::Style,
-        layout: Layout<'_>,
-        _: mouse::Cursor,
-        _: &Rectangle,
-    ) {
-        let bounds = layout.bounds();
-        let state = tree.state.downcast_ref::<GraphState>();
-        // Cache on the visible window: the playhead moves every frame while
-        // recording, so geometry is re-tessellated on motion and reused when
-        // the window is idle. Held keys and the key names join the cache key
-        // so a press or a rebind repaints instead of reusing stale geometry.
-        let now = self.timeline.map_or(0, Timeline::now);
-        let held = self
-            .timeline
-            .map_or([false; 4], |timeline| timeline.held_mask());
-        let mut hasher = DefaultHasher::new();
-        self.names.hash(&mut hasher);
-        let key = (now / 16_666, held, bounds.width as u64, hasher.finish());
-        if state.key.replace(Some(key)) != Some(key) {
-            state.cache.clear();
-        }
-        let geometry = state.cache.draw(renderer, bounds.size(), |frame| {
-            draw_graph(frame, self.timeline, &self.names, now);
-        });
-        renderer.with_translation(Vector::new(bounds.x, bounds.y), |renderer| {
-            renderer.draw_geometry(geometry);
-        });
-    }
+    draw_needle(painter, rect, &axis);
+    draw_ruler(painter, rect, &axis);
 }
 
 /// Y offset of a lane inside the graph: two lanes, the ruler block, then two
@@ -392,9 +360,9 @@ struct Axis {
 }
 
 impl Axis {
-    fn new(canvas_width: f32, now: u64) -> Self {
-        let left = LABEL_GUTTER;
-        let width = (canvas_width - LABEL_GUTTER - RIGHT_PAD).max(80.0);
+    fn new(rect: Rect, now: u64) -> Self {
+        let left = rect.left() + LABEL_GUTTER;
+        let width = (rect.width() - LABEL_GUTTER - RIGHT_PAD).max(80.0);
         Self {
             left,
             width,
@@ -402,158 +370,155 @@ impl Axis {
             now,
         }
     }
+
     fn x(&self, at: u64) -> f32 {
         self.left
             + self.width
                 * (1.0 - self.now.saturating_sub(at) as f32 / WINDOW_MICROS as f32).clamp(0.0, 1.0)
     }
+
     /// The visible span of an interval, or `None` once it has scrolled out.
     fn visible(&self, start: u64, end: u64) -> Option<(f32, f32)> {
         let x0 = self.x(start).max(self.left);
         let x1 = self.x(end).min(self.now_x);
         (x1 > self.left && x0 < self.now_x).then_some((x0, x1))
     }
-    fn track(&self, row: usize) -> Rectangle {
-        Rectangle {
-            x: self.left,
-            y: lane_y(row),
-            width: self.width,
-            height: LANE_HEIGHT,
-        }
-    }
-}
 
-/// The whole graph in one cached canvas pass. A stopped timeline still draws
-/// its lanes, keycaps, and ruler so the card does not flash empty between
-/// the start request and the first monitor event.
-fn draw_graph(frame: &mut Frame, timeline: Option<&Timeline>, names: &[&str; 4], now: u64) {
-    let axis = Axis::new(frame.width(), now);
-    for (row, lane) in LANES.iter().enumerate() {
-        let held = timeline.is_some_and(|timeline| timeline.held_since[row].is_some());
-        draw_track(frame, &axis, row, lane, held);
-        draw_keycap(frame, &axis, row, lane, names[row], held);
+    fn track(&self, rect: Rect, row: usize) -> Rect {
+        Rect::from_min_size(
+            Pos2::new(self.left, rect.top() + lane_y(row)),
+            Vec2::new(self.width, LANE_HEIGHT),
+        )
     }
-    if let Some(timeline) = timeline {
-        for (row, lane) in LANES.iter().enumerate() {
-            draw_blocks(frame, &axis, timeline, row, lane);
-        }
-        draw_overlaps(frame, &axis, timeline);
-    }
-    draw_needle(frame, &axis);
-    draw_ruler(frame, &axis);
 }
 
 /// One lane's rounded background, its clipped time grid, and its border.
 /// A held lane takes the reference's accent tint and a heavier border.
-fn draw_track(frame: &mut Frame, axis: &Axis, row: usize, lane: &Lane, held: bool) {
-    let track = axis.track(row);
-    let shape = || {
-        Path::new(|path| {
-            path.rounded_rectangle(
-                Point::new(track.x, track.y),
-                Size::new(track.width, track.height),
-                LANE_RADIUS.into(),
-            );
-        })
-    };
-    // Inside the clip on purpose: iced appends unclipped fills after every
-    // pasted subframe, so an unclipped track fill would cover the blocks.
-    frame.with_clip(track, |clipped| {
-        clipped.fill(&shape(), if held { lane.held_fill } else { LANE_IDLE });
-        let grid = Stroke::default().with_color(LANE_BORDER).with_width(1.0);
-        let mut tick = RULER_STEP_MICROS;
-        while tick < WINDOW_MICROS {
-            let x = axis.left + axis.width * (1.0 - tick as f32 / WINDOW_MICROS as f32);
-            let line = Path::new(|path| {
-                path.move_to(Point::new(x, track.y));
-                path.line_to(Point::new(x, track.y + track.height));
-            });
-            clipped.stroke(&line, grid);
-            tick += RULER_STEP_MICROS;
-        }
-    });
-    frame.stroke(
-        &shape(),
-        Stroke::default()
-            .with_color(if held { lane.held_border } else { LANE_BORDER })
-            .with_width(if held { 1.5 } else { 1.0 }),
+fn draw_track(painter: &Painter, rect: Rect, axis: &Axis, row: usize, lane: &Lane, held: bool) {
+    let track = axis.track(rect, row);
+    let radius = CornerRadius::same(LANE_RADIUS as u8);
+    painter.rect_filled(track, radius, if held { lane.held_fill } else { LANE_IDLE });
+    let clipped = painter.with_clip_rect(track);
+    let grid = Stroke::new(1.0, LANE_BORDER);
+    let mut tick = RULER_STEP_MICROS;
+    while tick < WINDOW_MICROS {
+        let x = axis.left + axis.width * (1.0 - tick as f32 / WINDOW_MICROS as f32);
+        clipped.line_segment(
+            [Pos2::new(x, track.top()), Pos2::new(x, track.bottom())],
+            grid,
+        );
+        tick += RULER_STEP_MICROS;
+    }
+    painter.rect_stroke(
+        track,
+        radius,
+        Stroke::new(
+            if held { 1.5 } else { 1.0 },
+            if held { lane.held_border } else { LANE_BORDER },
+        ),
+        egui::StrokeKind::Middle,
     );
 }
 
 /// Signal blocks for one lane, clipped to its track, each carrying its hold
 /// duration when the block is wide enough to hold the label.
-fn draw_blocks(frame: &mut Frame, axis: &Axis, timeline: &Timeline, row: usize, lane: &Lane) {
-    let track = axis.track(row);
-    frame.with_clip(track, |clipped| {
-        for (start, end, open) in timeline.spans(row, axis.now) {
-            let Some((x0, x1)) = axis.visible(start, end) else {
-                continue;
-            };
-            let width = (x1 - x0).max(4.0);
-            let block = Path::new(|path| {
-                path.rounded_rectangle(
-                    Point::new(x0, track.y + 4.0),
-                    Size::new(width, track.height - 8.0),
-                    5.5.into(),
-                );
-            });
-            clipped.fill(&block, lane.signal);
-            if open {
-                clipped.stroke(
-                    &block,
-                    Stroke::default().with_color(Color::WHITE).with_width(1.5),
-                );
-            }
-            let label = millis(end.saturating_sub(start));
-            if width >= text_width(&label, 9.0) + 6.0 {
-                clipped.fill_text(centered(
-                    label,
-                    Point::new(x0 + width / 2.0, track.y + track.height / 2.0),
-                    9.0,
-                    Color::WHITE,
-                    crate::ui::theme::UI_FONT_BOLD,
-                ));
-            }
+fn draw_blocks(
+    painter: &Painter,
+    rect: Rect,
+    axis: &Axis,
+    timeline: &Timeline,
+    row: usize,
+    lane: &Lane,
+) {
+    let track = axis.track(rect, row);
+    let clipped = painter.with_clip_rect(track);
+    for (start, end, open) in timeline.spans(row, axis.now) {
+        let Some((x0, x1)) = axis.visible(start, end) else {
+            continue;
+        };
+        let width = (x1 - x0).max(4.0);
+        // The Iced block radius is 5.5; egui stores integer corner radii.
+        let block = Rect::from_min_size(
+            Pos2::new(x0, track.top() + 4.0),
+            Vec2::new(width, track.height() - 8.0),
+        );
+        let radius = CornerRadius::same(6);
+        clipped.rect_filled(block, radius, lane.signal);
+        if open {
+            clipped.rect_stroke(
+                block,
+                radius,
+                Stroke::new(1.5, Color32::WHITE),
+                egui::StrokeKind::Middle,
+            );
         }
-    });
+        let label = millis(end.saturating_sub(start));
+        let size = 9.0;
+        let galley = clipped.layout_no_wrap(
+            label.clone(),
+            FontId::new(size, theme::UI_FONT),
+            Color32::PLACEHOLDER,
+        );
+        if width >= galley.size().x + 6.0 {
+            let center = Pos2::new(x0 + width / 2.0, track.center().y);
+            theme::stamp_galley(
+                &clipped,
+                center - galley.size() / 2.0,
+                &galley,
+                Color32::WHITE,
+                size,
+            );
+        }
+    }
 }
 
 /// The keycap in the left gutter: the reference's white cap that fills with
 /// the lane accent, sinks 1.5 px, and gains a ring while its key is held.
-fn draw_keycap(frame: &mut Frame, axis: &Axis, row: usize, lane: &Lane, name: &str, held: bool) {
-    let x = ((LABEL_GUTTER - CAP_SIZE) / 2.0).round();
-    let y = axis.track(row).y + ((LANE_HEIGHT - CAP_SIZE) / 2.0).round();
+fn draw_keycap(
+    painter: &Painter,
+    rect: Rect,
+    axis: &Axis,
+    row: usize,
+    lane: &Lane,
+    name: &str,
+    held: bool,
+) {
+    let x = rect.left() + ((LABEL_GUTTER - CAP_SIZE) / 2.0).round();
+    let y = axis.track(rect, row).top() + ((LANE_HEIGHT - CAP_SIZE) / 2.0).round();
     let surface_y = if held { y + 1.5 } else { y };
-    let cap = |top: f32, inset: f32, radius: f32| {
-        Path::new(|path| {
-            path.rounded_rectangle(
-                Point::new(x - inset, top - inset),
-                Size::new(CAP_SIZE + 2.0 * inset, CAP_SIZE + 2.0 * inset),
-                radius.into(),
-            );
-        })
+    let cap = |top: f32, inset: f32| {
+        Rect::from_min_size(
+            Pos2::new(x - inset, top - inset),
+            Vec2::splat(CAP_SIZE + 2.0 * inset),
+        )
     };
+    let radius = CornerRadius::same(CAP_RADIUS as u8);
     if held {
-        frame.stroke(
-            &cap(surface_y, 2.0, CAP_RADIUS + 2.0),
-            Stroke::default().with_color(lane.held_ring).with_width(2.5),
+        // The ring is the rounded rect's stroke offset 2px outward.
+        painter.rect_stroke(
+            cap(surface_y, 2.0),
+            CornerRadius::same((CAP_RADIUS + 2.0) as u8),
+            Stroke::new(2.5, lane.held_ring),
+            egui::StrokeKind::Middle,
         );
-        frame.fill(&cap(surface_y, 0.0, CAP_RADIUS), lane.signal);
-        frame.stroke(
-            &cap(surface_y, 0.0, CAP_RADIUS),
-            Stroke::default()
-                .with_color(lane.held_border)
-                .with_width(1.5),
+        painter.rect_filled(cap(surface_y, 0.0), radius, lane.signal);
+        painter.rect_stroke(
+            cap(surface_y, 0.0),
+            radius,
+            Stroke::new(1.5, lane.held_border),
+            egui::StrokeKind::Middle,
         );
     } else {
-        frame.fill(&cap(y + 1.5, 0.0, CAP_RADIUS), CAP_SHADOW);
-        frame.fill(&cap(y, 0.0, CAP_RADIUS), CAP_SURFACE);
-        frame.stroke(
-            &cap(y, 0.0, CAP_RADIUS),
-            Stroke::default().with_color(LANE_BORDER).with_width(1.0),
+        painter.rect_filled(cap(y + 1.5, 0.0), radius, CAP_SHADOW);
+        painter.rect_filled(cap(y, 0.0), radius, CAP_SURFACE);
+        painter.rect_stroke(
+            cap(y, 0.0),
+            radius,
+            Stroke::new(1.0, LANE_BORDER),
+            egui::StrokeKind::Middle,
         );
     }
-    let ink = if held { Color::WHITE } else { CAP_TEXT };
+    let ink = if held { Color32::WHITE } else { CAP_TEXT };
     let center_x = x + CAP_SIZE / 2.0;
     let lines = key_label_lines(name);
     // Shrink the label until the widest line clears the cap's 4 px padding,
@@ -568,80 +533,68 @@ fn draw_keycap(frame: &mut Frame, axis: &Axis, row: usize, lane: &Lane, name: &s
     while size > 6.0
         && lines
             .iter()
-            .any(|line| text_width(line, size) > CAP_SIZE - 8.0)
+            .any(|line| text_width(painter, line, size) > CAP_SIZE - 8.0)
     {
         size -= 0.5;
     }
     let baseline = surface_y + 16.5;
-    let bold = crate::ui::theme::UI_FONT_BOLD;
     if let [single] = lines.as_slice() {
-        frame.fill_text(centered(
-            single.clone(),
-            Point::new(center_x, baseline),
-            size,
-            ink,
-            bold,
-        ));
+        centered_text(painter, Pos2::new(center_x, baseline), single, size, ink);
     } else {
         let step = (size + 0.5) / 2.0;
         for (index, line) in lines.iter().enumerate() {
             let offset = if index == 0 { -step } else { step };
-            frame.fill_text(centered(
-                line.clone(),
-                Point::new(center_x, baseline + offset),
+            centered_text(
+                painter,
+                Pos2::new(center_x, baseline + offset),
+                line,
                 size,
                 ink,
-                bold,
-            ));
+            );
         }
     }
     draw_arrow(
-        frame,
-        Point::new(center_x, surface_y + 29.5),
+        painter,
+        Pos2::new(center_x, surface_y + 29.5),
         lane.arrow,
         ink,
     );
 }
 
 /// The keycap's direction glyph: a shaft with a two-stroke head.
-fn draw_arrow(frame: &mut Frame, center: Point, arrow: Arrow, color: Color) {
+fn draw_arrow(painter: &Painter, center: Pos2, arrow: Arrow, color: Color32) {
     let (dx, dy) = match arrow {
         Arrow::Up => (0.0, -1.0),
         Arrow::Down => (0.0, 1.0),
         Arrow::Left => (-1.0, 0.0),
         Arrow::Right => (1.0, 0.0),
     };
-    let tip = Point::new(center.x + dx * 3.2, center.y + dy * 3.2);
-    let tail = Point::new(center.x - dx * 3.2, center.y - dy * 3.2);
+    let tip = Pos2::new(center.x + dx * 3.2, center.y + dy * 3.2);
+    let tail = Pos2::new(center.x - dx * 3.2, center.y - dy * 3.2);
+    let stroke = Stroke::new(1.4, color);
+    painter.line_segment([tail, tip], stroke);
     // The head's wings sit perpendicular to the shaft, so the normal is the
     // direction vector rotated a quarter turn.
-    let path = Path::new(|path| {
-        path.move_to(tail);
-        path.line_to(tip);
-        for side in [-1.0_f32, 1.0] {
-            path.move_to(Point::new(
-                tip.x - dx * 2.5 + dy * 2.5 * side,
-                tip.y - dy * 2.5 + dx * 2.5 * side,
-            ));
-            path.line_to(tip);
-        }
-    });
-    frame.stroke(
-        &path,
-        Stroke::default()
-            .with_color(color)
-            .with_width(1.4)
-            .with_line_cap(LineCap::Round)
-            .with_line_join(LineJoin::Round),
-    );
+    for side in [-1.0_f32, 1.0] {
+        painter.line_segment(
+            [
+                Pos2::new(
+                    tip.x - dx * 2.5 + dy * 2.5 * side,
+                    tip.y - dy * 2.5 + dx * 2.5 * side,
+                ),
+                tip,
+            ],
+            stroke,
+        );
+    }
 }
 
 /// Overlap columns per axis pair, with a millisecond badge above the
 /// vertical pair and below the horizontal pair (reference placement).
-fn draw_overlaps(frame: &mut Frame, axis: &Axis, timeline: &Timeline) {
-    let width = frame.width();
+fn draw_overlaps(painter: &Painter, rect: Rect, axis: &Axis, timeline: &Timeline) {
+    let width = rect.width();
     for (pair, badge_above) in [(0usize, true), (2usize, false)] {
-        let top = lane_y(pair);
+        let top = rect.top() + lane_y(pair);
         for (first_start, first_end, first_open) in timeline.spans(pair, axis.now) {
             for (second_start, second_end, second_open) in timeline.spans(pair + 1, axis.now) {
                 let start = first_start.max(second_start);
@@ -654,36 +607,42 @@ fn draw_overlaps(frame: &mut Frame, axis: &Axis, timeline: &Timeline) {
                 };
                 let span = (x1 - x0).max(3.0);
                 let live = first_open && second_open;
-                frame.fill_rectangle(
-                    Point::new(x0, top),
-                    Size::new(span, PAIR_HEIGHT),
+                painter.rect_filled(
+                    Rect::from_min_size(Pos2::new(x0, top), Vec2::new(span, PAIR_HEIGHT)),
+                    CornerRadius::ZERO,
                     if live {
                         OVERLAP_FILL_LIVE
                     } else {
                         OVERLAP_FILL
                     },
                 );
-                let edge = Stroke::default().with_color(OVERLAP_EDGE);
-                frame.stroke(
-                    &Path::new(|path| {
-                        path.move_to(Point::new(x0 + 0.5, top));
-                        path.line_to(Point::new(x0 + 0.5, top + PAIR_HEIGHT));
-                        path.move_to(Point::new(x1 - 0.5, top));
-                        path.line_to(Point::new(x1 - 0.5, top + PAIR_HEIGHT));
-                    }),
-                    edge.with_width(1.0),
+                let edge = Stroke::new(1.0, OVERLAP_EDGE);
+                painter.line_segment(
+                    [
+                        Pos2::new(x0 + 0.5, top),
+                        Pos2::new(x0 + 0.5, top + PAIR_HEIGHT),
+                    ],
+                    edge,
                 );
-                frame.stroke(
-                    &Path::new(|path| {
-                        path.move_to(Point::new(x0, top + 0.5));
-                        path.line_to(Point::new(x1, top + 0.5));
-                        path.move_to(Point::new(x0, top + PAIR_HEIGHT - 0.5));
-                        path.line_to(Point::new(x1, top + PAIR_HEIGHT - 0.5));
-                    }),
-                    edge.with_width(1.5),
+                painter.line_segment(
+                    [
+                        Pos2::new(x1 - 0.5, top),
+                        Pos2::new(x1 - 0.5, top + PAIR_HEIGHT),
+                    ],
+                    edge,
                 );
+                let long_edge = Stroke::new(1.5, OVERLAP_EDGE);
+                for y in [top + 0.5, top + PAIR_HEIGHT - 0.5] {
+                    painter.line_segment([Pos2::new(x0, y), Pos2::new(x1, y)], long_edge);
+                }
                 let label = millis(end.saturating_sub(start));
-                let badge_w = text_width(&label, 9.0) + 10.0;
+                let size = 9.0;
+                let galley = painter.layout_no_wrap(
+                    label.clone(),
+                    FontId::new(size, theme::UI_FONT),
+                    Color32::PLACEHOLDER,
+                );
+                let badge_w = galley.size().x + 10.0;
                 // Keep the badge on screen when the overlap sits at an edge.
                 let center =
                     ((x0 + x1) / 2.0).clamp(badge_w / 2.0 + 2.0, width - badge_w / 2.0 - 2.0);
@@ -695,48 +654,45 @@ fn draw_overlaps(frame: &mut Frame, axis: &Axis, timeline: &Timeline) {
                 };
                 if span >= 48.0 {
                     let dimension_y = (badge_y + BADGE_HEIGHT / 2.0).round();
-                    let rule = Stroke::default().with_color(OVERLAP_EDGE).with_width(1.0);
+                    let rule = Stroke::new(1.0, OVERLAP_EDGE);
                     for (from, to) in [
                         (x0 + 2.0, badge_x - 2.0),
                         (badge_x + badge_w + 2.0, x1 - 2.0),
                     ] {
                         if to - from > 5.0 {
-                            frame.stroke(
-                                &Path::new(|path| {
-                                    path.move_to(Point::new(from, dimension_y));
-                                    path.line_to(Point::new(to, dimension_y));
-                                }),
+                            painter.line_segment(
+                                [Pos2::new(from, dimension_y), Pos2::new(to, dimension_y)],
                                 rule,
                             );
                         }
                     }
                 }
-                let badge = Path::new(|path| {
-                    path.rounded_rectangle(
-                        Point::new(badge_x, badge_y),
-                        Size::new(badge_w, BADGE_HEIGHT),
-                        4.0.into(),
-                    );
-                });
-                frame.fill(&badge, BADGE_FILL);
-                frame.stroke(
-                    &badge,
-                    Stroke::default().with_color(BADGE_EDGE).with_width(1.0),
+                let badge = Rect::from_min_size(
+                    Pos2::new(badge_x, badge_y),
+                    Vec2::new(badge_w, BADGE_HEIGHT),
                 );
-                frame.fill_text(centered(
-                    label,
-                    Point::new(center.round(), badge_y + BADGE_HEIGHT / 2.0),
-                    9.0,
-                    Color::WHITE,
-                    crate::ui::theme::UI_FONT_BOLD,
-                ));
+                let radius = CornerRadius::same(4);
+                painter.rect_filled(badge, radius, BADGE_FILL);
+                painter.rect_stroke(
+                    badge,
+                    radius,
+                    Stroke::new(1.0, BADGE_EDGE),
+                    egui::StrokeKind::Middle,
+                );
+                theme::stamp_galley(
+                    painter,
+                    Pos2::new(center.round(), badge_y + BADGE_HEIGHT / 2.0) - galley.size() / 2.0,
+                    &galley,
+                    Color32::WHITE,
+                    size,
+                );
                 if live {
                     let dot_y = if badge_above {
                         top - 7.0
                     } else {
                         top + PAIR_HEIGHT + 7.0
                     };
-                    frame.fill(&Path::circle(Point::new(x1, dot_y), 2.5), NEEDLE);
+                    painter.circle_filled(Pos2::new(x1, dot_y), 2.5, NEEDLE);
                 }
             }
         }
@@ -744,31 +700,28 @@ fn draw_overlaps(frame: &mut Frame, axis: &Axis, timeline: &Timeline) {
 }
 
 /// The `NOW` playhead, spanning the tracks without entering the badge margins.
-fn draw_needle(frame: &mut Frame, axis: &Axis) {
-    frame.stroke(
-        &Path::new(|path| {
-            path.move_to(Point::new(axis.now_x, TOP_MARGIN));
-            path.line_to(Point::new(axis.now_x, lane_y(3) + LANE_HEIGHT));
-        }),
-        Stroke::default()
-            .with_color(NEEDLE)
-            .with_width(1.5)
-            .with_line_cap(LineCap::Round),
+fn draw_needle(painter: &Painter, rect: Rect, axis: &Axis) {
+    painter.line_segment(
+        [
+            Pos2::new(axis.now_x, rect.top() + TOP_MARGIN),
+            Pos2::new(axis.now_x, rect.top() + lane_y(3) + LANE_HEIGHT),
+        ],
+        Stroke::new(1.5, NEEDLE),
     );
 }
 
 /// One ruler label per tick, placed inline on the center axis with connecting
 /// segments drawn only in the gaps between them (reference: `-1000ms` pinned
 /// to the track start, `NOW (0ms)` parked just before the playhead).
-fn draw_ruler(frame: &mut Frame, axis: &Axis) {
+fn draw_ruler(painter: &Painter, rect: Rect, axis: &Axis) {
     struct Tick {
         label: String,
         left: f32,
         right: f32,
-        color: Color,
-        font: Font,
+        color: Color32,
+        bold: bool,
     }
-    let y = TOP_MARGIN + PAIR_HEIGHT + RULER_BLOCK / 2.0;
+    let y = rect.top() + TOP_MARGIN + PAIR_HEIGHT + RULER_BLOCK / 2.0;
     let mut ticks: Vec<Tick> = Vec::new();
     let mut at = WINDOW_MICROS;
     loop {
@@ -777,41 +730,31 @@ fn draw_ruler(frame: &mut Frame, axis: &Axis) {
         } else {
             format!("-{}ms", at / 1_000)
         };
-        let text_w = text_width(&label, 10.0);
-        let (left, color, font) = if at == 0 {
-            (
-                axis.now_x - 14.0 - text_w,
-                NEEDLE,
-                crate::ui::theme::UI_FONT_BOLD,
-            )
+        let text_w = text_width(painter, &label, 10.0);
+        let (left, color, bold) = if at == 0 {
+            (axis.now_x - 14.0 - text_w, NEEDLE, true)
         } else if at == WINDOW_MICROS {
-            (axis.left + 2.0, RULER_TEXT, crate::ui::theme::UI_FONT)
+            (axis.left + 2.0, RULER_TEXT, false)
         } else {
             let center = axis.left + axis.width * (1.0 - at as f32 / WINDOW_MICROS as f32);
-            (center - text_w / 2.0, RULER_TEXT, crate::ui::theme::UI_FONT)
+            (center - text_w / 2.0, RULER_TEXT, false)
         };
         ticks.push(Tick {
             label,
             left,
             right: left + text_w,
             color,
-            font,
+            bold,
         });
         if at == 0 {
             break;
         }
         at = at.saturating_sub(RULER_STEP_MICROS);
     }
-    let rule = Stroke::default().with_color(RULER_LINE).with_width(1.0);
-    let mut segment = |from: f32, to: f32| {
+    let rule = Stroke::new(1.0, RULER_LINE);
+    let segment = |from: f32, to: f32| {
         if to > from {
-            frame.stroke(
-                &Path::new(|path| {
-                    path.move_to(Point::new(from, y));
-                    path.line_to(Point::new(to, y));
-                }),
-                rule,
-            );
+            painter.line_segment([Pos2::new(from, y), Pos2::new(to, y)], rule);
         }
     };
     const LABEL_PAD: f32 = 8.0;
@@ -823,48 +766,73 @@ fn draw_ruler(frame: &mut Frame, axis: &Axis) {
     }
     for tick in ticks {
         let center = ((tick.left + tick.right) / 2.0).round();
-        frame.fill_text(centered(
-            tick.label,
-            Point::new(center, y),
+        centered_text_with(
+            painter,
+            Pos2::new(center, y),
+            &tick.label,
             10.0,
             tick.color,
-            tick.font,
-        ));
+            tick.bold,
+        );
     }
 }
 
-/// Canvas text centered on a point. Advanced shaping keeps Hangul and CJK key
-/// names legible through the generic UI font's fallback chain.
-fn centered(content: String, position: Point, size: f32, color: Color, font: Font) -> Text {
-    Text {
-        content,
-        position,
-        max_width: f32::INFINITY,
-        color,
-        size: size.into(),
-        line_height: LineHeight::Relative(1.0),
-        font,
-        align_x: Alignment::Center,
-        align_y: Vertical::Center,
-        shaping: Shaping::Advanced,
-        wrapping: Wrapping::None,
-        ellipsis: Ellipsis::None,
+/// A 16px header mark matching `icons::Name::Target`: an outer ring at 0.35
+/// of the box with a filled centre at 35% of that radius. The shared
+/// `theme::Icon` set does not carry it, and this card is its only consumer.
+fn paint_target_icon(painter: &Painter, rect: Rect, color: Color32) {
+    let size = rect.width().min(rect.height());
+    painter.circle_stroke(
+        rect.center(),
+        size * 0.35,
+        Stroke::new((size * 0.1).max(1.2), color),
+    );
+    painter.circle_filled(rect.center(), size * 0.35 * 0.35, color);
+}
+
+/// Canvas text centered on a point, drawn with the fake-bold stamp the port
+/// uses where the Iced source selected `UI_FONT_BOLD`.
+fn centered_text(painter: &Painter, center: Pos2, content: &str, size: f32, color: Color32) {
+    centered_text_with(painter, center, content, size, color, true);
+}
+
+fn centered_text_with(
+    painter: &Painter,
+    center: Pos2,
+    content: &str,
+    size: f32,
+    color: Color32,
+    bold: bool,
+) {
+    let galley = painter.layout_no_wrap(
+        content.to_owned(),
+        FontId::new(size, theme::UI_FONT),
+        Color32::PLACEHOLDER,
+    );
+    let pos = center - galley.size() / 2.0;
+    if bold {
+        theme::stamp_galley(painter, pos, &galley, color, size);
+    } else {
+        painter.galley(pos, galley, color);
     }
+}
+
+/// The measured advance of `content` at `size`. The Iced canvas could not
+/// measure text and used an approximation; egui's font layout can, so the
+/// fit checks use the real advance.
+fn text_width(painter: &Painter, content: &str, size: f32) -> f32 {
+    painter
+        .layout_no_wrap(
+            content.to_owned(),
+            FontId::new(size, theme::UI_FONT),
+            Color32::PLACEHOLDER,
+        )
+        .size()
+        .x
 }
 
 fn millis(micros: u64) -> String {
     format!("{:.1}ms", micros as f32 / 1_000.0)
-}
-
-/// Advance estimate for canvas text, which the pinned `Frame` cannot measure.
-/// Used only to decide whether a label fits, so an approximation that never
-/// underestimates the common case is enough; wide CJK glyphs count double.
-fn text_width(content: &str, size: f32) -> f32 {
-    content
-        .chars()
-        .map(|glyph| if glyph.is_ascii() { 0.58 } else { 1.0 })
-        .sum::<f32>()
-        * size
 }
 
 /// The reference's keycap label split: names that do not fit on one line
@@ -891,13 +859,136 @@ fn key_label_lines(name: &str) -> Vec<String> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Key Input Timeline card
+// ---------------------------------------------------------------------------
+
+/// The Key Input Timeline card: header with the lifecycle subtitle and the
+/// monitor switch, collapsed to just those while stopped and mounting the
+/// graph only while recording (ui.md: a stopped timeline collapses to its
+/// title, subtitle, and start control). `names` are the four mapped key
+/// names, in slot order; the caller supplies them from the snapshot.
+pub fn timeline_section(
+    ui: &mut Ui,
+    monitor: &MonitorState,
+    names: [&str; 4],
+    language: Language,
+    awake: bool,
+    messages: &mut Vec<Message>,
+) -> Response {
+    let label = match monitor {
+        MonitorState::Stopped => "Start timeline",
+        MonitorState::Starting => "Starting…",
+        MonitorState::Recording(_) => "Stop timeline",
+        MonitorState::Stopping(_) => "Stopping…",
+    };
+    let ready = matches!(monitor, MonitorState::Stopped | MonitorState::Recording(_));
+    let recording = matches!(monitor, MonitorState::Recording(_));
+    // The subtitle carries the Starting / Stopping lifecycle the toggle
+    // itself cannot express.
+    let subtitle = if ready {
+        "Shows how long each key is held and where it overlaps its opposite, live."
+    } else {
+        label
+    };
+
+    theme::card_style()
+        .inner_margin(egui::Margin::same(theme::CARD_PADDING as i8))
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(0.0, 12.0);
+
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(0.0, 4.0);
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing = Vec2::new(8.0, 0.0);
+                        let (icon_rect, _) =
+                            ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
+                        paint_target_icon(ui.painter(), icon_rect, theme::PRIMARY_TEXT);
+                        ui.colored_label(
+                            theme::BODY_TEXT,
+                            egui::RichText::new(language.text("Key Input Timeline"))
+                                .font(FontId::new(theme::HEADING_SIZE, theme::UI_FONT))
+                                .strong(),
+                        );
+                    });
+                    ui.colored_label(
+                        theme::MUTED_TEXT,
+                        egui::RichText::new(language.text(subtitle))
+                            .font(FontId::new(12.0, theme::UI_FONT)),
+                    );
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if monitor_switch(ui, recording, ready, language.text(label)) {
+                        messages.push(Message::ToggleMonitor);
+                    }
+                });
+            });
+
+            if recording {
+                theme::graph_frame().show(ui, |ui| {
+                    graph(ui, monitor.timeline(), names, language, awake);
+                });
+            }
+        })
+        .response
+}
+
+/// The card's monitor toggle, ported from the Iced `toggler` at `.size(24)`
+/// (iced rev f8127c8 `widget/src/toggler.rs`): a 48x24 pill, padding
+/// `round(0.1 * 24) = 2`, and a 20px round knob that sits 2px from the left
+/// when off and 2px from the right when on. The track takes [`theme::SLATE_300`]
+/// until recording, then [`theme::INDIGO_600`]; the knob stays
+/// [`theme::SURFACE`]. Paint-only: it publishes the checkbox node and hands
+/// back whether it was clicked; the caller maps that to a `Message`.
+fn monitor_switch(ui: &mut Ui, recording: bool, ready: bool, label: &str) -> bool {
+    let (rect, response) = ui.allocate_exact_size(
+        Vec2::new(48.0, 24.0),
+        if ready {
+            Sense::click()
+        } else {
+            Sense::hover()
+        },
+    );
+    response.widget_info(|| {
+        WidgetInfo::selected(
+            WidgetType::Checkbox,
+            ready && ui.is_enabled(),
+            recording,
+            label,
+        )
+    });
+    if ready && response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let track = if recording {
+        theme::INDIGO_600
+    } else {
+        theme::SLATE_300
+    };
+    let painter = ui.painter();
+    painter.rect_filled(rect, CornerRadius::same(12), track);
+    let knob_x = if recording {
+        rect.right() - 22.0
+    } else {
+        rect.left() + 2.0
+    };
+    painter.circle_filled(
+        Pos2::new(knob_x + 10.0, rect.center().y),
+        10.0,
+        theme::SURFACE,
+    );
+    response.clicked()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::{MonitorDecision, MonitorEdge, MonitorSnapshot};
+    use egui_kittest::{Harness, kittest::NodeT, kittest::Queryable};
 
-    #[test]
-    fn the_clock_keeps_running_after_the_last_key_is_released() {
-        let output = |key, pressed, at| MonitorSnapshot {
+    fn output(key: KeySlot, pressed: bool, at: u64) -> MonitorSnapshot {
+        MonitorSnapshot {
             elapsed_micros: at,
             filter_enabled: true,
             physical: None,
@@ -907,7 +998,242 @@ mod tests {
                 synthetic: true,
             }],
             decision: MonitorDecision::Immediate,
-        };
+        }
+    }
+
+    /// Every `Shape::Rect` this frame painted, flattened out of `Shape::Vec`.
+    fn painted_rects<State>(harness: &Harness<'_, State>) -> Vec<egui::epaint::RectShape> {
+        fn collect(shape: &egui::Shape, out: &mut Vec<egui::epaint::RectShape>) {
+            match shape {
+                egui::Shape::Rect(rect) => out.push(rect.clone()),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for clipped in &harness.output().shapes {
+            collect(&clipped.shape, &mut out);
+        }
+        out
+    }
+
+    /// Every text drawn this frame, in paint order.
+    fn painted_texts<State>(harness: &Harness<'_, State>) -> Vec<String> {
+        fn collect(shape: &egui::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(text) => out.push(text.galley.text().to_owned()),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for clipped in &harness.output().shapes {
+            collect(&clipped.shape, &mut out);
+        }
+        out
+    }
+
+    /// Every `Shape::Circle` this frame painted, flattened out of `Shape::Vec`.
+    fn painted_circles<State>(harness: &Harness<'_, State>) -> Vec<egui::epaint::CircleShape> {
+        fn collect(shape: &egui::Shape, out: &mut Vec<egui::epaint::CircleShape>) {
+            match shape {
+                egui::Shape::Circle(circle) => out.push(*circle),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for clipped in &harness.output().shapes {
+            collect(&clipped.shape, &mut out);
+        }
+        out
+    }
+
+    #[test]
+    fn the_stopped_graph_keeps_its_lanes_keycaps_and_ruler() {
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(600.0, 400.0))
+            .build_ui(|ui| {
+                graph(ui, None, ["W", "S", "A", "D"], Language::English, true);
+            });
+        harness.run();
+
+        let lane = painted_rects(&harness)
+            .into_iter()
+            .find(|rect| rect.fill == LANE_IDLE)
+            .expect("a stopped graph still paints its idle lanes");
+        assert_eq!(lane.rect.height(), LANE_HEIGHT);
+        assert_eq!(lane.corner_radius, CornerRadius::same(LANE_RADIUS as u8));
+
+        let caps: Vec<_> = painted_rects(&harness)
+            .into_iter()
+            .filter(|rect| rect.fill == CAP_SURFACE && rect.rect.width() == CAP_SIZE)
+            .collect();
+        assert_eq!(caps.len(), 4, "one white keycap per lane: {caps:?}");
+
+        assert!(
+            painted_rects(&harness)
+                .iter()
+                .all(|rect| rect.fill != LANES[0].signal),
+            "no signal block mounts without a timeline"
+        );
+
+        let texts = painted_texts(&harness);
+        assert!(
+            texts.iter().any(|text| text == "NOW (0ms)"),
+            "texts: {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|text| text == "-1000ms"),
+            "texts: {texts:?}"
+        );
+
+        // One container-level node, the size of the graph, and no more.
+        let graph_node = harness.get_by_label("Key Input Timeline");
+        assert_eq!(graph_node.rect().height(), GRAPH_HEIGHT);
+    }
+
+    /// The anchor `accept` takes fixes `now` at the first event's offset plus
+    /// the wall-clock time since it arrived. Backdating the first arrival by a
+    /// second parks `now` after the recorded spans without the test waiting.
+    fn backdated() -> Instant {
+        Instant::now() - Duration::from_secs(1)
+    }
+
+    #[test]
+    fn recorded_spans_paint_blocks_in_their_lane() {
+        let mut timeline = Timeline::default();
+        timeline.accept(
+            output(KeySlot::HorizontalFirst, true, 0),
+            false,
+            backdated(),
+        );
+        timeline.accept(
+            output(KeySlot::HorizontalFirst, false, 100_000),
+            false,
+            Instant::now(),
+        );
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(600.0, 400.0))
+            .build_ui(move |ui| {
+                graph(
+                    ui,
+                    Some(&timeline),
+                    ["W", "S", "A", "D"],
+                    Language::English,
+                    true,
+                );
+            });
+        harness.run_steps(2);
+
+        let block = painted_rects(&harness)
+            .into_iter()
+            .find(|rect| rect.fill == LANES[2].signal)
+            .expect("the released span paints a block in the A lane");
+        assert_eq!(block.rect.height(), LANE_HEIGHT - 8.0);
+        assert_eq!(block.corner_radius, CornerRadius::same(6));
+        assert_eq!(block.stroke, Stroke::NONE, "a settled block has no stroke");
+    }
+
+    #[test]
+    fn a_held_key_paints_a_held_lane_and_an_open_block() {
+        let mut timeline = Timeline::default();
+        timeline.accept(output(KeySlot::VerticalFirst, true, 0), false, backdated());
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(600.0, 400.0))
+            .build_ui(move |ui| {
+                graph(
+                    ui,
+                    Some(&timeline),
+                    ["W", "S", "A", "D"],
+                    Language::English,
+                    true,
+                );
+            });
+        harness.run_steps(2);
+
+        assert!(
+            painted_rects(&harness)
+                .iter()
+                .any(|rect| rect.fill == LANES[0].held_fill && rect.rect.height() == LANE_HEIGHT),
+            "the held lane takes its accent tint"
+        );
+        let open = painted_rects(&harness)
+            .into_iter()
+            .find(|rect| rect.fill == LANES[0].signal && rect.rect.height() == LANE_HEIGHT - 8.0)
+            .expect("the held span paints an open signal block");
+        assert_eq!(open.stroke, Stroke::NONE);
+        assert!(
+            painted_rects(&harness).iter().any(|rect| {
+                rect.stroke == Stroke::new(1.5, Color32::WHITE)
+                    && rect.rect.height() == LANE_HEIGHT - 8.0
+            }),
+            "the open block carries the Iced white outline as its own stroke shape"
+        );
+    }
+
+    #[test]
+    fn opposing_overlaps_paint_a_live_column_and_badge() {
+        let mut timeline = Timeline::default();
+        timeline.accept(
+            output(KeySlot::HorizontalFirst, true, 0),
+            false,
+            backdated(),
+        );
+        timeline.accept(
+            output(KeySlot::HorizontalSecond, true, 50_000),
+            false,
+            Instant::now(),
+        );
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(600.0, 400.0))
+            .build_ui(move |ui| {
+                graph(
+                    ui,
+                    Some(&timeline),
+                    ["W", "S", "A", "D"],
+                    Language::English,
+                    true,
+                );
+            });
+        harness.run_steps(2);
+
+        let column = painted_rects(&harness)
+            .into_iter()
+            .find(|rect| rect.fill == OVERLAP_FILL_LIVE)
+            .expect("two live spans paint the stronger overlap fill");
+        assert_eq!(column.rect.height(), PAIR_HEIGHT);
+
+        let badge = painted_rects(&harness)
+            .into_iter()
+            .find(|rect| rect.fill == BADGE_FILL)
+            .expect("the overlap carries its duration badge");
+        assert_eq!(badge.rect.height(), BADGE_HEIGHT);
+        assert!(
+            painted_rects(&harness).iter().any(|rect| {
+                rect.stroke == Stroke::new(1.0, BADGE_EDGE) && rect.rect.height() == BADGE_HEIGHT
+            }),
+            "the badge paints its own edge stroke"
+        );
+    }
+
+    // The data-model tests ported from `iced-ui/timeline.rs`: the painter above
+    // reads the same `now`/`spans`/`winner` contract.
+
+    #[test]
+    fn the_clock_keeps_running_after_the_last_key_is_released() {
         let key = KeySlot::HorizontalFirst;
         let mut timeline = Timeline::default();
         // The session started well before the first key: `elapsed_micros` is
@@ -924,17 +1250,6 @@ mod tests {
 
     #[test]
     fn a_released_key_keeps_its_span_while_the_next_key_is_pressed() {
-        let output = |key, pressed, at| MonitorSnapshot {
-            elapsed_micros: at,
-            filter_enabled: true,
-            physical: None,
-            outputs: vec![MonitorEdge {
-                key,
-                pressed,
-                synthetic: true,
-            }],
-            decision: MonitorDecision::Immediate,
-        };
         let mut timeline = Timeline::default();
         let arrival = Instant::now();
         let first = KeySlot::HorizontalFirst;
@@ -1079,6 +1394,164 @@ mod tests {
         assert_eq!(
             timeline.winner(KeySlot::HorizontalFirst, KeySlot::HorizontalSecond),
             Some(KeySlot::HorizontalSecond)
+        );
+    }
+
+    struct SectionState {
+        monitor: MonitorState,
+        messages: Vec<Message>,
+    }
+
+    fn section_harness(monitor: MonitorState) -> Harness<'static, SectionState> {
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(600.0, 400.0))
+            .build_ui_state(
+                |ui, state: &mut SectionState| {
+                    let SectionState { monitor, messages } = state;
+                    let _ = timeline_section(
+                        ui,
+                        monitor,
+                        ["W", "S", "A", "D"],
+                        Language::English,
+                        true,
+                        messages,
+                    );
+                },
+                SectionState {
+                    monitor,
+                    messages: Vec::new(),
+                },
+            );
+        harness.run();
+        harness
+    }
+
+    #[test]
+    fn the_section_collapses_while_stopped_and_mounts_while_recording() {
+        let mut harness = section_harness(MonitorState::Stopped);
+        assert!(
+            harness
+                .query_by_role_and_label(egui::accesskit::Role::Unknown, "Key Input Timeline")
+                .is_none(),
+            "a stopped card mounts no graph"
+        );
+        let switch = harness.get_by_label("Start timeline");
+        assert_eq!(
+            switch.accesskit_node().role(),
+            egui::accesskit::Role::CheckBox
+        );
+        switch.click();
+        harness.run();
+        assert!(
+            harness
+                .state()
+                .messages
+                .iter()
+                .any(|m| matches!(m, Message::ToggleMonitor))
+        );
+
+        let mut harness = section_harness(MonitorState::Recording(Timeline::default()));
+        assert_eq!(
+            harness
+                .get_by_role_and_label(egui::accesskit::Role::Unknown, "Key Input Timeline")
+                .rect()
+                .height(),
+            GRAPH_HEIGHT,
+            "a recording card mounts the graph"
+        );
+        harness.get_by_label("Stop timeline").click();
+        harness.run();
+        assert!(
+            harness
+                .state()
+                .messages
+                .iter()
+                .any(|m| matches!(m, Message::ToggleMonitor))
+        );
+    }
+
+    #[test]
+    fn a_starting_section_disables_the_switch() {
+        let mut harness = section_harness(MonitorState::Starting);
+        assert!(
+            harness
+                .query_by_role_and_label(egui::accesskit::Role::Unknown, "Key Input Timeline")
+                .is_none(),
+            "the starting card still shows the collapsed state"
+        );
+        harness
+            .get_by_role_and_label(egui::accesskit::Role::CheckBox, "Starting…")
+            .click();
+        harness.run();
+        assert!(
+            harness.state().messages.is_empty(),
+            "a disabled switch emits nothing"
+        );
+    }
+
+    /// R2 round-2 finding 2: the monitor switch's advertised geometry (the
+    /// report's 48x24 pill, radius 12, 20px knob with 2px padding) was
+    /// unverified. The values are the Iced toggler at `.size(24)` (iced rev
+    /// f8127c8 `widget/src/toggler.rs`): track 2N x N, border radius
+    /// height / 2, knob height - 2 * round(0.1 * height), offset
+    /// `round(0.1 * 24) = 2`.
+    #[test]
+    fn the_monitor_switch_paints_the_iced_toggler_geometry() {
+        // Off: SLATE_300 track, the knob 2px from the left.
+        let harness = section_harness(MonitorState::Stopped);
+        let track = painted_rects(&harness)
+            .into_iter()
+            .find(|rect| {
+                rect.fill == theme::SLATE_300 && rect.corner_radius == CornerRadius::same(12)
+            })
+            .expect("the off switch paints its SLATE_300 pill");
+        assert_eq!(
+            track.rect.size(),
+            Vec2::new(48.0, 24.0),
+            "the track is the Iced .size(24) pill"
+        );
+        let knob = painted_circles(&harness)
+            .into_iter()
+            .find(|circle| circle.fill == theme::SURFACE && circle.radius == 10.0)
+            .expect("the off switch paints its 20px knob");
+        assert_eq!(
+            knob.center,
+            Pos2::new(track.rect.left() + 12.0, track.rect.center().y),
+            "the off knob sits 2px from the left edge"
+        );
+        assert_eq!(
+            knob.center.x - knob.radius - track.rect.left(),
+            2.0,
+            "2px padding"
+        );
+        assert_eq!(
+            knob.center.y - knob.radius - track.rect.top(),
+            2.0,
+            "2px padding"
+        );
+
+        // On: INDIGO_600 track, the knob 2px from the right.
+        let harness = section_harness(MonitorState::Recording(Timeline::default()));
+        let track = painted_rects(&harness)
+            .into_iter()
+            .find(|rect| {
+                rect.fill == theme::INDIGO_600 && rect.corner_radius == CornerRadius::same(12)
+            })
+            .expect("the recording switch paints its INDIGO_600 pill");
+        assert_eq!(track.rect.size(), Vec2::new(48.0, 24.0));
+        let knob = painted_circles(&harness)
+            .into_iter()
+            .find(|circle| circle.fill == theme::SURFACE && circle.radius == 10.0)
+            .expect("the recording switch paints its 20px knob");
+        assert_eq!(
+            knob.center.x,
+            track.rect.right() - 12.0,
+            "the on knob sits 2px from the right edge"
+        );
+        assert_eq!(
+            track.rect.right() - (knob.center.x + knob.radius),
+            2.0,
+            "2px padding"
         );
     }
 }

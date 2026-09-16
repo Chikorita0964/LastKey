@@ -1,3 +1,12 @@
+//! The settings window's IPC client: one reader thread owns the pipe, outbound
+//! commands go back through a channel, and inbound events reach the app through
+//! a channel plus a wake callback.
+//!
+//! Port of `iced-ui/ipc_client.rs`. The Iced `Sipper` stream is replaced by
+//! `std::sync::mpsc` plus `wake`: eframe has no async runtime, so the reader
+//! calls the wake callback (the app passes `Context::request_repaint`) after
+//! every queued event, and the app drains the receiver on the next frame.
+
 use std::{
     sync::{
         Arc,
@@ -6,11 +15,6 @@ use std::{
     },
     thread,
     time::{Duration, Instant},
-};
-
-use iced::{
-    futures::{channel::mpsc, stream::StreamExt},
-    task::{Never, Sipper, sipper},
 };
 
 use crate::{
@@ -48,24 +52,27 @@ impl Connection {
     }
 }
 
-pub fn connect() -> impl Sipper<Never, Event> {
-    sipper(async |mut output| {
-        let (event_sender, mut events) = mpsc::unbounded();
-        if let Err(error) = thread::Builder::new()
-            .name("lastkey-settings-ipc-reader".into())
-            .spawn(move || run_connection_loop(event_sender))
-        {
-            output.send(Event::Disconnected(error.to_string())).await;
-        }
-
-        while let Some(event) = events.next().await {
-            output.send(event).await;
-        }
-        std::future::pending::<Never>().await
-    })
+/// Starts the reader thread and returns the event receiver. `wake` is called
+/// after every queued event so the window repaints without polling; the app
+/// passes a `Context::request_repaint` closure.
+pub fn connect(wake: impl Fn() + Send + Sync + 'static) -> std_mpsc::Receiver<Event> {
+    let (sender, receiver) = std_mpsc::channel();
+    let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(wake);
+    let spawn = thread::Builder::new()
+        .name("lastkey-settings-ipc-reader".into())
+        .spawn({
+            let sender = sender.clone();
+            let wake = Arc::clone(&wake);
+            move || run_connection_loop(sender, wake)
+        });
+    if let Err(error) = spawn {
+        let _ = sender.send(Event::Disconnected(error.to_string()));
+        wake();
+    }
+    receiver
 }
 
-fn run_connection_loop(event_sender: mpsc::UnboundedSender<Event>) {
+fn run_connection_loop(event_sender: std_mpsc::Sender<Event>, wake: Arc<dyn Fn() + Send + Sync>) {
     // The sole owner of the pipe handle. A pending blocking read on one
     // handle stalls writes on a duplicate handle of the same synchronous
     // pipe, so reads and writes for one session share this thread: wait on
@@ -75,7 +82,11 @@ fn run_connection_loop(event_sender: mpsc::UnboundedSender<Event>) {
         {
             Ok(connection) => connection,
             Err(error) => {
-                if !publish(&event_sender, Event::Disconnected(error.to_string())) {
+                if !publish(
+                    &event_sender,
+                    &*wake,
+                    Event::Disconnected(error.to_string()),
+                ) {
                     return;
                 }
                 thread::sleep(Duration::from_secs(1));
@@ -86,6 +97,7 @@ fn run_connection_loop(event_sender: mpsc::UnboundedSender<Event>) {
         let awake = Arc::new(AtomicBool::new(true));
         if !publish(
             &event_sender,
+            &*wake,
             Event::Connected(Connection {
                 commands: command_sender,
                 awake: Arc::clone(&awake),
@@ -119,6 +131,7 @@ fn run_connection_loop(event_sender: mpsc::UnboundedSender<Event>) {
                 if pipe.send(&command).is_err() {
                     if !publish(
                         &event_sender,
+                        &*wake,
                         Event::Disconnected("failed to send a command to the runtime".into()),
                     ) {
                         return;
@@ -135,19 +148,27 @@ fn run_connection_loop(event_sender: mpsc::UnboundedSender<Event>) {
                 Ok(true) => match pipe.receive::<UiEvent>() {
                     Ok(event) => {
                         last_activity = Instant::now();
-                        if !publish(&event_sender, Event::Message(Box::new(event))) {
+                        if !publish(&event_sender, &*wake, Event::Message(Box::new(event))) {
                             return;
                         }
                     }
                     Err(error) => {
-                        if !publish(&event_sender, Event::Disconnected(error.to_string())) {
+                        if !publish(
+                            &event_sender,
+                            &*wake,
+                            Event::Disconnected(error.to_string()),
+                        ) {
                             return;
                         }
                         break 'session;
                     }
                 },
                 Err(error) => {
-                    if !publish(&event_sender, Event::Disconnected(error.to_string())) {
+                    if !publish(
+                        &event_sender,
+                        &*wake,
+                        Event::Disconnected(error.to_string()),
+                    ) {
                         return;
                     }
                     break 'session;
@@ -158,6 +179,72 @@ fn run_connection_loop(event_sender: mpsc::UnboundedSender<Event>) {
     }
 }
 
-fn publish(sender: &mpsc::UnboundedSender<Event>, event: Event) -> bool {
-    sender.unbounded_send(event).is_ok()
+/// Queues one event and wakes the window. False once the app dropped the
+/// receiver, which tells the reader to stop.
+fn publish(
+    sender: &std_mpsc::Sender<Event>,
+    wake: &(dyn Fn() + Send + Sync),
+    event: Event,
+) -> bool {
+    if sender.send(event).is_ok() {
+        wake();
+        true
+    } else {
+        false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The command handle delivers to the channel the reader owns, and the
+    /// awake flag is shared with it.
+    #[test]
+    fn connection_delivers_commands_and_the_awake_flag() {
+        let (tx, rx) = std_mpsc::channel();
+        let awake = Arc::new(AtomicBool::new(true));
+        let connection = Connection {
+            commands: tx,
+            awake: Arc::clone(&awake),
+        };
+
+        connection.send(UiCommand::RequestSnapshot).unwrap();
+        assert_eq!(rx.try_recv().unwrap(), UiCommand::RequestSnapshot);
+
+        connection.set_awake(false);
+        assert!(!awake.load(Ordering::Relaxed));
+        connection.set_awake(true);
+        assert!(awake.load(Ordering::Relaxed));
+    }
+
+    /// A dead reader surfaces as a send error instead of a silent drop,
+    /// which is what the app turns into a disconnect.
+    #[test]
+    fn send_reports_a_dropped_reader() {
+        let (tx, rx) = std_mpsc::channel();
+        let connection = Connection {
+            commands: tx,
+            awake: Arc::new(AtomicBool::new(true)),
+        };
+        drop(rx);
+        assert!(connection.send(UiCommand::RequestSnapshot).is_err());
+    }
+
+    /// Every published event wakes the window exactly once.
+    #[test]
+    fn publish_wakes_after_a_queued_event() {
+        let (tx, rx) = std_mpsc::channel();
+        let wakes = Arc::new(AtomicBool::new(false));
+        let wake = {
+            let wakes = Arc::clone(&wakes);
+            move || wakes.store(true, Ordering::Relaxed)
+        };
+        assert!(publish(&tx, &wake, Event::Disconnected("boom".into())));
+        assert!(wakes.load(Ordering::Relaxed));
+        assert!(matches!(rx.try_recv(), Ok(Event::Disconnected(_))));
+
+        drop(rx);
+        assert!(!publish(&tx, &wake, Event::Disconnected("boom".into())));
+    }
 }

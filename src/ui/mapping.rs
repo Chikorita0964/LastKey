@@ -3,7 +3,7 @@
 //!
 //! The Iced original is the mappings block in `SettingsApp::settings_view`
 //! plus `mapping_pad`, `rebind_banner`, `assignment_status`, and
-//! `resolve_dpad` in `src/ui/app.rs`; `docs/architecture/ui.md` owns the
+//! `resolve_dpad` in `iced-ui/app.rs`; `docs/architecture/ui.md` owns the
 //! contract they must keep. The card paints and pushes [`Message`]s only: it
 //! never saves settings, sends IPC, or mutates application state, and it
 //! returns the messages so the caller can feed them to `state::update`.

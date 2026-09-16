@@ -6,7 +6,7 @@
 //! drifting. The flows cover the migration's list: rebind a key, change a
 //! mode, edit a timing value, toggle the filter, and rename a profile.
 //!
-//! `src/ui2/app.rs` is a private module, so the shell below composes the same
+//! `src/ui/app.rs` is a private module, so the shell below composes the same
 //! public cards the page does (`app::settings_cards`): the header, the
 //! mapping/timing card row, the amber dirty badge the action bar mounts, and
 //! the profile overlay. The fakes sit at the process boundary: the shell runs
@@ -15,7 +15,7 @@
 //! IPC reader would.
 //!
 //! `cargo test` compiles this file with default features, where `src/lib.rs`
-//! keeps `ui2` behind `windows + egui-ui`; the crate-level cfg leaves the file
+//! keeps `ui` behind `windows + egui-ui`; the crate-level cfg leaves the file
 //! empty in that configuration.
 
 #![cfg(all(windows, feature = "egui-ui"))]
@@ -26,7 +26,7 @@ use lastkey::{
     core::PhysicalKey,
     protocol::{DisplayKey, KeySlot, UiCommand, UiEvent, UiSnapshot},
     settings::{Settings, SocdMode},
-    ui2::{
+    ui::{
         header, mapping,
         message::{IpcEvent, Message, TimingField},
         profiles,

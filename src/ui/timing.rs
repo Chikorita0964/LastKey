@@ -32,10 +32,10 @@ use super::{
 
 /// Geometry of the two-handle duration rail.
 ///
-/// The Iced source is `src/ui/widgets.rs::RangeSlider`, which draws its own
+/// The Iced source is `iced-ui/widgets.rs::RangeSlider`, which draws its own
 /// rail and thumbs instead of reusing `theme::accent_slider`: a 12px rail
 /// rounded to 6, and constant 16px (radius 8) thumbs whose size does not
-/// depend on the status (`src/ui/widgets.rs:238-285`). `theme::SLIDER_RAIL_*`
+/// depend on the status (`iced-ui/widgets.rs:238-285`). `theme::SLIDER_RAIL_*`
 /// and `theme::SLIDER_HANDLE_RADIUS*` stay the single-handle `accent_slider`
 /// contract the Random Mix mixer uses.
 const RANGE_RAIL_WIDTH: f32 = 12.0;
@@ -207,7 +207,7 @@ struct RangeDragState {
 }
 
 /// Radius of the Random Mix mixer handle for the Iced `accent_slider` status
-/// contract (`src/ui/theme.rs:1288-1293`): 7.0 at rest, swelling to 8.0 while
+/// contract (`iced-ui/theme.rs:1288-1293`): 7.0 at rest, swelling to 8.0 while
 /// the pointer is over the slider or the handle is grabbed. Iced reports
 /// `Status::Hovered` whenever the cursor is inside the slider bounds and
 /// `Status::Dragged` while the handle is grabbed (iced rev `f8127c8`,
@@ -355,7 +355,7 @@ pub fn range_slider(ui: &mut Ui, props: RangeSliderProps<'_>) -> Option<(f32, f3
 /// swells from 7 to 8 while hovered or grabbed, ringed in MIX_TEXT. The rail
 /// is filled `PRIMARY_TEXT` left of the handle and `RELEASE_TEXT` right of it,
 /// the split the Iced `theme::mixer_slider` sets by overriding
-/// `accent_slider`'s second rail background (`src/ui/theme.rs:1116-1121`,
+/// `accent_slider`'s second rail background (`iced-ui/theme.rs:1116-1121`,
 /// iced `widget/src/slider.rs:455-481`).
 pub fn mixer_slider(
     ui: &mut Ui,
@@ -447,9 +447,9 @@ pub fn mixer_slider(
 
 /// Horizontal 4-mode segment picker for the timing card.
 ///
-/// The strip insets its segments by 4 (`src/ui/app.rs:3123`,
+/// The strip insets its segments by 4 (`iced-ui/app.rs:3123`,
 /// `container(segments).padding(4)`), and each segment is padded by
-/// [`theme::MODE_PADDING`] (`src/ui/app.rs:3117`). egui's `Frame` draws its
+/// [`theme::MODE_PADDING`] (`iced-ui/app.rs:3117`). egui's `Frame` draws its
 /// stroke outside the inner margin exactly as Iced's container does, so both
 /// numbers pass through unchanged.
 pub fn mode_selector(
@@ -654,7 +654,7 @@ pub fn rate_group(
 
     // The Iced ratio group is the one slot in this card padded with
     // `theme::GROUP_PADDING` rather than the 12 the duration ranges use
-    // (`src/ui/app.rs:3180`).
+    // (`iced-ui/app.rs:3180`).
     theme::slot_style()
         .inner_margin(Margin::same(GROUP_PADDING as i8))
         .show(ui, |ui| {
@@ -680,7 +680,7 @@ pub fn rate_group(
                             ui.colored_label(MIX_TEXT, "%");
 
                             // R1 issue 10: RELEASE_TEXT is intentional for the preservation rate box
-                            // per src/ui/app.rs:3317 (matching the release-delay accent).
+                            // per iced-ui/app.rs:3317 (matching the release-delay accent).
                             let rate_props = ValueBoxProps::new(
                                 TimingField::PreservationRate,
                                 editing[TimingField::PreservationRate.index()],
@@ -970,7 +970,7 @@ pub fn timing_card(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{settings::Settings, ui2::state::State};
+    use crate::{settings::Settings, ui::state::State};
 
     #[test]
     fn test_mode_labels_and_colors() {
@@ -1356,7 +1356,7 @@ mod tests {
     #[test]
     fn test_mixer_handle_radius_contract() {
         // The Iced `accent_slider` maps `Status::Active` to 7.0 and
-        // `Status::Hovered | Status::Dragged` to 8.0 (`src/ui/theme.rs:1288-1293`).
+        // `Status::Hovered | Status::Dragged` to 8.0 (`iced-ui/theme.rs:1288-1293`).
         assert_eq!(mixer_handle_radius(false), SLIDER_HANDLE_RADIUS);
         assert_eq!(mixer_handle_radius(false), 7.0);
         assert_eq!(mixer_handle_radius(true), SLIDER_HANDLE_RADIUS_DRAG);
@@ -1403,8 +1403,8 @@ mod tests {
 
     /// R2 round-3: the strip insets its segments by 4 and each segment is padded
     /// by `theme::MODE_PADDING`. Iced wraps the segments as
-    /// `container(segments).padding(4)` (`src/ui/app.rs:3123`) and pads each
-    /// segment with `theme::MODE_PADDING` (`src/ui/app.rs:3117`). Rendered rather
+    /// `container(segments).padding(4)` (`iced-ui/app.rs:3123`) and pads each
+    /// segment with `theme::MODE_PADDING` (`iced-ui/app.rs:3117`). Rendered rather
     /// than restated, so a flattened margin fails here.
     #[test]
     fn test_mode_selector_strip_inset_and_segment_padding() {
@@ -1503,7 +1503,7 @@ mod tests {
     }
 
     /// R2 round-3: the Iced `mixer_slider` fills the rail `PRIMARY_TEXT` left of
-    /// the handle and `RELEASE_TEXT` right of it (`src/ui/theme.rs:1116-1121`).
+    /// the handle and `RELEASE_TEXT` right of it (`iced-ui/theme.rs:1116-1121`).
     #[test]
     fn test_mixer_rail_splits_primary_left_release_right() {
         use egui_kittest::Harness;
@@ -1550,7 +1550,7 @@ mod tests {
     /// R2 round-3: the duration rail is the Iced `widgets::RangeSlider`, not the
     /// single-handle `accent_slider`: a 12px rail rounded to 6 with constant
     /// 16px thumbs (radius 8) that do not change with the status
-    /// (`src/ui/widgets.rs:238-285`).
+    /// (`iced-ui/widgets.rs:238-285`).
     #[test]
     fn test_duration_rail_uses_the_range_geometry() {
         use egui_kittest::Harness;
@@ -1609,7 +1609,7 @@ mod tests {
     }
 
     /// R2 round-3: the Random Mix slot is padded with `theme::GROUP_PADDING` (14),
-    /// not the 12 the duration groups use (`src/ui/app.rs:3180`).
+    /// not the 12 the duration groups use (`iced-ui/app.rs:3180`).
     #[test]
     fn test_rate_group_uses_group_padding() {
         use egui_kittest::{Harness, kittest::Queryable};

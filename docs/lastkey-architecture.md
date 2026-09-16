@@ -25,7 +25,7 @@ the old behavior.
 
 ```text
 LastKey.Settings.exe                    LastKey.exe
-on-demand Iced + wgpu                   resident tray + AppController
+on-demand egui + wgpu                   resident tray + AppController
 Settings / Measurement UI    <IPC>      settings and measurement lifecycle
 display-only state                      InputService
                                                 |
@@ -38,9 +38,9 @@ display-only state                      InputService
 `LastKey.exe` owns everything authoritative: tray and single-instance enforcement, settings
 persistence, `AppController` with the capture and measurement lifecycles, hook, Raw Input, SOCD,
 delivery, timing, synthetic output, and the IPC server that launches and focuses the settings
-process. `LastKey.Settings.exe` owns only the Iced application, screen composition, and the IPC
+process. `LastKey.Settings.exe` owns only the egui application, screen composition, and the IPC
 client — never settings files, SOCD, hooks, `SendInput`, the scheduler, platform handles, or raw
-measurement. It does not run during normal gameplay: no Iced thread, allocation, wgpu device, or GPU
+measurement. It does not run during normal gameplay: no egui thread, allocation, wgpu device, or GPU
 context exists while only the runtime is running.
 
 | Path | Responsibility |
@@ -50,7 +50,7 @@ context exists while only the runtime is running.
 | `src/protocol.rs` | Versioned IPC commands, events, and framing |
 | `src/platform/windows/` | Hook, Raw Input, `SendInput`, waitable timer, named pipe, UI server |
 | `src/platform/linux/` | evdev capture and uinput output (experimental) |
-| `src/ui/` | Iced application and IPC client (`iced-ui` feature only) |
+| `src/ui/` | egui settings window: page composition, state, and IPC client (`egui-ui` feature only) |
 | `src/bin/` | `lastkey` (runtime) and `lastkey-settings` (UI) binaries |
 
 Start a task by reading this file and the row above, then `src/bin/lastkey.rs`, `src/platform/windows/input.rs`,

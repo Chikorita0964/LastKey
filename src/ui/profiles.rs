@@ -2,7 +2,7 @@
 //! cards, the in-place rename box, and the language rows.
 //!
 //! Port of `SettingsApp::profile_dialog`, `profile_slots`, `profile_slot_card`
-//! and `profile_chip` (src/ui/app.rs:1479-1953, 3059-3099). `docs/architecture/ui.md`
+//! and `profile_chip` (iced-ui/app.rs:1479-1953, 3059-3099). `docs/architecture/ui.md`
 //! owns the contract; this module paints and pushes [`Message`]s only.
 //!
 //! # Layering and press routing
@@ -49,7 +49,7 @@ use super::{
 };
 
 /// The panel's top offset from the window's top edge: the page padding, the
-/// header, and the 8px gap (Iced `PROFILE_PANEL_TOP`, src/ui/app.rs:79).
+/// header, and the 8px gap (Iced `PROFILE_PANEL_TOP`, iced-ui/app.rs:79).
 pub const PROFILE_PANEL_TOP: f32 = theme::PAGE_PADDING + header::HEADER_HEIGHT + 8.0;
 
 /// The rename box's stable id, so `Effect::FocusProfileName` can find it.
@@ -100,7 +100,7 @@ pub fn profile_overlay(ui: &mut Ui, state: &State) -> Vec<Message> {
 
 /// Ask for the rename box to take focus with its whole value selected, the
 /// port of the Iced `Message::EditProfileName` task (`operation::focus` +
-/// `operation::select_all`, src/ui/app.rs:517-519). The app loop calls this
+/// `operation::select_all`, iced-ui/app.rs:517-519). The app loop calls this
 /// when it executes `Effect::FocusProfileName`.
 ///
 /// The request is stored, not applied here: the effect arrives on the frame
@@ -187,7 +187,7 @@ fn panel(ctx: &Context, state: &State, messages: &mut Vec<Message>) {
 
 /// The panel's header: the section glyph, the title and its subtitle (or the
 /// panel's live error), and the borderless close circle. Port of
-/// src/ui/app.rs:1496-1558; the text sizes and paddings come from the theme.
+/// iced-ui/app.rs:1496-1558; the text sizes and paddings come from the theme.
 fn panel_header(ui: &mut Ui, state: &State, languages: bool, messages: &mut Vec<Message>) {
     egui::Frame::new()
         .inner_margin(theme::PROFILE_HEADER_PADDING)
@@ -729,7 +729,7 @@ fn confirm_overlay(ui: &mut Ui, rect: Rect, state: &State, slot: u8, messages: &
 /// A label-only control for the confirm banner: the filled primary Load and
 /// the outlined Cancel, at the Iced `[6, 12]` padding. `theme::secondary_button`
 /// always paints an icon and neither of these has one, so this is the
-/// label-only arm of the same shell (src/ui/app.rs:1887-1898).
+/// label-only arm of the same shell (iced-ui/app.rs:1887-1898).
 fn banner_button(ui: &mut Ui, label: &str, primary: bool) -> Response {
     const PAD_X: f32 = 12.0;
     const PAD_Y: f32 = 6.0;
@@ -790,7 +790,7 @@ mod tests {
         core::PhysicalKey,
         protocol::{DisplayKey, UiCommand},
         settings::Settings,
-        ui2::{
+        ui::{
             language::Language,
             state::{Effect, TimingInputs, update},
         },

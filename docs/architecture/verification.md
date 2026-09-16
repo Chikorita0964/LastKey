@@ -18,7 +18,7 @@ stay inside one feature set unless the change genuinely spans both.
 | `src/settings.rs`, `src/protocol.rs` — the stored or wire **shape** | The full gate. Neither has a local blast radius |
 | `src/app/`, `src/platform/windows/` | `cargo test --lib` |
 | `src/platform/linux/` | `cargo check --target x86_64-unknown-linux-gnu` |
-| `src/ui2/` | `cargo test --no-default-features --features egui-ui --lib --test ui_semantic` |
+| `src/ui/` | `cargo test --no-default-features --features egui-ui --lib --test ui_semantic` |
 | `build.rs`, dependency edits in `Cargo.toml` | `cargo tree --no-default-features -e normal` and one clean build |
 | Packaging scripts | `.github\scripts\Test-ReleaseFormDefault.ps1` |
 | Markdown only | Nothing. `git diff --check` at most |
@@ -40,7 +40,7 @@ git diff --check
 .github\scripts\Test-ReleaseFormDefault.ps1
 ```
 
-- **The `egui-ui` run is not optional after a `src/ui2/` change.** `src/lib.rs` gates `pub mod ui2`
+- **The `egui-ui` run is not optional after a `src/ui/` change.** `src/lib.rs` gates `pub mod ui`
   behind the feature, so the default run never compiles that module. Clippy with `--all-features`
   type-checks its tests but does not execute them.
 - **`--test ui_semantic` must stay on the `egui-ui` commands.** `--lib --bin` selects only those two

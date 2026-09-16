@@ -1,7 +1,7 @@
 //! The Key mappings D-pad keycap.
 //!
-//! The Iced original is `fn keycap` in `src/ui/app.rs`, which took its paint
-//! from `src/ui/theme.rs` (`theme::keycap` / `theme::KeycapMode`). egui paints
+//! The Iced original is `fn keycap` in `iced-ui/app.rs`, which took its paint
+//! from `iced-ui/theme.rs` (`theme::keycap` / `theme::KeycapMode`). egui paints
 //! the box, the glow, the legend, and both label lines directly, and the
 //! interactive node comes from the response: a custom-drawn widget is
 //! invisible to AccessKit, so `ui.interact` plus a labelled [`WidgetInfo`] is

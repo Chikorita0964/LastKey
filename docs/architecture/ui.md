@@ -4,35 +4,37 @@ Everything the settings process owns: composition, rendering rules, localization
 contracts a review has already hardened. Backend contracts live in `engine.md`.
 
 Design source: the user-approved local React reference at
-C:/Users/Administrator/Desktop/UI_improvement/src/App.tsx (outside the product). The pinned Iced
-revision (f8127c8) supplies system-font widgets, the advanced quad renderer, and `canvas`.
+C:/Users/Administrator/Desktop/UI_improvement/src/App.tsx (outside the product). The Iced
+implementation this window was first ported to (pinned revision f8127c8) was retired in T11; the
+rendering rationale below is kept because the ported values and rules derive from it.
 
 Rendering rules, stated as what to use rather than only what to avoid:
 
-- Shapes a quad cannot express — arcs, beziers, diagonal strokes — are drawn with
-  `iced::widget::canvas` (`Path`, `Stroke`, `Fill`). The icon set is the case that forced this: the
-  reference procedurally draws 24 icons, and 20 of them need an arc, a bezier, or a diagonal.
-- Everything a rectangle can express stays on `fill_quad` through a custom `Widget`, because
-  `renderer::Quad` already carries border width, color, and radius. `src/ui/widgets.rs` (logo, range
-  slider) and `src/ui/timeline.rs` (lanes, intervals, grid, needle) are all quads and stay that way.
-  Porting working quad code to `canvas` is churn, not an improvement.
-- A `canvas` that changes color with interaction keys its `Cache` on the drawn color, not only on the
-  geometry. The reference recolors icons on hover and focus; a cache keyed on shape alone keeps
-  painting the old color, and no cache at all retessellates every frame.
-- A widget that animates drives its own repaint from `Event::Window(RedrawRequested)` plus
-  `shell.request_redraw_at`, as `src/ui/timeline.rs:165` does, and only while it has something to
-  show. No animation engine, and no repaint loop that outlives the state it renders.
+- Shapes a rectangle cannot express — arcs, beziers, diagonal strokes — are drawn as egui paths
+  (`egui::Shape::line` with joins, `convex_polygon`, `CubicBezier`). The icon set is the case that
+  forced this: the reference procedurally draws 24 icons, and 20 of them need an arc, a bezier, or a
+  diagonal.
+- Everything a rectangle can express stays a rect fill or stroke, because a rounded rectangle
+  already carries border width, color, and radius. The timeline's lanes, intervals, grid, and needle
+  (`src/ui/timeline.rs`) and the timing card's range rail, thumbs, and mixer slider are all rects and
+  paths and stay that way. Converting working rect code to a general path is churn, not an improvement.
+- (Iced-era note) A `canvas` that changes color with interaction keyed its `Cache` on the drawn color,
+  not only the geometry, because the reference recolors icons on hover and focus. The egui port
+  records shapes from the current color every frame, so that rule holds by construction.
+- A widget that animates drives its own repaint (`egui::Context::request_repaint_after`) and only
+  while it has something to show, as the timeline playhead and the preview clock do. No animation
+  engine, and no repaint loop that outlives the state it renders.
 - A deactivated window is an additional "nothing to show" condition, so it requests no frames at all:
   the preview clock, the timeline playhead, and hover-reveal motion all stop, and the settings IPC
   pump drops to `IPC_SLEEP_POLL_INTERVAL`. Only the settings process idles. The filter engine lives
   in the runtime process and keeps resolving SOCD while the window sleeps, so nothing here may gate
   filtering, the engine's monitor tap, or the tray. Focus restores the previous behavior, and a
   command queued on the way out still wakes the pump immediately.
-- Text uses generic font families, never a named one. `UI_FONT` is `Font::DEFAULT`
-  (`Family::SansSerif`) and `MONO_FONT` is `Font::MONOSPACE`, so the shaper resolves the OS default
-  and then walks its own fallback chain for glyphs that face lacks — Hangul and CJK included. A named
-  family (`Font::new("Segoe UI")`) pins a face that is absent on other targets and renders tofu.
-  Canvas text takes the same rule.
+- Text uses generic font families, never a named one. `theme::UI_FONT` is `FontFamily::Proportional`
+  and `theme::MONO_FONT` is `FontFamily::Monospace`, so the shaper resolves the OS default and then
+  walks its own fallback chain for glyphs that face lacks — Hangul and CJK included. A named family
+  (`FontFamily::Name(..)`) pins a face that is absent on other targets and renders tofu. Canvas text
+  takes the same rule.
 - Still excluded: icon fonts (glyph coverage differs per OS) and runtime image decoding (`png` stays
   in `[build-dependencies]`).
 - UI strings live in `src/ui/language/`, one file per language including `en.rs`. Each exports
@@ -41,15 +43,17 @@ Rendering rules, stated as what to use rather than only what to avoid:
   back to the English source, so a partial translation renders rather than blanking. Runtime
   diagnostics and user-supplied profile names are never translated.
 
-Enabling the `canvas` feature adds `lyon` tessellation to the **settings binary only**. `iced-ui` is
-off by default, so the resident runtime's dependency graph is unchanged and the
-`cargo tree --no-default-features` check in `verification.md` still has to come back free of Iced, wgpu,
-and lyon.
+The `egui-ui` feature gates the **settings binary only** and is off by default, so the resident
+runtime's dependency graph is unchanged and the `cargo tree --no-default-features` check in
+`verification.md` still has to come back free of egui, eframe, and wgpu.
 
-Palette, styling, and metrics live in src/ui/theme.rs; the application and edit state live in
-src/ui/app.rs; native range/logo widgets and the bounded timeline have their own rendering owners.
+Palette, styling, and metrics live in `src/ui/theme.rs`; the application loop and edit state live in
+`src/ui/app.rs` and `src/ui/state.rs`; the range, logo, and timeline drawing have their own owners
+(`src/ui/timing.rs`, `src/ui/timeline.rs`, and the header module).
 
-Two conventions in `theme.rs` are load-bearing, because both are easy to "fix" back into a defect:
+The conventions below were derived against the retired Iced implementation; the cited Iced mechanics
+are historical, kept because they explain why the ported values are what they are. Two of them are
+load-bearing, because both are easy to "fix" back into a defect:
 
 - **Two colour lineages.** The reference styles the DOM with Tailwind classes but hands raw hex
   literals to its icon and canvas components. Tailwind v4 re-specified the scale in oklch, so a class
@@ -141,8 +145,8 @@ Two conventions in `theme.rs` are load-bearing, because both are easy to "fix" b
   draft. Random Mix is explained as choosing between the two delay examples; the preview never
   predicts engine randomness or reads monitor output. Four phases advance every 850 ms while
   playing. Phase 1 highlights the configured delay range, including 0 ms for Immediate.
-- The preview starts paused on every UI launch: the pinned Iced API exposes no reduced-motion
-  preference. Play is explicit, and its widget stops requesting redraws outside the scroll viewport.
+- The preview starts paused on every UI launch: the port has no reduced-motion preference to
+  consult. Play is explicit, and its widget stops requesting redraws outside the scroll viewport.
   Long labels remain ellipsized at rest and reveal their end on pointer hover, using linear motion
   at 70 px/s clamped to 260–2400 ms. Pointer reversal continues from the displayed offset; content
   or width changes reset it, and off-screen labels do not request animation frames.
@@ -213,7 +217,7 @@ Two conventions in `theme.rs` are load-bearing, because both are easy to "fix" b
   widget position. Before connection they appear in the waiting body. Profile errors remain visible
   inside the dialog. English, Chinese, and Spanish are selectable for the current UI session;
   translations live in their language files and untranslated runtime diagnostics retain their text.
-- Under iced-ui, build.rs unpacks the 32×32 PNG layer from
+- Under `egui-ui`, build.rs unpacks the 32×32 PNG layer from
   assets/icons/ico/socd-light.ico for both the header logo and native window icon. Asset decode
   failure aborts the build; an invalid runtime pixel buffer yields no native icon.
 
