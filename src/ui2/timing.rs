@@ -702,7 +702,8 @@ pub fn rate_group(
                 });
             });
 
-            // Row 2: custom mixer rail (RELEASE_TEXT filled rail, MIX_TEXT handle ring)
+            // Row 2: custom mixer rail (PRIMARY_TEXT left of the handle,
+            // RELEASE_TEXT right of it, MIX_TEXT handle ring)
             if let Some(new_share) = mixer_slider(ui, press_share as f32, true, language) {
                 messages.push(Message::MixChanged(new_share));
             }

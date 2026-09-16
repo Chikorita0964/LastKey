@@ -1,9 +1,9 @@
 {
   "task_id": "T4",
   "status": "completed",
-  "summary": "T4 round-3 rework for R1 and R2 (reviewed target agent/integration@b71f52e). Restored the Iced mode-selector strip inset (4) and routed its segments through theme::MODE_PADDING, restored the mixer handle's hover swell (Iced accent_slider maps Hovered|Dragged to 8.0), moved the Random Mix ratio group to GROUP_PADDING (14), swapped the mixer rail to the Iced split (PRIMARY_TEXT left of the handle, RELEASE_TEXT right), and moved the two-handle duration rail to the Iced widgets::RangeSlider geometry (12px rail/radius 6, constant 16px thumbs). Each fix is pinned by a rendered regression test that fails when the fix is reverted. The earlier report's claim that the mode-selector call site already used Margin::same(4) was incorrect: the margin was absent from the integrated tree, and is corrected here.",
+  "summary": "T4 round-3 rework for R1 and R2 (reviewed target agent/integration@b71f52e), plus the R2 round-4 follow-up. Restored the Iced mode-selector strip inset (4) and routed its segments through theme::MODE_PADDING, restored the mixer handle's hover swell (Iced accent_slider maps Hovered|Dragged to 8.0), moved the Random Mix ratio group to GROUP_PADDING (14), swapped the mixer rail to the Iced split (PRIMARY_TEXT left of the handle, RELEASE_TEXT right), and moved the two-handle duration rail to the Iced widgets::RangeSlider geometry (12px rail/radius 6, constant 16px thumbs). Each fix is pinned by a rendered regression test that fails when the fix is reverted. The earlier report's claim that the mode-selector call site already used Margin::same(4) was incorrect: the margin was absent from the integrated tree, and is corrected here. Round-4 follow-up: the rate_group row-2 inline comment, which still described the pre-round rail ('RELEASE_TEXT filled rail'), was corrected to the split-rail contract.",
   "branch": "agent/worker-3",
-  "commit": "64a07ef",
+  "commit": "PENDING",
   "owned_files": [
     "src/ui2/timing.rs",
     ".orchestrator/reports/T4.json"
@@ -46,6 +46,13 @@
       "required": "Align the two-handle rail with src/ui/widgets.rs:238-285 (rail 12pt/radius 6, 16pt thumbs), or record the current approximation as an accepted deviation in docs/architecture/ui.md and stop attributing it to accent_slider.",
       "changed": "src/ui2/timing.rs: added local constants RANGE_RAIL_WIDTH 12.0, RANGE_RAIL_RADIUS CornerRadius::same(6) and RANGE_THUMB_RADIUS 8.0, documented as the widgets::RangeSlider geometry, distinct from the single-handle accent_slider tokens the mixer keeps. range_slider now paints a 12px rail rounded to 6 with constant radius-8 thumbs and no longer varies the thumb with response.dragged().",
       "evidence": "New test test_duration_rail_uses_the_range_geometry measures the painted track (height 12, radius 6) and both thumb radii (8.0, 8.0), and asserts that a drag leaves the thumb geometry unchanged -- the Iced widget has no status-dependent thumb size. Negative control: reverting to SLIDER_RAIL_WIDTH/SLIDER_RAIL_RADIUS/SLIDER_HANDLE_RADIUS fails with 'the two-handle rail is 12px tall, not the accent_slider 10: left 10.0, right 12.0'.",
+      "result": "done"
+    },
+    {
+      "id": "R2 round-4 low - stale rate_group row-2 comment",
+      "required": "Update or remove the stale inline comment in src/ui2/timing.rs that still describes the previous rendering ('RELEASE_TEXT filled rail') and contradicts the current split-rail rendering contract.",
+      "changed": "src/ui2/timing.rs: the rate_group row-2 comment now reads 'custom mixer rail (PRIMARY_TEXT left of the handle, RELEASE_TEXT right of it, MIX_TEXT handle ring)', matching the split the function paints and the mixer_slider doc comment above it (src/ui2/timing.rs:354-359). No code changed; this is a comment-only edit. A sweep of the file found this was the only remaining stale rail description.",
+      "evidence": "git diff shows one comment replaced across two lines, with no changed statement. The verification crate rebuilt from agent/integration plus this file: cargo test --no-default-features --features egui-ui --lib reports 159 passed, 0 failed, and clippy --all-targets -D warnings is clean.",
       "result": "done"
     }
   ],
