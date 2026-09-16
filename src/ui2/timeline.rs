@@ -1041,6 +1041,26 @@ mod tests {
         out
     }
 
+    /// Every `Shape::Circle` this frame painted, flattened out of `Shape::Vec`.
+    fn painted_circles<State>(harness: &Harness<'_, State>) -> Vec<egui::epaint::CircleShape> {
+        fn collect(shape: &egui::Shape, out: &mut Vec<egui::epaint::CircleShape>) {
+            match shape {
+                egui::Shape::Circle(circle) => out.push(*circle),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for clipped in &harness.output().shapes {
+            collect(&clipped.shape, &mut out);
+        }
+        out
+    }
+
     #[test]
     fn the_stopped_graph_keeps_its_lanes_keycaps_and_ruler() {
         let mut harness = Harness::builder()
@@ -1466,6 +1486,72 @@ mod tests {
         assert!(
             harness.state().messages.is_empty(),
             "a disabled switch emits nothing"
+        );
+    }
+
+    /// R2 round-2 finding 2: the monitor switch's advertised geometry (the
+    /// report's 48x24 pill, radius 12, 20px knob with 2px padding) was
+    /// unverified. The values are the Iced toggler at `.size(24)` (iced rev
+    /// f8127c8 `widget/src/toggler.rs`): track 2N x N, border radius
+    /// height / 2, knob height - 2 * round(0.1 * height), offset
+    /// `round(0.1 * 24) = 2`.
+    #[test]
+    fn the_monitor_switch_paints_the_iced_toggler_geometry() {
+        // Off: SLATE_300 track, the knob 2px from the left.
+        let harness = section_harness(MonitorState::Stopped);
+        let track = painted_rects(&harness)
+            .into_iter()
+            .find(|rect| {
+                rect.fill == theme::SLATE_300 && rect.corner_radius == CornerRadius::same(12)
+            })
+            .expect("the off switch paints its SLATE_300 pill");
+        assert_eq!(
+            track.rect.size(),
+            Vec2::new(48.0, 24.0),
+            "the track is the Iced .size(24) pill"
+        );
+        let knob = painted_circles(&harness)
+            .into_iter()
+            .find(|circle| circle.fill == theme::SURFACE && circle.radius == 10.0)
+            .expect("the off switch paints its 20px knob");
+        assert_eq!(
+            knob.center,
+            Pos2::new(track.rect.left() + 12.0, track.rect.center().y),
+            "the off knob sits 2px from the left edge"
+        );
+        assert_eq!(
+            knob.center.x - knob.radius - track.rect.left(),
+            2.0,
+            "2px padding"
+        );
+        assert_eq!(
+            knob.center.y - knob.radius - track.rect.top(),
+            2.0,
+            "2px padding"
+        );
+
+        // On: INDIGO_600 track, the knob 2px from the right.
+        let harness = section_harness(MonitorState::Recording(Timeline::default()));
+        let track = painted_rects(&harness)
+            .into_iter()
+            .find(|rect| {
+                rect.fill == theme::INDIGO_600 && rect.corner_radius == CornerRadius::same(12)
+            })
+            .expect("the recording switch paints its INDIGO_600 pill");
+        assert_eq!(track.rect.size(), Vec2::new(48.0, 24.0));
+        let knob = painted_circles(&harness)
+            .into_iter()
+            .find(|circle| circle.fill == theme::SURFACE && circle.radius == 10.0)
+            .expect("the recording switch paints its 20px knob");
+        assert_eq!(
+            knob.center.x,
+            track.rect.right() - 12.0,
+            "the on knob sits 2px from the right edge"
+        );
+        assert_eq!(
+            track.rect.right() - (knob.center.x + knob.radius),
+            2.0,
+            "2px padding"
         );
     }
 }
