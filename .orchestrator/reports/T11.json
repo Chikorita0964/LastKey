@@ -3,17 +3,23 @@
   "status": "completed",
   "summary": "T11 retires the Iced UI: `src/ui/` (the Iced tree) is deleted, `src/ui2` is renamed to `src/ui`, every code, test, build-script, and doc path now says `ui`, and the docs that described Iced are updated to the egui reality. The `iced` dependency and the `iced-ui` feature were already removed in 4e9de4e (Wave 0) and the feature graph still resolves no iced/lyon, so the manifest change is a verification rather than an edit. Doc comments that cite the retired Iced sources now use an `iced-ui/` path prefix (documented in src/ui/mod.rs) because the old `src/ui/...` spellings would collide with the new tree. The full gate passes (199 lib + 6 semantic tests).",
   "branch": "agent/worker-1",
-  "commit": "90ee347",
-  "base": "521986e (agent/integration; agent/worker-1 was fast-forwarded to it before this task)",
-  "branch_sync": "`git merge --ff-only agent/integration` moved agent/worker-1 from d9760e7 to 521986e (T9 integration report). The fast-forward authored no file contents.",
-  "owned_files": ["src/ui/", "src/ui2/", "src/lib.rs", "Cargo.toml", "tests/ui_semantic.rs", "docs/architecture/ui.md", "README.md", "AGENTS.md", ".orchestrator/reports/T11.json"],
+  "commit": "a0d71d9",
+  "base": "f5e4535 (agent/integration; agent/worker-1 fast-forwarded for the rework; the retirement base was 521986e)",
+  "branch_sync": "`git merge --ff-only agent/integration` moved agent/worker-1 from d9760e7 to 521986e before the task and to f5e4535 before the rework. Neither fast-forward authored file contents.",
+  "review_references": {
+    "round_2": "Four findings, all addressed: (1) Cargo.toml's agent-inspection comment cited `src/ui2/inspection.rs` -- fixed to `src/ui/inspection.rs`; (2) docs/architecture/engine.md's AppController flow diagram read 'Iced widget state ... Iced display state' as a present-tense contract -- now 'egui widget state ... egui display state'; (3) AGENTS.md referenced `iced-ui` -- already fixed in this worktree's copy during T11 (see agents_md), which cannot be committed because the file is gitignored; the exact replacement lines are recorded below so the integration worktree can sync its own copy; (4) the historical-name policy is now an explicit field (see historical_names_policy).",
+    "round_1": "The retirement dispatch itself (T11): delete src/ui/, rename ui2 -> ui, drop iced/iced-ui, update docs, run the gate."
+  },
+  "historical_names_policy": "Intentional, not missed: `.agent/EGUI_MIGRATION.md` (local-only plan material) and the `.orchestrator/reports/*` and `.orchestrator/reviews/*` records still contain `ui2` and Iced names because they document the state of the tree at the time they were written -- a review record that says `src/ui2/app.rs` was correct then and must stay readable. Renaming inside them would falsify history. The policy applies to records only: tracked product files carry no `ui2` path (`git grep -n ui2 -- ':!.orchestrator' ':!.agent'` is empty) and every present-tense Iced reference in product docs is converted, with the porting rationale in docs/architecture/ui.md explicitly prefaced as Iced-era and code citations using the `iced-ui/` alias. One judgment call recorded: docs/architecture/decisions.md's Non-Goal 'Linking Iced or wgpu into the resident runtime' is kept as a decision record, the same category as the history above.",
+  "agents_md_sync": "AGENTS.md is gitignored (`/AGENTS.md`), so each worktree holds its own copy and the integration worktree's copy is not updated by any commit. This worktree's copy now reads: '- Runtime binaries: `lastkey` starts the filter immediately with a tray icon; `lastkey-settings` needs the `egui-ui` feature (verified at: `Cargo.toml`, `README.md` §Usage).' and '- Module gate: `pub mod ui` exists only on `windows + egui-ui` (verified at: `src/lib.rs`). Default builds never compile egui/wgpu. The Iced implementation was retired in T11; `src/ui/` is the egui settings window.' The integration worktree must apply the same local edit (or the Master must copy the file) for the finding to be observable there; `git grep iced-ui` over tracked files is already empty.",
+  "owned_files": ["src/ui/", "src/ui2/", "src/lib.rs", "Cargo.toml", "tests/ui_semantic.rs", "docs/architecture/ui.md", "docs/architecture/engine.md", "README.md", "AGENTS.md", ".orchestrator/reports/T11.json"],
   "changed_files": [
     "src/ui/ (Iced tree deleted: app.rs, hover_text.rs, icons.rs, ipc_client.rs, mod.rs, preview.rs, theme.rs, theme_tests.rs, timeline.rs, widgets.rs, language/mod.rs)",
     "src/ui2/ -> src/ui/ (rename: app, header, inspection, ipc_client, keycap, language (+ language/{en,es,zh}.rs), mapping, message, mod, preview, profiles, state, state_tests, theme, timeline, timing)",
     "src/lib.rs (pub mod ui), src/bin/lastkey-settings.rs (lastkey::ui::run), build.rs (comment), tests/ui_semantic.rs (docs + imports), src/ui/*.rs (doc-comment `ui2` paths and the iced-ui citation alias)",
-    "docs/architecture/ui.md, docs/architecture/verification.md, docs/lastkey-architecture.md",
+    "docs/architecture/ui.md, docs/architecture/verification.md, docs/lastkey-architecture.md, docs/architecture/engine.md (flow diagram)",
     "AGENTS.md (local-only; the file is gitignored, so the update exists in this worktree only)",
-    "Cargo.toml / Cargo.lock (unchanged: no `iced` dependency or `iced-ui` feature exists to drop)"
+    "Cargo.toml (T9's agent-inspection comment: `src/ui2/inspection.rs` -> `src/ui/inspection.rs`); Cargo.lock unchanged"
   ],
   "delivered": {
     "rename": "`git rm -r src/ui` then `git mv src/ui2 src/ui`. The committed tree has 19 files under src/ui/ plus the language subdirectory; no path under src/ contains `ui2` (verified with `git ls-tree -r HEAD src/`).",
@@ -25,19 +31,20 @@
     "agents_md": "AGENTS.md §3 updated: `lastkey-settings` needs the `egui-ui` feature, and the module gate is `windows + egui-ui` with the note that Iced was retired in T11. The file is gitignored by design (`/AGENTS.md`), so this change is local to the worktree and was not staged."
   },
   "tests": [
-    { "command": "cargo fmt --all -- --check", "result": "pass" },
+    { "command": "cargo fmt --all -- --check", "result": "pass (also after the rework)" },
     { "command": "cargo test --locked --all-targets", "result": "pass" },
     { "command": "cargo clippy --locked --all-targets -- -D warnings", "result": "pass" },
-    { "command": "cargo test --locked --no-default-features --features egui-ui --lib --bin lastkey-settings --test ui_semantic", "result": "pass (199 lib tests, 6 ui_semantic tests, 0 failed)" },
-    { "command": "cargo clippy --locked --no-default-features --features egui-ui --all-targets -- -D warnings", "result": "pass" },
+    { "command": "cargo test --locked --no-default-features --features egui-ui --lib --bin lastkey-settings --test ui_semantic", "result": "pass (199 lib tests, 6 ui_semantic tests, 0 failed; re-run after the rework)" },
+    { "command": "cargo clippy --locked --no-default-features --features egui-ui --all-targets -- -D warnings", "result": "pass (also after the rework)" },
     { "command": "cargo check --locked --target x86_64-unknown-linux-gnu --all-targets", "result": "pass" },
     { "command": "cargo tree --no-default-features -e normal", "result": "pass (matches only tray-icon; no egui, eframe, wgpu, iced, or lyon)" },
     { "command": "cargo tree --no-default-features --features egui-ui -e normal", "result": "pass (no iced, no lyon)" },
     { "command": "git diff --check", "result": "pass" },
     { "command": ".github\\scripts\\Test-ReleaseFormDefault.ps1", "result": "pass (exit 0)" },
-    { "command": "cargo build --release --locked --no-default-features --features egui-ui --bin lastkey-settings", "result": "pass (14.3s incremental; packaging path intact after the rename)" }
+    { "command": "cargo build --release --locked --no-default-features --features egui-ui --bin lastkey-settings", "result": "pass (14.3s incremental; packaging path intact after the rename)" },
+    { "command": "git grep -n ui2 -- ':!.orchestrator' ':!.agent' and git grep -n -i iced -- ':!.orchestrator' ':!.agent'", "result": "pass (no ui2 anywhere; remaining Iced matches are provenance comments, ui.md's marked porting notes, decisions.md's Non-Goal record, and the word 'noticed' in a platform comment -- all intentional)" }
   ],
-  "tests_actually_executed_note": "The full gate ran on the cutover tree before the comment-only citation-alias edits; the scoped loop and both clippy configs were re-run after those edits (199 + 6, clean). The alias pass touched only doc comments and verified UTF-8 clean. `git ls-tree -r HEAD src/` confirms no `ui2` path remains in the commit.",
+  "tests_actually_executed_note": "The full gate ran on the cutover tree before the comment-only citation-alias edits; after the rework (Cargo.toml comment, engine.md diagram, report) the scoped loop, both clippy configs, and fmt were re-run clean (199 + 6). The alias pass touched only doc comments and was verified UTF-8 clean. `git ls-tree -r HEAD src/` confirms no `ui2` path remains in the commit.",
   "unresolved_dependencies_for_master": [
     "The `egui-ui` feature name is now a misnomer-in-waiting (egui is the only UI); renaming it (`ui`, `settings-ui`) would touch Cargo.toml, src/lib.rs, the verification gate, README, and the release workflow — a Master decision, deliberately not taken inside the retirement.",
     "Historical records under `.orchestrator/reports/` and `.orchestrator/reviews/` still name `src/ui2/` and Iced by design; they describe past states and were not rewritten.",
