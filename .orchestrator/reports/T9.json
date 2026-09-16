@@ -1,0 +1,71 @@
+{
+  "task_id": "T9",
+  "status": "completed",
+  "summary": "T9 wires agent inspection: the `agent-inspection` Cargo feature enables `eframe/inspection`, `src/ui2/inspection.rs` documents the two-step gate (feature at build time, `EGUI_INSPECTION` at run time) and the loopback default, and the MCP choice is evaluated in this report. Verified end to end: the debug settings app with the feature and env var answers egui-mcp 0.2.0's `query_tree` over 127.0.0.1:5719, and the release build with only the env var opens no port, carries no `egui_inspection` strings, and has no `egui_inspection` in its dependency tree.",
+  "branch": "agent/worker-1",
+  "commit": "4cdd0a6",
+  "base": "6f86882 (agent/integration; agent/worker-1 was fast-forwarded to it before this task)",
+  "branch_sync": "`git merge --ff-only agent/integration` moved agent/worker-1 from bb3e9e0 to 6f86882 (T8 and T10 merged). The fast-forward authored no file contents.",
+  "owned_files": ["Cargo.toml (feature only)", "src/ui2/inspection.rs", ".orchestrator/reports/T9.json"],
+  "changed_files": ["Cargo.toml", "Cargo.lock", "src/ui2/inspection.rs", "src/ui2/mod.rs (one registration line)", ".orchestrator/reports/T9.json"],
+  "delivered": {
+    "feature": "agent-inspection = [\"egui-ui\", \"eframe/inspection\"] -- eframe's `inspection` feature is [\"dep:egui_inspection\", \"accesskit\"]; eframe attaches the plugin itself in its wgpu integration (`eframe::maybe_attach_inspection_plugin`), so no app code participates. Cargo.lock gained the egui_inspection chain (egui_inspection, enumn, rmp, rmp-serde, serde_bytes) so `--locked` builds stay valid.",
+    "gate": "Two steps, both required: (1) build with `--features agent-inspection`; (2) run with `EGUI_INSPECTION` set -- unset / `0` / `false` keeps inspection off, a truthy value binds the default loopback `127.0.0.1:5719`, and an address-shaped value binds that address instead. The plugin logs a warning when the bind is non-loopback; that address gives anyone who can reach it full control of the app and its screenshots with no authentication.",
+    "inspection_rs": "Module docs own the contract (gate, loopback default, protocol summary, egui_mcp pointer) plus `pub const BUILD_ENABLED: bool = cfg!(feature = \"agent-inspection\")`. No app-side wiring exists to forget: the plugin is attached by eframe.",
+    "registration_note": "`pub mod inspection;` in src/ui2/mod.rs is the one line outside the assigned files (T7 precedent for its own module). Without it the module is never compiled; the integrator owns mod.rs and can re-apply the line unchanged."
+  },
+  "done_when_evidence": {
+    "running_app_answers_a_tree_query": [
+      "Built: `cargo build --no-default-features --features agent-inspection --bin lastkey-settings`.",
+      "Launched with EGUI_INSPECTION=1; the window titled \"LastKey Settings\" opened and the port listened on loopback: `LISTENING: 127.0.0.1:5719` (owning pid = the settings process).",
+      "egui-mcp 0.2.0 (installed here via `cargo install egui_mcp --version 0.2.0`) over MCP stdio: `attach {}` -> `{\"attached\":{\"label\":\"LastKey Settings\",\"protocol_version\":1,\"transport\":\"127.0.0.1:5719\"},\"ok\":true}`; `status` -> `{\"peer\":{\"label\":\"LastKey Settings\",...},\"state\":\"connected\"}`.",
+      "`query_tree {\"content_contains\":\"LastKey\"}` returned real nodes, e.g. `{\"role\":\"Label\",\"value\":\"LastKey\",\"bounds\":{\"x\":86.0,\"y\":37.5,\"w\":51.5625,\"h\":17.0},\"id\":\"13043090184002317183\"}` and `{\"role\":\"Label\",\"value\":\"The LastKey runtime is disconnected.\",\"bounds\":{...},\"id\":\"11096961820687756871\"}`, each with a TextRun child. The disconnected body is expected: no runtime was running for this probe."
+    ],
+    "release_build_excludes_egui_inspection": [
+      "Dependency graph: `cargo tree --no-default-features --features egui-ui -e normal` contains no `egui_inspection`; the same command with `--features agent-inspection` shows `egui_inspection v0.36.2`.",
+      "Binary strings (paired control): `findstr /C:\"egui_inspection\" target\\debug\\lastkey-settings.exe` (feature build) -> FOUND; `target\\release\\lastkey-settings.exe` (stock `egui-ui` release) -> NOT-FOUND, and `findstr /C:\"InspectionPlugin\"` on the release binary -> NOT-FOUND.",
+      "Behavioural negative control: the release binary launched with EGUI_INSPECTION=1 opens the same window but leaves zero listeners on 5719, and egui-mcp's `attach` fails: `connect to 127.0.0.1:5719 ... (os error 10061)`, `query_tree` -> `no app connected`. The env gate alone cannot open the channel."
+    ]
+  },
+  "mcp_evaluation": {
+    "method": "Both candidates were examined against the purpose (an agent observing/driving this egui settings UI) using installed artifacts where present, published documentation otherwise, plus a first-hand end-to-end run of egui_mcp on this app. Facts are marked measured or documented; nothing was picked silently.",
+    "egui_mcp_0_2_0": {
+      "identity": "MCP server that drives live egui apps over the `egui_inspection` protocol (rerun-io/kittest_inspector; crates.io 0.2.0, published 2026-08-06; deps accesskit 0.24, egui 0.36, egui_inspection 0.36, rmcp, tokio).",
+      "measured": "Installed here with `cargo install egui_mcp --version 0.2.0`. `tools/list` returns 15 tools: attach, disconnect, status, batch, click, drag, get_node, hover, press_key, query_tree, resize, screenshot, scroll, type_text, wait_for. attach defaults to 127.0.0.1:5719 and retries; query_tree returned the live tree with egui node ids, roles, bounds, labels/values; status reported connected. Tree reads and input injection are documented to work while the app is backgrounded; screenshots need a rendered frame (not exercised in this headless probe).",
+      "fit": "Exact protocol match: it is the intended consumer of the feature this task adds, it sees the tree egui itself publishes (ids resolve to widgets), and an app without the feature cannot be driven at all -- the same two-step gate this repo documents. Scope is one app. Young crate (0.1.0 in June 2026, 0.2.0 in August 2026); install is a local cargo build (~2 minutes)."
+    },
+    "desktop_touch_mcp_1_16_0": {
+      "identity": "Windows computer-use MCP server (@harusame64/desktop-touch-mcp; 32 tools; UIA + Chrome CDP + terminal + visual lanes; semantic discover-then-act with leases; stdio or HTTP on 127.0.0.1:23847).",
+      "installed_here": "Present in the npx cache: `%LOCALAPPDATA%\\npm-cache\\_npx\\7ef18fc3781728a1\\node_modules\\@harusame64\\desktop-touch-mcp` with package.json version 1.16.0 (measured). It is NOT wired into any local MCP config searched: ~/.claude.json has empty `mcpServers`, ~/.codex/config.toml lists only node_repl, the repo .kilo/kilo.jsonc is schema-only, and VS Code Insiders settings carry no MCP entries. So \"already-installed\" = present on disk for npx, not registered with an agent here.",
+      "fit": "Drives any Windows app through UIA/CDP without build cooperation -- it can operate stock and release builds, which is the opposite of a release-safety gate: a shipped binary is driveable regardless. Its UIA lane reads the same AccessKit-derived tree our window exposes, but through Windows UIA, not the egui inspection contract (no egui node ids, no EGUI_INSPECTION gate, no protocol-level guarantees). Scope is the whole desktop (screenshots, terminal, browser, credential autofill), which is a wider blast radius than this feature needs. Its claims here are documentation-based; the UIA path was not exercised against our app in this task."
+    },
+    "recommendation": "For agent inspection of the egui settings window, egui_mcp 0.2.0 is the better fit: it is the protocol's intended consumer, matches the build/runtime gate exactly (so the release-safety property holds), sees egui's own node ids/bounds, and keeps scope to one app. desktop-touch-mcp 1.16.0 remains the right tool for tasks outside egui: driving stock builds (no feature), other applications, and desktop-level flows; it is complementary, not a replacement, and it is one more reason the release gate matters. Neither is added as an app dependency: egui_mcp is a separate binary the agent installs, and the app only grows the `agent-inspection` feature. This choice is recorded here rather than hard-wired into code; the module docs point consumers at egui_mcp."
+  },
+  "tests": [
+    { "command": "cargo fmt --all -- --check", "result": "pass" },
+    { "command": "cargo test --locked --all-targets", "result": "pass" },
+    { "command": "cargo clippy --locked --all-targets -- -D warnings", "result": "pass" },
+    { "command": "cargo test --locked --no-default-features --features egui-ui --lib --bin lastkey-settings --test ui_semantic", "result": "pass (199 lib tests, 6 ui_semantic tests, 0 failed)" },
+    { "command": "cargo clippy --locked --no-default-features --features egui-ui --all-targets -- -D warnings", "result": "pass" },
+    { "command": "cargo check --locked --target x86_64-unknown-linux-gnu --all-targets", "result": "pass" },
+    { "command": "cargo tree --no-default-features -e normal", "result": "pass (no egui, eframe, wgpu, iced, or lyon)" },
+    { "command": "git diff --check", "result": "pass" },
+    { "command": ".github\\scripts\\Test-ReleaseFormDefault.ps1", "result": "pass (exit 0)" },
+    { "command": "cargo clippy --no-default-features --features agent-inspection --all-targets -- -D warnings", "result": "pass (not in the standing gate; run because the new cfg path must lint clean)" },
+    { "command": "cargo build --no-default-features --features agent-inspection --bin lastkey-settings / cargo build --release --no-default-features --features egui-ui --bin lastkey-settings", "result": "pass (both, 1m10s / 1m36s)" }
+  ],
+  "tests_actually_executed_note": "The scoped loop for a src/ui2 change is the egui-ui lib run (199 tests) plus the semantic test (6). The inspection module adds no unit test: the gate is a build-time feature and a runtime env var, and the meaningful check is the running-app probe recorded in done_when_evidence (installing egui-mcp and querying the live tree), not a unit assertion.",
+  "unresolved_dependencies_for_master": [
+    "CI coverage for the feature: the standing gate builds without `agent-inspection`, so the cfg path is not compiled by CI. `cargo clippy --no-default-features --features agent-inspection` was run here by hand; whether CI should gain an optional job (build-only, feature on) is a Master decision.",
+    "The Task Manager's `agent-inspection` feature is a build-time flag, so enabling it in a release is a packaging decision: the release form test and release workflow stay feature-off by default (verified), and `docs/architecture/release.md` was not updated by this task (out of scope).",
+    "egui_mcp 0.2.0 is young; the inspection protocol is versioned (`protocol_version: 1`) and a mismatch would surface at attach time."
+  ],
+  "risks": [
+    "Non-loopback binds have no authentication (documented in inspection.rs and logged by the plugin). The default is loopback; the risk lives in the env var value, not in the code.",
+    "Screenshots need a rendered frame; a fully occluded or minimized window times out. Tree reads and input injection do not (documented; not exercised here).",
+    "The probe used a debug build; the release-exclusion evidence is the release build's dependency tree, strings, and the refused attach. All three agree.",
+    "desktop-touch-mcp's UIA path against this app is documentation-based only in this report; wiring or testing it was not required by the task and would need the server launched (it is not registered locally).",
+    "Leftover app processes from the probe were killed before the gate ran; a locked target/debug/lastkey.exe initially failed the default test job (os error on remove) until the processes were stopped."
+  ],
+  "blockers": []
+}
