@@ -49,8 +49,8 @@
   "conflicts_resolved": [],
   "unresolved_conflicts": [],
   "risks": [
-    "agent/worker-1 tip 6348f22 and agent/worker-2 tip a16a0ef were already ancestors of agent/integration, so this round's git merge reported Already up to date for both with no new merge commit; their integration state was re-verified via the full gate rather than re-merged.",
-    "agent/worker-3 round-4 rework (3025eb5 stale mixer rail inline comment correction in timing.rs ratio group + cf05db5 T4 report) merged conflict-free via ort into 83fd168; changed files this round are src/ui2/timing.rs (comment only) and .orchestrator/reports/T4.json.",
+    "All three requested tips (worker-1 6348f22, worker-2 a16a0ef, worker-3 cf05db5) were already ancestors of agent/integration at 09894e3, so this round's git merge reported Already up to date for all three with no new merge commit; integration state was re-verified via the full gate on the unchanged tree rather than re-merged.",
+    "Prior round-4 change set remains: worker-3 round-4 rework (3025eb5 stale mixer rail inline comment correction in timing.rs ratio group + cf05db5 T4 report) integrated conflict-free via ort in 83fd168; no new production change in this round.",
     "egui-ui suite reports 159 lib tests passed on the merged tree (unchanged from prior round, consistent with a comment-only production change); default-tree GUI-freedom confirmed by zero matches for egui/eframe/wgpu/winit/accesskit/iced/lyon.",
     "Native visual acceptance remains uncovered per docs/architecture/verification.md Unverified Areas; test success is not visual evidence."
   ]
