@@ -18,7 +18,7 @@ stay inside one feature set unless the change genuinely spans both.
 | `src/settings.rs`, `src/protocol.rs` — the stored or wire **shape** | The full gate. Neither has a local blast radius |
 | `src/app/`, `src/platform/windows/` | `cargo test --lib` |
 | `src/platform/linux/` | `cargo check --target x86_64-unknown-linux-gnu` |
-| `src/ui2/` | `cargo test --no-default-features --features egui-ui --lib` |
+| `src/ui2/` | `cargo test --no-default-features --features egui-ui --lib --test ui_semantic` |
 | `build.rs`, dependency edits in `Cargo.toml` | `cargo tree --no-default-features -e normal` and one clean build |
 | Packaging scripts | `.github\scripts\Test-ReleaseFormDefault.ps1` |
 | Markdown only | Nothing. `git diff --check` at most |
@@ -32,7 +32,7 @@ it re-lints every target and rarely says anything new between two edits to the s
 cargo fmt --all -- --check
 cargo test --locked --all-targets
 cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked --no-default-features --features egui-ui --lib --bin lastkey-settings
+cargo test --locked --no-default-features --features egui-ui --lib --bin lastkey-settings --test ui_semantic
 cargo clippy --locked --no-default-features --features egui-ui --all-targets -- -D warnings
 cargo check --locked --target x86_64-unknown-linux-gnu --all-targets
 cargo tree --no-default-features -e normal
@@ -43,6 +43,10 @@ git diff --check
 - **The `egui-ui` run is not optional after a `src/ui2/` change.** `src/lib.rs` gates `pub mod ui2`
   behind the feature, so the default run never compiles that module. Clippy with `--all-features`
   type-checks its tests but does not execute them.
+- **`--test ui_semantic` must stay on the `egui-ui` commands.** `--lib --bin` selects only those two
+  targets, so dropping the flag silently stops the label-driven tests from running; the default-
+  feature run compiles `tests/ui_semantic.rs` but its crate-level cfg leaves it empty there. A lost
+  accessible name is then invisible to both the gate and CI.
 - Both Clippy configurations use `--all-targets` so test code is linted too. The default dependency
   tree must stay free of egui and wgpu. Test counts are deliberately not recorded here.
 - Rebuilding fails with OS error 5 while the settings UI or the runtime holds `target\debug\*.exe`.

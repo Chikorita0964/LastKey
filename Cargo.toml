@@ -27,8 +27,24 @@ serde_json = "1.0"
 toml = "0.9"
 
 [target.'cfg(windows)'.dependencies]
-# `accesskit` is a default feature here; it is why the UI is egui and not iced.
-eframe = { version = "0.36.2", optional = true }
+# `default-features = false` plus an explicit minimum, verified against 0.36.2:
+# `accesskit` is why the UI is egui and not iced -- without it the running
+# window exposes zero UI Automation controls, the exact defect the migration
+# exists to fix; `wgpu` is the renderer eframe's `Renderer` requires (dropping
+# every backend is a compile_error!, and `wgpu_no_default_features` alone would
+# leave no backend, as `dx12` arrives with `wgpu`'s own default); `default_fonts`
+# supplies the text faces, though egui's own default already enables it.
+# The dropped defaults are unusable here: `links`, `wayland`, `x11` and
+# `web_screen_reader` are for targets and features this Windows-only dependency
+# never builds, and `winit/default` re-adds the Linux-only `x11`/`wayland` pair
+# (`winit` still gets `rwh_06` from eframe's explicit feature string).
+# Net: the `egui-ui` graph drops 37 crates, including the whole `links` ->
+# `webbrowser` -> `url`/`idna`/`icu_*` chain and the glow/glutin renderer.
+eframe = { version = "0.36.2", optional = true, default-features = false, features = [
+    "accesskit",
+    "default_fonts",
+    "wgpu",
+] }
 egui = { version = "0.36.2", optional = true }
 tray-icon = "0.24.2"
 windows = { version = "0.62", features = [

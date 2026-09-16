@@ -1,0 +1,154 @@
+{
+  "task_id": "T10",
+  "status": "completed",
+  "summary": "T10 trimmed the eframe feature set and closed R2's T10 finding. The egui-ui gate in docs/architecture/verification.md (full gate plus the src/ui2/ scoped-loop row) and the Settings UI tests step in .github/workflows/rust-tests.yml now select tests/ui_semantic, so the label-driven tests run in both the standing gate and CI; before this change they only ran when someone repeated T8's explicit command. eframe now uses default-features = false with accesskit, default_fonts and wgpu: the Windows egui-ui graph drops 37 crates (232 -> 195) and Cargo.lock loses 42 package entries, while the app still builds, launches, and exposes its 9-node UI Automation tree. The full gate passes and the default dependency tree stays GUI-free.",
+  "branch": "agent/worker-3",
+  "commit": "PENDING",
+  "integration_base": "agent/integration@11f57b0",
+  "owned_files": [
+    "Cargo.toml",
+    "docs/architecture/verification.md",
+    ".github/workflows/rust-tests.yml",
+    ".orchestrator/reports/T10.json"
+  ],
+  "changed_files": [
+    "Cargo.toml",
+    "Cargo.lock",
+    "docs/architecture/verification.md",
+    ".github/workflows/rust-tests.yml",
+    ".orchestrator/reports/T10.json"
+  ],
+  "review_actions": [
+    {
+      "id": "R2 medium (T10) - no standing gate executes tests/ui_semantic.rs",
+      "required": "Add the semantic target to the egui-ui gate line in docs/architecture/verification.md and to the src/ui2/ scoped-loop row, and mirror the addition in the Settings UI tests step of .github/workflows/rust-tests.yml so the gate and CI agree.",
+      "changed": "docs/architecture/verification.md: the full-gate line is now `cargo test --locked --no-default-features --features egui-ui --lib --bin lastkey-settings --test ui_semantic`, the src/ui2/ scoped-loop row gained `--test ui_semantic`, and a new bullet records why the flag is load-bearing (`--lib --bin` selects only those two targets, and the default-feature run compiles the file but its crate-level cfg leaves it empty). .github/workflows/rust-tests.yml: the Settings UI tests step gained `--test ui_semantic`, matching the gate.",
+      "evidence": "Ran the amended command in-tree: `cargo test --locked --no-default-features --features egui-ui --lib --bin lastkey-settings --test ui_semantic` reports 199 lib + 0 bin + 6 semantic tests passing, i.e. the semantic target is now selected. The pre-change command reported only 199 + 0 and never ran ui_semantic.rs, which is the gap R2 described.",
+      "result": "done"
+    }
+  ],
+  "feature_evaluation": {
+    "spec": "EGUI_MIGRATION.md T10: try `default-features = false` on eframe with the minimum set for a Windows wgpu build, keep whatever actually compiles and runs.",
+    "retained": [
+      {
+        "feature": "accesskit",
+        "why": "Load-bearing and verified negatively: with accesskit removed the crate still compiles and the window still opens, but the UIA tree exposes 0 controls (measured), which is exactly the Iced defect the migration exists to fix. With it, the same build exposes 9 nodes / 4 buttons.",
+        "keep": true
+      },
+      {
+        "feature": "wgpu",
+        "why": "The renderer. eframe's Renderer::default has a compile_error! when neither glow nor wgpu is enabled (eframe 0.36.2 src/epi.rs:601-605), and `wgpu_no_default_features` alone would leave no backend because `dx12` arrives with wgpu's own default set (wgpu 30.0.1 Cargo.toml `default = [std, parking_lot, dx12, metal, gles, vulkan, wgsl, webgpu]`).",
+        "keep": true
+      },
+      {
+        "feature": "default_fonts",
+        "why": "Supplies the text faces. Kept explicitly even though it is currently reachable transitively (egui is a direct dependency with its default features, so egui/default_fonts -> epaint/default_fonts would enable it anyway); pinning it states the requirement instead of relying on another crate's defaults.",
+        "keep": true
+      }
+    ],
+    "dropped": [
+      {
+        "feature": "glow",
+        "why": "Not in eframe's defaults; the wgpu path is the one this app uses. Its absence also removes egui_glow, glutin, glutin-winit, cgl and the glutin_egl_sys/glutin_glx_sys bindings from the lock."
+      },
+      {
+        "feature": "links",
+        "why": "Adds hyperlink handling via egui-winit/links -> webbrowser -> url -> idna -> icu_*. The UI contains no hyperlink, open_url or Hyperlink usage (grep over src/ui2 and src/bin)."
+      },
+      {
+        "feature": "wayland",
+        "why": "Linux-only backend for a dependency declared under cfg(windows); never built here."
+      },
+      {
+        "feature": "x11",
+        "why": "Linux-only backend for a dependency declared under cfg(windows); never built here."
+      },
+      {
+        "feature": "web_screen_reader",
+        "why": "wasm-only (web-sys SpeechSynthesis); not a target this crate builds."
+      },
+      {
+        "feature": "winit/default",
+        "why": "Re-adds winit's Linux-only defaults (x11, wayland, wayland-dlopen, wayland-csd-adwaita). winit still receives rwh_06 from eframe's own explicit `features = [\"rwh_06\"]`, so the Windows backend and raw-window-handle support are unaffected."
+      }
+    ],
+    "measured_effect": "egui-ui normal graph 232 -> 195 packages (37 fewer). Cargo.lock loses 42 package entries (449 lines): the links chain (webbrowser, url, idna, idna_adapter, form_urlencoded, percent-encoding, icu_collections, icu_locale_core, icu_normalizer, icu_normalizer_data, icu_properties, icu_properties_data, icu_provider, litemap, potential_utf, tinystr, writeable, yoke, yoke-derive, zerofrom, zerofrom-derive, zerotrie, zerovec, zerovec-derive, displaydoc, synstructure, stable_deref_trait, utf8_iter), the glow/glutin renderer (egui_glow, glutin, glutin-winit, glutin_egl_sys, glutin_glx_sys, cgl), and the sctk-adwaita wayland decoration chain (sctk-adwaita, tiny-skia, tiny-skia-path, ab_glyph, ab_glyph_rasterizer, owned_ttf_parser, ttf-parser, strict-num, arrayref).",
+    "lock_regenerated": "Cargo.lock is part of this change and is required, not incidental: with the pre-change lock in place `cargo check --locked --no-default-features --features egui-ui --all-targets` fails with 'cannot update the lock file ... because --locked was passed to prevent this'. It was regenerated by a non---locked check and the --locked run then passes."
+  },
+  "tests": [
+    {
+      "command": "cargo fmt --all -- --check",
+      "result": "pass"
+    },
+    {
+      "command": "cargo test --locked --all-targets",
+      "result": "pass",
+      "note": "Default features: 72 lib + integration targets (9, 15, 18, 18) pass; tests/ui_semantic.rs compiles to an empty target there by its crate-level cfg, as documented."
+    },
+    {
+      "command": "cargo clippy --locked --all-targets -- -D warnings",
+      "result": "pass"
+    },
+    {
+      "command": "cargo test --locked --no-default-features --features egui-ui --lib --bin lastkey-settings --test ui_semantic",
+      "result": "pass",
+      "note": "199 lib + 0 bin + 6 semantic tests. This is the amended gate line and it now executes tests/ui_semantic.rs."
+    },
+    {
+      "command": "cargo clippy --locked --no-default-features --features egui-ui --all-targets -- -D warnings",
+      "result": "pass"
+    },
+    {
+      "command": "cargo check --locked --target x86_64-unknown-linux-gnu --all-targets",
+      "result": "pass"
+    },
+    {
+      "command": "cargo check --locked --target x86_64-unknown-linux-gnu --features egui-ui --lib",
+      "result": "pass",
+      "note": "Extra probe, not in the documented gate: eframe is a cfg(windows) dependency, so the Linux egui-ui path resolves exactly as before."
+    },
+    {
+      "command": "cargo tree --no-default-features -e normal",
+      "result": "pass",
+      "note": "No eframe, egui, wgpu, iced, lyon or winit in the default tree."
+    },
+    {
+      "command": "cargo tree --no-default-features --features egui-ui -e features -i eframe",
+      "result": "pass",
+      "note": "Resolved feature set is exactly accesskit, default_fonts, egui-wgpu, wgpu, wgpu_no_default_features -- no glow, links, wayland, web_screen_reader, x11 or winit/default."
+    },
+    {
+      "command": "cargo build --locked --no-default-features --features egui-ui --bin lastkey-settings + launch + UI Automation read",
+      "result": "pass",
+      "note": "Built binary stays alive with the window 'LastKey Settings' and exposes 9 UI Automation nodes including 4 buttons (Engine on/off, Language, Profile slots, Request snapshot). The 'runtime is disconnected' text is the expected state with no lastkey.exe running, not a regression. Process killed and confirmed gone after the check."
+    },
+    {
+      "command": "Negative control: accesskit removed from the eframe feature list, rebuild + launch + UIA read",
+      "result": "fail-expected",
+      "note": "Compiles and opens a window, but the UIA tree reports 0 controls -- the exact Iced defect. Restoring accesskit reports 9 again. This is why accesskit is retained."
+    },
+    {
+      "command": "Negative control: eframe features without wgpu (and without glow)",
+      "result": "fail-expected",
+      "note": "Not executed; eframe's own `compile_error!(\"eframe: you must enable at least one of the rendering backend features: 'glow' or 'wgpu'\")` (epi.rs:601-605) makes this a compile-time certainty rather than a runtime observation, so the feature is retained on source evidence."
+    },
+    {
+      "command": "git diff --check",
+      "result": "pass"
+    },
+    {
+      "command": ".github\\scripts\\Test-ReleaseFormDefault.ps1",
+      "result": "pass",
+      "note": "Exit 0. The script asserts with throwing helpers and prints nothing on success."
+    }
+  ],
+  "risks": [
+    "The eframe feature trim is verified on Windows only. It is a cfg(windows) dependency and the gate's Linux check never enables egui-ui, so a future cross-platform settings build would need its own feature list (x11/wayland/winit-default would come back); nothing in the gate covers that today.",
+    "README.md §Tests (line 132) still lists `cargo test --no-default-features --features egui-ui --lib --bin lastkey-settings` without --test ui_semantic, and its line 133 lints with --lib --bin rather than the gate's --all-targets. README.md is outside this task's assigned scope, so it was not edited; it is a documentation mirror of the gate and now drifts from it.",
+    "docs/architecture/ui.md still describes the Iced UI (lines 44-47 name `iced-ui`, `lyon` and the src/ui/ owners, line 216 refers to iced-ui in build.rs). That file is T11's scope ('update docs/architecture/ui.md ... where they name Iced'), so it was not touched; the gate itself contains no stale iced-ui command.",
+    "The default_fonts feature is currently redundant (egui's own defaults already enable egui/default_fonts for the direct egui dependency). It is kept explicit deliberately; if egui is later switched to default-features = false without adding default_fonts here, text rendering breaks.",
+    "Removing the glow capability means eframe can no longer fall back to a GL renderer if wgpu fails to initialise on a given machine. This matches the pre-existing configuration (glow was never enabled) but is now explicit rather than incidental.",
+    "Native visual acceptance remains uncovered per docs/architecture/verification.md Unverified Areas. The app's window, liveness and UIA tree were verified programmatically here; no pixel-level or rendered-text check was performed, so the text-face claim for default_fonts rests on the feature being enabled plus the UIA/state evidence, not on a screenshot."
+  ],
+  "blockers": []
+}
