@@ -1,10 +1,10 @@
 {
   "status": "completed",
   "merged_branches": [
-    "agent/worker-2"
+    "agent/worker-3"
   ],
   "merge_commits": [
-    "2665f25e541b50fa37b7467a822bce24d3829787"
+    "dd1f55610edf83c23a7d7c6540d4e6f2a7ed77ff"
   ],
   "tests": [
     {
@@ -20,11 +20,7 @@
       "result": "pass"
     },
     {
-      "command": "cargo test --locked --no-default-features --features egui-ui --lib --bin lastkey-settings",
-      "result": "pass"
-    },
-    {
-      "command": "cargo test --locked --no-default-features --features egui-ui --test ui_semantic",
+      "command": "cargo test --locked --no-default-features --features egui-ui --lib --bin lastkey-settings --test ui_semantic",
       "result": "pass"
     },
     {
@@ -51,10 +47,9 @@
   "conflicts_resolved": [],
   "unresolved_conflicts": [],
   "risks": [
-    "agent/worker-2 T8 (5871822 tests/ui_semantic.rs + 2665f25 T8 report) was a direct descendant of agent/integration at e4fb5d1, so git fast-forwarded to 2665f25 with no merge commit and no conflicts; changed files are tests/ui_semantic.rs (new, 383 lines) and .orchestrator/reports/T8.json.",
-    "Semantic tests execute in-tree: `cargo test --locked --no-default-features --features egui-ui --test ui_semantic` runs 6 tests (rebind, mode switch, timing edit, filter toggle, profile rename, label reachability), all passing. The file is cfg-gated to windows+egui-ui and compiles to 0 tests under default features — recorded here as by-design gating, not a skipped check: the egui-ui run above is the authoritative execution.",
-    "egui-ui lib suite still reports 199 tests; total egui-ui coverage is now 199 lib + 6 semantic.",
-    "default-tree GUI-freedom confirmed by zero matches for egui/eframe/wgpu/winit/accesskit/iced/lyon.",
+    "agent/worker-3 T10 (f30af15 eframe feature trim + semantic-test gating, dd1f556 T10 report) was a direct descendant of agent/integration at 11f57b0, so git fast-forwarded to dd1f556 with no merge commit and no conflicts; changed files are Cargo.toml, Cargo.lock, docs/architecture/verification.md, .github/workflows/rust-tests.yml, and .orchestrator/reports/T10.json.",
+    "Gate run used the UPDATED verification.md command: `cargo test --locked --no-default-features --features egui-ui --lib --bin lastkey-settings --test ui_semantic` in a single invocation, reporting 199 lib + 0 settings bin + 6 semantic, all passing. The trimmed eframe graph (default-features=false + accesskit/default_fonts/wgpu, 37 crates dropped) builds and passes the full gate including Linux cross-check.",
+    "default-tree GUI-freedom still confirmed by zero matches for egui/eframe/wgpu/winit/accesskit/iced/lyon.",
     "Native visual acceptance remains uncovered per docs/architecture/verification.md Unverified Areas; test success is not visual evidence."
   ]
 }
