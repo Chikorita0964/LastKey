@@ -1,0 +1,55 @@
+{
+  "task_id": "T11",
+  "status": "completed",
+  "summary": "T11 retires the Iced UI: `src/ui/` (the Iced tree) is deleted, `src/ui2` is renamed to `src/ui`, every code, test, build-script, and doc path now says `ui`, and the docs that described Iced are updated to the egui reality. The `iced` dependency and the `iced-ui` feature were already removed in 4e9de4e (Wave 0) and the feature graph still resolves no iced/lyon, so the manifest change is a verification rather than an edit. Doc comments that cite the retired Iced sources now use an `iced-ui/` path prefix (documented in src/ui/mod.rs) because the old `src/ui/...` spellings would collide with the new tree. The full gate passes (199 lib + 6 semantic tests).",
+  "branch": "agent/worker-1",
+  "commit": "90ee347",
+  "base": "521986e (agent/integration; agent/worker-1 was fast-forwarded to it before this task)",
+  "branch_sync": "`git merge --ff-only agent/integration` moved agent/worker-1 from d9760e7 to 521986e (T9 integration report). The fast-forward authored no file contents.",
+  "owned_files": ["src/ui/", "src/ui2/", "src/lib.rs", "Cargo.toml", "tests/ui_semantic.rs", "docs/architecture/ui.md", "README.md", "AGENTS.md", ".orchestrator/reports/T11.json"],
+  "changed_files": [
+    "src/ui/ (Iced tree deleted: app.rs, hover_text.rs, icons.rs, ipc_client.rs, mod.rs, preview.rs, theme.rs, theme_tests.rs, timeline.rs, widgets.rs, language/mod.rs)",
+    "src/ui2/ -> src/ui/ (rename: app, header, inspection, ipc_client, keycap, language (+ language/{en,es,zh}.rs), mapping, message, mod, preview, profiles, state, state_tests, theme, timeline, timing)",
+    "src/lib.rs (pub mod ui), src/bin/lastkey-settings.rs (lastkey::ui::run), build.rs (comment), tests/ui_semantic.rs (docs + imports), src/ui/*.rs (doc-comment `ui2` paths and the iced-ui citation alias)",
+    "docs/architecture/ui.md, docs/architecture/verification.md, docs/lastkey-architecture.md",
+    "AGENTS.md (local-only; the file is gitignored, so the update exists in this worktree only)",
+    "Cargo.toml / Cargo.lock (unchanged: no `iced` dependency or `iced-ui` feature exists to drop)"
+  ],
+  "delivered": {
+    "rename": "`git rm -r src/ui` then `git mv src/ui2 src/ui`. The committed tree has 19 files under src/ui/ plus the language subdirectory; no path under src/ contains `ui2` (verified with `git ls-tree -r HEAD src/`).",
+    "reference_updates": "`pub mod ui;` in src/lib.rs; `lastkey::ui::run()` in the settings binary; `crate::ui::…` in the app/timing/profiles test imports; the `ui-preview-clock` egui id; build.rs and tests/ui_semantic.rs comments; the module docs in language.rs; and every `src/ui2/…` doc-comment path in the ui tree.",
+    "iced_dependency_evidence": "Cargo.toml contains no `iced` dependency and no `iced-ui` feature (the only remaining occurrence of the word is a rationale comment in the eframe dependency block). `git log -S iced -- Cargo.toml` shows the removal commit: 4e9de4e 'feat(ui): scaffold the egui settings window and drop iced'. `cargo tree --no-default-features --features egui-ui -e normal` resolves no `iced` and no `lyon`.",
+    "citation_alias": "Citations of the deleted Iced sources use an `iced-ui/` prefix (e.g. `iced-ui/widgets.rs:234`, `iced-ui/app.rs:1357-1363`), documented in src/ui/mod.rs: the old `src/ui/...` spellings now collide with the egui tree, and the retired files are recoverable from git history. Citations that already meant the current egui files (language.rs, mapping.rs, keycap.rs, theme.rs's own slate note) were left as `src/ui/...`.",
+    "docs_ui_md": "Design source now states the Iced port was retired in T11; the rendering rules speak egui (`Shape::line`/`convex_polygon`/`CubicBezier`, rect fills/strokes, `request_repaint_after`); the fonts rule names `FontFamily::Proportional`/`Monospace`; the feature paragraph covers `egui-ui` and the GUI-free default tree; the palette/state owner sentence names app.rs/state.rs/timing.rs/timeline.rs; the theme-convention block is prefaced as Iced-era rationale for ported values (the canvas-cache bullet is kept as a marked porting note); the preview's reduced-motion line no longer cites the Iced API; build.rs is described under `egui-ui`.",
+    "docs_others": "verification.md: the scoped-loop table row and the `pub mod ui` gate note now say `src/ui/`. lastkey-architecture.md: the process diagram says 'on-demand egui + wgpu', the ownership prose says 'egui application … no egui thread', and the module table row reads 'egui settings window: page composition, state, and IPC client (egui-ui feature only)'. README.md already used `egui-ui` (T10) and named no Iced.",
+    "agents_md": "AGENTS.md §3 updated: `lastkey-settings` needs the `egui-ui` feature, and the module gate is `windows + egui-ui` with the note that Iced was retired in T11. The file is gitignored by design (`/AGENTS.md`), so this change is local to the worktree and was not staged."
+  },
+  "tests": [
+    { "command": "cargo fmt --all -- --check", "result": "pass" },
+    { "command": "cargo test --locked --all-targets", "result": "pass" },
+    { "command": "cargo clippy --locked --all-targets -- -D warnings", "result": "pass" },
+    { "command": "cargo test --locked --no-default-features --features egui-ui --lib --bin lastkey-settings --test ui_semantic", "result": "pass (199 lib tests, 6 ui_semantic tests, 0 failed)" },
+    { "command": "cargo clippy --locked --no-default-features --features egui-ui --all-targets -- -D warnings", "result": "pass" },
+    { "command": "cargo check --locked --target x86_64-unknown-linux-gnu --all-targets", "result": "pass" },
+    { "command": "cargo tree --no-default-features -e normal", "result": "pass (matches only tray-icon; no egui, eframe, wgpu, iced, or lyon)" },
+    { "command": "cargo tree --no-default-features --features egui-ui -e normal", "result": "pass (no iced, no lyon)" },
+    { "command": "git diff --check", "result": "pass" },
+    { "command": ".github\\scripts\\Test-ReleaseFormDefault.ps1", "result": "pass (exit 0)" },
+    { "command": "cargo build --release --locked --no-default-features --features egui-ui --bin lastkey-settings", "result": "pass (14.3s incremental; packaging path intact after the rename)" }
+  ],
+  "tests_actually_executed_note": "The full gate ran on the cutover tree before the comment-only citation-alias edits; the scoped loop and both clippy configs were re-run after those edits (199 + 6, clean). The alias pass touched only doc comments and verified UTF-8 clean. `git ls-tree -r HEAD src/` confirms no `ui2` path remains in the commit.",
+  "unresolved_dependencies_for_master": [
+    "The `egui-ui` feature name is now a misnomer-in-waiting (egui is the only UI); renaming it (`ui`, `settings-ui`) would touch Cargo.toml, src/lib.rs, the verification gate, README, and the release workflow — a Master decision, deliberately not taken inside the retirement.",
+    "Historical records under `.orchestrator/reports/` and `.orchestrator/reviews/` still name `src/ui2/` and Iced by design; they describe past states and were not rewritten.",
+    "`.agent/EGUI_MIGRATION.md` (local-only, gitignored) still describes the migration plan, including `src/ui2/`; it is plan material, not product documentation.",
+    "AGENTS.md is gitignored, so its update lives only in worktrees where it is edited; a fresh clone does not receive it.",
+    "Carried from earlier waves: long-label hover-scroll is still unported, and the accessible-name localization policy is open."
+  ],
+  "risks": [
+    "The rename was mechanical but broad; the mitigation is that the gate compiles every target (lib, bin, semantic test, Linux check) and `git ls-tree` proves the path move.",
+    "Doc-comment citations of retired Iced files are now explicitly aliased; a future search for `src/ui/...` in the ui tree may still hit citations that legitimately mean the current egui files (documented in mod.rs).",
+    "The commit deletes 10 files and moves 19; reviewers should diff with rename detection (`git show --stat -M 90ee347`) to see the move rather than a delete/add pair.",
+    "A PowerShell text-rewrite pass during the task corrupted one file's encoding; it was caught by the compiler, the file was restored byte-exact from git and rewritten with a UTF-8-safe writer, and every touched file was verified UTF-8 before the gate. Recorded here because it explains any noise in the working history of this branch."
+  ],
+  "blockers": []
+}
