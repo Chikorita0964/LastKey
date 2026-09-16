@@ -4,7 +4,7 @@
     "agent/worker-1"
   ],
   "merge_commits": [
-    "ac695dceed7218174faca3729ced90d386b34264"
+    "12788d6fcd9ad87d57e7b84832806fb6839417e2"
   ],
   "tests": [
     {
@@ -47,8 +47,9 @@
   "conflicts_resolved": [],
   "unresolved_conflicts": [],
   "risks": [
-    "agent/worker-1 T7 port (8f01508 page composition + IPC client wiring, 9c5e7b2 T7 report, 9fe71fd harness sizing, ac695dc report pointer) was a direct descendant of agent/integration at 1a269d5, so git fast-forwarded to ac695dc with no merge commit and no conflicts; changed files are src/ui2/app.rs, src/ui2/ipc_client.rs (new), src/ui2/mod.rs (1 line), and .orchestrator/reports/T7.json.",
-    "T7 tests execute in-tree: egui-ui suite reports 198 lib tests (up from 191), with --list confirming 7 T7 tests (4 ui2::app::tests + 3 ui2::ipc_client::tests) all passing in the gate run.",
+    "agent/worker-1 T7 round-2 rework (71fa562 real preview_card mount in timing card via PreviewMount + Iced minimum window size restore + tautological test fix, bb3e9e0 T7 report) merged conflict-free via ort into 12788d6; changed files are src/ui2/app.rs, src/ui2/timing.rs, and .orchestrator/reports/T7.json.",
+    "Cross-task touch noted: the rework replaces T4/T5-owned illustrative timing_preview_section internals with a full timing card mounting T5's preview::preview_card. No semantic conflict arose (mechanical merge, gate passes), but preview/timing ownership now overlaps at the mount seam — Master's concern if T4/T5 rework touches the same seam.",
+    "egui-ui suite reports 199 lib tests (up from 198), with T5 preview tests (10 ui2::preview::tests) executing in-tree and passing.",
     "default-tree GUI-freedom confirmed by zero matches for egui/eframe/wgpu/winit/accesskit/iced/lyon.",
     "Native visual acceptance remains uncovered per docs/architecture/verification.md Unverified Areas; test success is not visual evidence."
   ]
