@@ -49,9 +49,9 @@
   "conflicts_resolved": [],
   "unresolved_conflicts": [],
   "risks": [
-    "Round A: agent/worker-2 T6 port (160748c header/profile/language panels + 7a306b8 T6 report) merged conflict-free via ort into 5b471a6; report committed as 68c4d10. The T6 worker added no new in-tree tests (header/profiles/language modules carry no #[cfg(test)]), so coverage for the new panels rests on worker evidence and review — residual uncertainty, not a gate failure.",
-    "Round B: agent/worker-1 T5 round-2 rework (329f874 preview-clock gating + switch geometry, 1ebe221 T5 report) merged conflict-free via ort into ddb5f00; changed files are src/ui2/preview.rs, src/ui2/timeline.rs, and .orchestrator/reports/T5.json.",
-    "Full gate was run once on the final combined tree and passed all 9 commands: egui-ui suite reports 181 lib tests (up from 178 after Round A), consistent with the T5 rework adding 3 tests. The gate on the final tree subsumes both rounds since Round B only adds to Round A's tree.",
+    "R1/R2 FAIL (High) resolved: src/ui2/mod.rs now declares `pub mod header;` and `pub mod profiles;` in alphabetical placement beside `pub mod language;`. Worker-2 commit 160748c had explicitly deferred this registration to integration, so no Worker intent was altered.",
+    "T6 tests now execute in-tree: egui-ui suite reports 191 lib tests (up from 181), with --list confirming 10 T6 tests (3 ui2::header::tests + 7 ui2::profiles::tests) all passing in the gate run. The prior round's residual uncertainty about unexecuted T6 tests is retired.",
+    "Changed files in this rework step are src/ui2/mod.rs (2 lines added) and .orchestrator/reports/INTEGRATION.json; prior merges 5b471a6 (T6) and ddb5f00 (T5 rework) unchanged.",
     "default-tree GUI-freedom confirmed by zero matches for egui/eframe/wgpu/winit/accesskit/iced/lyon.",
     "Native visual acceptance remains uncovered per docs/architecture/verification.md Unverified Areas; test success is not visual evidence."
   ]

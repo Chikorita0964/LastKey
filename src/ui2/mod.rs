@@ -3,11 +3,13 @@
 //! specification until cutover.
 
 mod app;
+pub mod header;
 pub mod keycap;
 pub mod language;
 pub mod mapping;
 pub mod message;
 pub mod preview;
+pub mod profiles;
 pub mod state;
 #[cfg(test)]
 mod state_tests;
