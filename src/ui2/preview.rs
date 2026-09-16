@@ -131,14 +131,19 @@ impl PreviewClock {
 ///
 /// Display-only apart from the three transport controls; the caller maps a
 /// click to a `Message` (migration constraint 2). `awake` mirrors window
-/// focus; the caller decides whether to mount the card at all (the Iced view
-/// hides it while a profile dialog is open).
+/// focus; `clock_mounted` mirrors the Iced view's clock mount, which was
+/// `matches!(self.profiles, ProfileDialog::Closed)` (`src/ui/app.rs:1357-1363`)
+/// -- pass `false` while a profile dialog is open and the clock deadline
+/// resets, no tick is emitted, and no frame is requested, which is the
+/// unmount-and-restart behaviour of the Iced widget. The caller decides
+/// whether to mount the card at all the same way the Iced view did.
 pub fn preview_card(
     ui: &mut Ui,
     timing: &TimingSettings,
     preview: &Preview,
     language: Language,
     awake: bool,
+    clock_mounted: bool,
     messages: &mut Vec<Message>,
 ) -> Response {
     let mode = EXAMPLES[preview.example % 3];
@@ -156,9 +161,10 @@ pub fn preview_card(
     let delay = delay_label(min, max);
     let (old, new) = preview.held();
 
-    let response = theme::slot_style()
+    let frame = theme::slot_style()
         .inner_margin(Margin::same(12))
-        .show(ui, |ui| {
+        .show(ui, |ui| -> Rect {
+            let mut clock_rect = Rect::NOTHING;
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing = Vec2::new(8.0, 0.0);
                 if nav_button(ui, true, language.text("Previous example")) {
@@ -192,28 +198,48 @@ pub fn preview_card(
                         };
                         caption(ui, language.text(state_key));
                         example_dots(ui, preview.example);
+                        // The Iced view mounted its `Clock` state widget here,
+                        // as the example column's last child. It paints
+                        // nothing; its own rect is what the viewport gate
+                        // reads, so scrolling the card out stops the frames
+                        // (ui.md:144-145).
+                        let (rect, _) = ui.allocate_exact_size(
+                            Vec2::new(ui.available_width(), 0.0),
+                            Sense::hover(),
+                        );
+                        clock_rect = rect;
                     },
                 );
                 if nav_button(ui, false, language.text("Next example")) {
                     messages.push(Message::Preview(PreviewAction::Next));
                 }
             });
-        })
-        .response;
+            clock_rect
+        });
+    let clock_rect = frame.inner;
+    let response = frame.response;
 
-    drive_clock(ui, preview, response.rect, awake, messages);
+    drive_clock(ui, preview, clock_rect, awake, clock_mounted, messages);
     response
 }
 
 /// The card's clock: pushes `PreviewAction::Tick` when a phase is due and
 /// requests a repaint for the next one, but only while playing, awake, and
-/// on screen -- the rules the Iced `Clock` widget enforced with its own
-/// redraw requests (ui.md:144-145: the preview starts paused and its widget
-/// stops requesting redraws outside the scroll viewport).
-fn drive_clock(ui: &Ui, preview: &Preview, rect: Rect, awake: bool, messages: &mut Vec<Message>) {
+/// mounted, and only while its own widget rect is on screen -- the rules the
+/// Iced `Clock` widget enforced with its own redraw requests (ui.md:144-145:
+/// the preview starts paused and its widget stops requesting redraws outside
+/// the scroll viewport; the widget unmounted while a dialog was open).
+fn drive_clock(
+    ui: &Ui,
+    preview: &Preview,
+    rect: Rect,
+    awake: bool,
+    clock_mounted: bool,
+    messages: &mut Vec<Message>,
+) {
     let clock_id = egui::Id::new("ui2-preview-clock");
     let now = ui.input(|input| input.time);
-    let playing = preview.playing && awake;
+    let playing = preview.playing && awake && clock_mounted;
     let visible = ui.is_rect_visible(rect);
     let tick = ui.data_mut(|data| {
         data.get_temp_mut_or_default::<PreviewClock>(clock_id).poll(
@@ -585,29 +611,77 @@ mod tests {
     struct CardState {
         preview: Preview,
         timing: TimingSettings,
+        clock_mounted: bool,
+        clip: Option<Rect>,
         messages: Vec<Message>,
     }
 
-    fn card_harness(preview: Preview, timing: TimingSettings) -> Harness<'static, CardState> {
+    /// A card harness. `clip` narrows the viewport the card is drawn into, to
+    /// exercise the scroll-viewport gate; the preview starts paused unless the
+    /// caller passes a playing preview.
+    fn card_harness_with(
+        preview: Preview,
+        timing: TimingSettings,
+        clock_mounted: bool,
+        clip: Option<Rect>,
+    ) -> Harness<'static, CardState> {
         let mut harness = Harness::builder()
             .with_size(egui::vec2(600.0, 400.0))
             .build_ui_state(
                 |ui, state: &mut CardState| {
+                    if let Some(clip) = state.clip {
+                        ui.set_clip_rect(clip);
+                    }
                     let CardState {
                         preview,
                         timing,
+                        clock_mounted,
                         messages,
+                        ..
                     } = state;
-                    let _ = preview_card(ui, timing, preview, Language::English, true, messages);
+                    let _ = preview_card(
+                        ui,
+                        timing,
+                        preview,
+                        Language::English,
+                        true,
+                        *clock_mounted,
+                        messages,
+                    );
                 },
                 CardState {
                     preview,
                     timing,
+                    clock_mounted,
+                    clip,
                     messages: Vec::new(),
                 },
             );
-        harness.run();
+        harness.run_steps(2);
         harness
+    }
+
+    fn card_harness(preview: Preview, timing: TimingSettings) -> Harness<'static, CardState> {
+        card_harness_with(preview, timing, true, None)
+    }
+
+    fn playing_preview() -> Preview {
+        Preview {
+            playing: true,
+            ..Default::default()
+        }
+    }
+
+    /// The shortest repaint request this frame made; `Duration::MAX` when the
+    /// frame requested none.
+    fn repaint_delay(harness: &Harness<'_, CardState>) -> Duration {
+        harness
+            .output()
+            .viewport_output
+            .values()
+            .map(|output| output.repaint_delay)
+            .min()
+            .unwrap_or(Duration::MAX)
     }
 
     /// Every `Shape::Rect` this frame painted, flattened out of `Shape::Vec`.
@@ -825,6 +899,57 @@ mod tests {
         assert!(
             harness.state().messages.is_empty(),
             "the preview starts paused, so no tick may be emitted"
+        );
+    }
+
+    /// R2 round-2 finding 1(a): the viewport gate reads the clock widget's own
+    /// rect, not the card's, so scrolling the widget out stops the frames
+    /// (ui.md:144-145).
+    #[test]
+    fn the_clock_stops_where_its_widget_leaves_the_viewport() {
+        // On screen: the clock schedules its next phase.
+        let harness = card_harness_with(playing_preview(), TimingSettings::default(), true, None);
+        let visible = repaint_delay(&harness);
+        assert!(
+            visible <= Duration::from_millis(850),
+            "a visible playing clock must schedule the next phase, got {visible:?}"
+        );
+
+        // Clipped to the first 16px of the card: the widget rect is outside
+        // the viewport, so no tick and no frame request.
+        let clip = Rect::from_min_size(Pos2::ZERO, Vec2::new(600.0, 16.0));
+        let harness = card_harness_with(
+            playing_preview(),
+            TimingSettings::default(),
+            true,
+            Some(clip),
+        );
+        assert!(
+            harness.state().messages.is_empty(),
+            "an off-screen clock emits no tick"
+        );
+        let hidden = repaint_delay(&harness);
+        assert!(
+            hidden > Duration::from_millis(850),
+            "an off-screen clock must stop requesting redraws, got {hidden:?}"
+        );
+    }
+
+    /// R2 round-2 finding 1(b): the Iced view did not mount its `Clock`
+    /// widget while a profile dialog was open (`src/ui/app.rs:1357-1363`);
+    /// `clock_mounted = false` reproduces that unmount, and the clock rule
+    /// test pins the fresh schedule after a remount.
+    #[test]
+    fn an_unmounted_clock_emits_nothing() {
+        let harness = card_harness_with(playing_preview(), TimingSettings::default(), false, None);
+        assert!(
+            harness.state().messages.is_empty(),
+            "an unmounted clock emits no tick"
+        );
+        let delay = repaint_delay(&harness);
+        assert!(
+            delay > Duration::from_millis(850),
+            "an unmounted clock requests no frames, got {delay:?}"
         );
     }
 
