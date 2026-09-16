@@ -3,7 +3,7 @@
   "status": "completed",
   "summary": "T4 round-3 rework for R1 and R2 (reviewed target agent/integration@b71f52e), plus the R2 round-4 follow-up. Restored the Iced mode-selector strip inset (4) and routed its segments through theme::MODE_PADDING, restored the mixer handle's hover swell (Iced accent_slider maps Hovered|Dragged to 8.0), moved the Random Mix ratio group to GROUP_PADDING (14), swapped the mixer rail to the Iced split (PRIMARY_TEXT left of the handle, RELEASE_TEXT right), and moved the two-handle duration rail to the Iced widgets::RangeSlider geometry (12px rail/radius 6, constant 16px thumbs). Each fix is pinned by a rendered regression test that fails when the fix is reverted. The earlier report's claim that the mode-selector call site already used Margin::same(4) was incorrect: the margin was absent from the integrated tree, and is corrected here. Round-4 follow-up: the rate_group row-2 inline comment, which still described the pre-round rail ('RELEASE_TEXT filled rail'), was corrected to the split-rail contract.",
   "branch": "agent/worker-3",
-  "commit": "PENDING",
+  "commit": "3025eb5",
   "owned_files": [
     "src/ui2/timing.rs",
     ".orchestrator/reports/T4.json"
