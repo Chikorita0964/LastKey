@@ -3,7 +3,7 @@
   "status": "completed",
   "summary": "T10 trimmed the eframe feature set and closed R2's T10 finding. The egui-ui gate in docs/architecture/verification.md (full gate plus the src/ui2/ scoped-loop row) and the Settings UI tests step in .github/workflows/rust-tests.yml now select tests/ui_semantic, so the label-driven tests run in both the standing gate and CI; before this change they only ran when someone repeated T8's explicit command. eframe now uses default-features = false with accesskit, default_fonts and wgpu: the Windows egui-ui graph drops 37 crates (232 -> 195) and Cargo.lock loses 42 package entries, while the app still builds, launches, and exposes its 9-node UI Automation tree. The full gate passes and the default dependency tree stays GUI-free.",
   "branch": "agent/worker-3",
-  "commit": "PENDING",
+  "commit": "f30af15",
   "integration_base": "agent/integration@11f57b0",
   "owned_files": [
     "Cargo.toml",
