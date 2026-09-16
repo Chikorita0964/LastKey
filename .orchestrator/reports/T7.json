@@ -1,49 +1,54 @@
 {
   "task_id": "T7",
   "status": "completed",
-  "summary": "T7 composes the settings page and wires the IPC: the eframe SettingsApp drains `ipc_client` events into `state::update` (logic) and performs the returned effects, the page (ui) mounts the header, the mapping/timing card row, the timeline card, the measurement card, the action bar, and the profile overlay exactly as the Iced shell did. `src/ui2/ipc_client.rs` ports the reader thread to `std::sync::mpsc` plus a wake callback. The measurement card and the action bar are ported here because no wave-1 task owned them. 7 new tests; the full gate passes (198 egui-ui lib tests).",
+  "summary": "T7 composes the settings page and wires the IPC: the eframe SettingsApp drains `ipc_client` events into `state::update` (logic) and performs the returned effects, the page (ui) mounts the header, the mapping/timing card row, the timeline card, the measurement card, the action bar, and the profile overlay as the Iced shell did. `src/ui2/ipc_client.rs` ports the reader thread to `std::sync::mpsc` plus a wake callback; the measurement card and the action bar are ported here because no wave-1 task owned them. The round-2 rework mounted T5's `preview::preview_card` in the timing card (the placeholder and its font glyphs are gone), restored the Iced window minimum size, and fixed the tautological test. 8 new tests; the full gate passes (199 egui-ui lib tests).",
   "branch": "agent/worker-1",
-  "commit": "9fe71fd",
-  "prior_commits": { "t7_page_and_ipc": "8f01508", "t7_report": "9c5e7b2", "t7_harness": "9fe71fd" },
+  "commit": "71fa562",
+  "prior_commits": {
+    "t7_page_and_ipc": "8f01508",
+    "t7_report": "9c5e7b2",
+    "t7_harness": "9fe71fd",
+    "t7_rework": "71fa562"
+  },
   "base": "1a269d5 (agent/integration; agent/worker-1 was fast-forwarded to it before this task -- see branch_sync)",
   "branch_sync": "`git merge --ff-only agent/integration` moved agent/worker-1 from 1ebe221 to 1a269d5. T7's files are registered modules whose siblings (theme/timing/mapping/keycap/header/profiles) are registered only on the integration base; the assignment named agent/integration as the integration base. The fast-forward authored no file contents -- it only received integration history.",
   "review_references": {
-    "R1_latest": "Accessible-name localization policy and preview/T5 ownership were the listed Master decisions; T7 mounts T5's card through the timing card's existing `preview: Option<&Preview>` parameter and leaves the placement swap in timing.rs to the integration step named below.",
-    "R2_round_1_issue_7": "The preview's transport glyphs were the T5 mandate (procedural paths, done in T5). The timing card still mounts T4's placeholder mount; see integration_requirements."
+    "R1_R2_round_2": "Three findings, all fixed in 71fa562: (1, high) the composed page mounted T4's placeholder `timing_preview_section` while the tested `preview::preview_card` stayed unmounted -- the placeholder is deleted and the real card is mounted with `awake = state.focused` and `clock_mounted = matches!(state.profiles, ProfileDialog::Closed)`; evidence: `the_page_mounts_the_real_preview_and_advances_on_its_clock` (app.rs) plus T5's `the_clock_stops_where_its_widget_leaves_the_viewport` / `an_unmounted_clock_emits_nothing` for the gates themselves. (2, medium) the window dropped the Iced shell's 960x600 minimum size -- restored with a reference comment. (3, low) the disconnected-body assertion was a tautology -- it now asserts `sent.contains(&UiCommand::RequestSnapshot)` directly.",
+    "R1_latest": "Accessible-name localization policy was a listed Master decision; the new page labels use language.text where a key exists and fall back to the English source otherwise.",
+    "R2_round_1_issue_7": "The preview's transport glyphs were the T5 mandate (procedural paths); with the mount in place they are the shipped rendering."
   },
-  "owned_files": ["src/ui2/app.rs", "src/ui2/ipc_client.rs", ".orchestrator/reports/T7.json"],
-  "changed_files": ["src/ui2/app.rs", "src/ui2/ipc_client.rs", "src/ui2/mod.rs (one registration line)", ".orchestrator/reports/T7.json"],
+  "owned_files": ["src/ui2/app.rs", "src/ui2/timing.rs", "src/ui2/ipc_client.rs", ".orchestrator/reports/T7.json"],
+  "changed_files": ["src/ui2/app.rs", "src/ui2/timing.rs", "src/ui2/ipc_client.rs", "src/ui2/mod.rs (one registration line)", ".orchestrator/reports/T7.json"],
   "delivered_api": {
-    "ui2::run": "pub fn run() -> eframe::Result -- eframe::run_native with the Iced window title/size/icon; SettingsApp::new installs `theme::style()` for every system theme (the window is light-only like the Iced shell) and starts the IPC reader with `Context::request_repaint` as its wake callback.",
+    "ui2::run": "pub fn run() -> eframe::Result -- eframe::run_native with the Iced window title/size (1040x800), the Iced shell's minimum size (960x600, src/ui/app.rs:43-47), and the Iced icon; SettingsApp::new installs `theme::style()` for every system theme (the window is light-only like the Iced shell) and starts the IPC reader with `Context::request_repaint` as its wake callback.",
     "SettingsApp::logic": "fn logic(&mut self, ctx, frame) -- the frame's non-painting half: diffs window focus into WindowFocused/WindowUnfocused, drains the IPC receiver into Message::Ipc(Connected/Message/Disconnected) (Connected stores the Connection, Disconnected drops it), and translates input events: Escape -> CancelCapture, every other non-repeat press -> KeyboardPressed, every release -> KeyboardReleased. Effects run here via dispatch/perform; failed sends route through IpcEvent::Disconnected so `State` stays the only writer.",
     "SettingsApp::ui": "fn ui(&mut self, ui, frame) -- paints the canvas, the PAGE_PADDING frame, then header + body + action bar (or the disconnected body), consumes the deferred FocusProfileName/FocusValueBox effects, draws profiles::profile_overlay, and dispatches every message the frame produced. ShowSection scrolls the body to the section rect (settings row / measurement card) and raises the window when focus was requested. Drop sends UiCommand::CloseUiSession.",
     "Effect coverage": "Send -> connection.send (disconnect path on error); FocusProfileName -> profiles::focus_profile_name next frame; FocusValueBox -> memory.request_focus(timing::value_box_id(field)); ShowSection -> ui.scroll_to_rect + ViewportCommand::Focus; PumpAwake -> connection.set_awake; Close -> ViewportCommand::Close.",
     "ipc_client": "pub enum Event { Connected(Connection), Message(Box<UiEvent>), Disconnected(String) }; pub struct Connection { send(UiCommand), set_awake(bool) }; pub fn connect(wake: impl Fn() + Send + Sync + 'static) -> std_mpsc::Receiver<Event>. The reader thread is the Iced loop unchanged (PipeConnection::connect with a 500 ms timeout, command_receiver.recv_timeout with the awake-dependent interval, Peek-gated receive, CloseUiSession early return); every queued event calls `wake` so eframe repaints without polling.",
-    "shared_page_functions": "settings_cards (the mapping/timing row), actions_bar (restore, header::dirty_badge, feedback, revert, apply), disconnected_body, feedback, measurement_section (+ latencies_card, recommendations_card, stat_box, suggestion_tile, table helpers) are free functions so the tests exercise the shipped composition; SettingsApp::body owns only the scroll owner, the action-bar reserve, and the section scroll targets. Local glyphs (Revert, Chart, Measurement, Star, Play, Stop, ArrowForward) are painted in app.rs because theme::Icon carries Restore/Check/Warning/Edit/Keyboard only."
+    "timing_card": "pub fn timing_card(ui, timing, inputs, editing, language, preview: Option<PreviewMount<'_>>, messages) -> Response -- the card's preview parameter is now `PreviewMount { preview: &Preview, awake: bool, clock_mounted: bool }`; the mount calls `preview::preview_card(ui, timing, mount.preview, language, mount.awake, mount.clock_mounted, messages)` in Immediate mode. The placeholder `timing_preview_section` and its font glyphs are deleted; the card stays state-free (the gates are carried in, not read from State).",
+    "shared_page_functions": "settings_cards (the mapping/timing row, feeding the mount its gates), actions_bar (restore, header::dirty_badge, feedback, revert, apply), disconnected_body, feedback, measurement_section (+ latencies_card, recommendations_card, stat_box, suggestion_tile, table helpers) are free functions so the tests exercise the shipped composition; SettingsApp::body owns only the scroll owner, the action-bar reserve, and the section scroll targets. Local glyphs (Revert, Chart, Measurement, Star, Play, Stop, ArrowForward) are painted in app.rs because theme::Icon carries Restore/Check/Warning/Edit/Keyboard only."
   },
   "integration_requirements": [
-    "src/ui2/timing.rs (T5's handoff, outside this task): the timing card still mounts `timing_preview_section`, the placeholder with the four font glyphs. Replace its body with `preview::preview_card(ui, timing, &preview, language, awake, clock_mounted, messages)`, passing `clock_mounted = matches!(state.profiles, ProfileDialog::Closed)` (ProfileDialog has no PartialEq) and the same awake flag app.rs already passes as `state.focused`. timing_card's signature then needs those two flags (or the mount moved to app.rs with the timing card handing over its group); the placeholder's glyphs go with it. The real card is tested and ready in preview.rs.",
     "src/ui2/mod.rs: the `pub mod ipc_client;` line was added by this task because the assigned files cannot compile without it (see registration_note).",
     "Accessible names: the new page labels use language.text where a key exists; the measurement/action copy falls back to the English source ('Start timeline'/'Stop timeline' style), pending the localization policy.",
-    "Icon consolidation (carried): app.rs now holds seven private glyphs besides the header's four and mapping's set; a shared icon owner is the same pending wave."
+    "Icon consolidation (carried): app.rs holds seven private page glyphs besides the header's four and mapping's set; a shared icon owner is the same pending wave."
   ],
   "registration_note": "`pub mod ipc_client;` in src/ui2/mod.rs is the only line this task touched outside its assigned files. app.rs (registered) imports `super::ipc_client`, so without the registration the egui-ui lib does not compile at all -- unlike earlier waves, whose files were simply not in the tree. The integrator has made the same kind of registration commits before (869a78a 'register T2-T4 modules', 1a269d5 'register header and profiles modules'). If the integration wave prefers to own the line, it can re-apply it unchanged.",
   "tests": [
     { "command": "cargo fmt --all -- --check", "result": "pass" },
     { "command": "cargo test --locked --all-targets", "result": "pass" },
     { "command": "cargo clippy --locked --all-targets -- -D warnings", "result": "pass" },
-    { "command": "cargo test --locked --no-default-features --features egui-ui --lib --bin lastkey-settings", "result": "pass (198 lib tests, 0 failed)" },
+    { "command": "cargo test --locked --no-default-features --features egui-ui --lib --bin lastkey-settings", "result": "pass (199 lib tests, 0 failed)" },
     { "command": "cargo clippy --no-default-features --features egui-ui --all-targets -- -D warnings", "result": "pass" },
     { "command": "cargo check --locked --target x86_64-unknown-linux-gnu --all-targets", "result": "pass" },
     { "command": "cargo tree --no-default-features -e normal", "result": "pass (no egui, eframe, wgpu, iced, or lyon)" },
     { "command": "git diff --check", "result": "pass" },
     { "command": ".github\\scripts\\Test-ReleaseFormDefault.ps1", "result": "pass (exit 0)" }
   ],
-  "tests_actually_executed_note": "The scoped loop is `cargo test --no-default-features --features egui-ui --lib`: 191 passed before this change, 198 after (7 new: 3 ipc_client -- command delivery, dropped-reader error, wake-on-publish; 4 app -- key translation, disconnected body, dirty-gated action bar, measurement card + start control). The app tests drive the shipped free functions (settings_cards/actions_bar/measurement_section) through egui_kittest with a FakeShell that runs `state::update` and records commands; the SettingsApp struct itself needs eframe's CreationContext and is covered by the shared functions plus the compile of the settings binary. No test talks to a live runtime.",
+  "tests_actually_executed_note": "The scoped loop is `cargo test --no-default-features --features egui-ui --lib`: 191 passed before this task, 199 after (8 new: 3 ipc_client -- command delivery, dropped-reader error, wake-on-publish; 5 app -- key translation, disconnected body, dirty-gated action bar, measurement card + start control, and the round-2 page test `the_page_mounts_the_real_preview_and_advances_on_its_clock`, which reads painted paths, checks the placeholder glyphs are gone, and drives egui time (RawInput.time = 10.0/10.2/11.1) so the preview clock's first tick lands without a sleep). The app tests drive the shipped free functions (settings_cards/actions_bar/measurement_section) through egui_kittest with a FakeShell that runs `state::update` and records commands; the SettingsApp struct itself needs eframe's CreationContext and is covered by the shared functions plus the compile of the settings binary. No test talks to a live runtime.",
   "unresolved_dependencies_for_master": [
     "Live smoke test: T7's done-when ('talks to a running lastkey.exe -- snapshot on connect, apply writes through, measurement starts and stops') is not machine-verified here; it needs the runtime running and a human or a scripted run. Everything up to the pipe boundary is tested.",
     "font-weight strategy (carried): the new labels use theme::stamp_galley for heavy text.",
-    "Preview mount swap in timing.rs (see integration_requirements).",
     "Accessible-name localization policy (carried)."
   ],
   "risks": [
@@ -51,7 +56,8 @@
     "`body()` reserves `ACTION_BAR_HEIGHT`, derived from the same theme constants the bar is built from (2*16 padding + 30 button height + SECTION_GAP). If the bar's padding ever changes, both move together -- the constant pair is the single owner.",
     "The app tests use a 1600px-tall harness so the whole ~1400px page is clickable without scrolling; the real page keeps one scroll owner and a window-sized viewport.",
     "egui's `with_layout` rows expand to the available height; the production page wraps both cards in zero-height `allocate_ui_with_layout` columns (as the Iced row did), which is also what the test shell mirrors. A future card mounted outside such a column must repeat the wrap.",
-    "No e2e coverage of the wire formats: ipc_client's pipe loop is the Iced loop verbatim and is not exercised without a runtime; its channel/wake contract is unit-tested."
+    "No e2e coverage of the wire formats: ipc_client's pipe loop is the Iced loop verbatim and is not exercised without a runtime; its channel/wake contract is unit-tested.",
+    "The preview clock's gates are caller-supplied (PreviewMount): a future mount must pass `awake` and `clock_mounted` or the dialog/viewport suppression silently regresses. The card side is pinned by preview.rs tests; the call-site binding by the page test."
   ],
   "blockers": []
 }
