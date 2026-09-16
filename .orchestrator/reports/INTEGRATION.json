@@ -1,12 +1,10 @@
 {
   "status": "completed",
   "merged_branches": [
-    "agent/worker-1",
-    "agent/worker-2",
-    "agent/worker-3"
+    "agent/worker-1"
   ],
   "merge_commits": [
-    "83fd168c0a3687ff6951cc421f7c8fa55a04340f"
+    "3099f9b30ff17caa7fbb57fbee7240db9f77055a"
   ],
   "tests": [
     {
@@ -49,9 +47,8 @@
   "conflicts_resolved": [],
   "unresolved_conflicts": [],
   "risks": [
-    "All three requested tips (worker-1 6348f22, worker-2 a16a0ef, worker-3 cf05db5) were already ancestors of agent/integration at 09894e3, so this round's git merge reported Already up to date for all three with no new merge commit; integration state was re-verified via the full gate on the unchanged tree rather than re-merged.",
-    "Prior round-4 change set remains: worker-3 round-4 rework (3025eb5 stale mixer rail inline comment correction in timing.rs ratio group + cf05db5 T4 report) integrated conflict-free via ort in 83fd168; no new production change in this round.",
-    "egui-ui suite reports 159 lib tests passed on the merged tree (unchanged from prior round, consistent with a comment-only production change); default-tree GUI-freedom confirmed by zero matches for egui/eframe/wgpu/winit/accesskit/iced/lyon.",
+    "agent/worker-1 T5 rework (92a6513 timeline graph + mode preview port, 3099f9b T5 report) was a direct descendant of agent/integration at b884b44, so git fast-forwarded to 3099f9b with no merge commit and no conflicts; changed files are src/ui2/timeline.rs, src/ui2/preview.rs, and .orchestrator/reports/T5.json.",
+    "egui-ui suite reports 178 lib tests passed on the merged tree (up from 159 in the prior round); default-tree GUI-freedom confirmed by zero matches for egui/eframe/wgpu/winit/accesskit/iced/lyon.",
     "Native visual acceptance remains uncovered per docs/architecture/verification.md Unverified Areas; test success is not visual evidence."
   ]
 }
