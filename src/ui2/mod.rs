@@ -4,6 +4,7 @@
 
 mod app;
 pub mod header;
+pub mod inspection;
 pub mod ipc_client;
 pub mod keycap;
 pub mod language;
