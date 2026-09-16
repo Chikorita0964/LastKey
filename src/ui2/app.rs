@@ -1392,7 +1392,7 @@ mod tests {
 
     fn harness(state: State) -> Harness<'static, FakeShell> {
         egui_kittest::Harness::builder()
-            .with_size(egui::vec2(1040.0, 6000.0))
+            .with_size(egui::vec2(1040.0, 1600.0))
             .build_ui_state(
                 |ui, shell: &mut FakeShell| shell.frame(ui),
                 FakeShell {
