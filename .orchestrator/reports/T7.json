@@ -3,7 +3,8 @@
   "status": "completed",
   "summary": "T7 composes the settings page and wires the IPC: the eframe SettingsApp drains `ipc_client` events into `state::update` (logic) and performs the returned effects, the page (ui) mounts the header, the mapping/timing card row, the timeline card, the measurement card, the action bar, and the profile overlay exactly as the Iced shell did. `src/ui2/ipc_client.rs` ports the reader thread to `std::sync::mpsc` plus a wake callback. The measurement card and the action bar are ported here because no wave-1 task owned them. 7 new tests; the full gate passes (198 egui-ui lib tests).",
   "branch": "agent/worker-1",
-  "commit": "8f01508",
+  "commit": "9fe71fd",
+  "prior_commits": { "t7_page_and_ipc": "8f01508", "t7_report": "9c5e7b2", "t7_harness": "9fe71fd" },
   "base": "1a269d5 (agent/integration; agent/worker-1 was fast-forwarded to it before this task -- see branch_sync)",
   "branch_sync": "`git merge --ff-only agent/integration` moved agent/worker-1 from 1ebe221 to 1a269d5. T7's files are registered modules whose siblings (theme/timing/mapping/keycap/header/profiles) are registered only on the integration base; the assignment named agent/integration as the integration base. The fast-forward authored no file contents -- it only received integration history.",
   "review_references": {
@@ -48,7 +49,7 @@
   "risks": [
     "The app-level key translation feeds `KeyPress { character: <logical key debug>, physical: <physical key debug, fallback logical> }`, e.g. \"W\"/\"ArrowUp\"; the state layer's matcher already handles both spellings. A layout whose logical key name differs from the bound display name still relies on the matcher's fallbacks -- unchanged from Iced.",
     "`body()` reserves `ACTION_BAR_HEIGHT`, derived from the same theme constants the bar is built from (2*16 padding + 30 button height + SECTION_GAP). If the bar's padding ever changes, both move together -- the constant pair is the single owner.",
-    "The tests use 6000px-tall harnesses because the fake shell stacks the page rather than scrolling it; this is a harness concern only (the real page keeps one scroll owner and a window-sized viewport).",
+    "The app tests use a 1600px-tall harness so the whole ~1400px page is clickable without scrolling; the real page keeps one scroll owner and a window-sized viewport.",
     "egui's `with_layout` rows expand to the available height; the production page wraps both cards in zero-height `allocate_ui_with_layout` columns (as the Iced row did), which is also what the test shell mirrors. A future card mounted outside such a column must repeat the wrap.",
     "No e2e coverage of the wire formats: ipc_client's pipe loop is the Iced loop verbatim and is not exercised without a runtime; its channel/wake contract is unit-tested."
   ],
