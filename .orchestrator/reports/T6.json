@@ -1,0 +1,107 @@
+{
+  "task_id": "T6",
+  "status": "completed",
+  "summary": "Ported the page header (icon-only profile/language/engine controls), the amber dirty badge, the header-anchored profile and language overlay panels with their square slot cards, in-place rename box and confirm banner, and the language rows. The language module entry moved from language/mod.rs to language.rs so the panel lives in the owned file; the per-language files stay under language/.",
+  "branch": "agent/worker-2",
+  "commit": "160748c",
+  "owned_files": [
+    "src/ui2/header.rs",
+    "src/ui2/profiles.rs",
+    "src/ui2/language.rs",
+    ".orchestrator/reports/T6.json"
+  ],
+  "changed_files": [
+    "src/ui2/header.rs",
+    "src/ui2/profiles.rs",
+    "src/ui2/language.rs",
+    "src/ui2/language/mod.rs (deleted; its content moved into language.rs)",
+    ".orchestrator/reports/T6.json"
+  ],
+  "tests": [
+    {
+      "command": "cargo fmt --all -- --check",
+      "result": "pass"
+    },
+    {
+      "command": "cargo test --locked --all-targets",
+      "result": "pass"
+    },
+    {
+      "command": "cargo clippy --locked --all-targets -- -D warnings",
+      "result": "pass"
+    },
+    {
+      "command": "cargo test --locked --no-default-features --features egui-ui --lib --bin lastkey-settings",
+      "result": "pass"
+    },
+    {
+      "command": "cargo clippy --locked --no-default-features --features egui-ui --all-targets -- -D warnings",
+      "result": "pass"
+    },
+    {
+      "command": "cargo check --locked --target x86_64-unknown-linux-gnu --all-targets",
+      "result": "pass"
+    },
+    {
+      "command": "cargo tree --no-default-features -e normal",
+      "result": "pass"
+    },
+    {
+      "command": "git diff --check",
+      "result": "pass"
+    },
+    {
+      "command": ".github\\scripts\\Test-ReleaseFormDefault.ps1",
+      "result": "pass"
+    }
+  ],
+  "test_evidence": {
+    "note": "header.rs and profiles.rs are not registered in src/ui2/mod.rs yet, so the egui-ui suite was run twice: once with a temporary local registration of `pub mod header;`/`pub mod profiles;` (reverted before the commit, left to the integration step per the T4 convention), and once in a scratch mirror at %TEMP%/kilo/t6verify. The temporary-registration run is the in-tree evidence.",
+    "egui_ui_lib_tests_with_temporary_registration": "169 passed; 0 failed",
+    "egui_ui_lib_tests_before_t6": "159 passed; 0 failed",
+    "t6_tests_added": 10,
+    "t6_test_names": [
+      "ui2::header::tests::the_header_controls_open_the_panels",
+      "ui2::header::tests::the_engine_control_asks_the_engine_to_toggle",
+      "ui2::header::tests::the_dirty_badge_follows_the_draft",
+      "ui2::profiles::tests::a_card_loads_the_slot_it_covers",
+      "ui2::profiles::tests::a_dirty_draft_confirms_before_the_slot_loads",
+      "ui2::profiles::tests::the_rename_box_opens_and_commits_the_typed_name",
+      "ui2::profiles::tests::the_panel_surface_commits_an_open_rename",
+      "ui2::profiles::tests::the_panel_is_anchored_below_the_header_and_inside_the_page_edge",
+      "ui2::profiles::tests::a_language_row_selects_the_language",
+      "ui2::profiles::tests::a_pointer_left_on_a_card_clears_its_hover"
+    ],
+    "negative_controls": [
+      "surface commit removed -> the_panel_surface_commits_an_open_rename fails",
+      "dirty badge guard removed -> the_dirty_badge_follows_the_draft fails",
+      "name box EditProfileName message removed -> the_rename_box_opens_and_commits_the_typed_name fails",
+      "panel anchor y offset set to 0 -> the_panel_is_anchored_below_the_header_and_inside_the_page_edge fails"
+    ]
+  },
+  "compose_contract_for_t7": [
+    "header::header(ui, state) -> Vec<Message> draws the header bar",
+    "header::dirty_badge(ui, state) draws the amber badge when the draft is dirty (the Iced app mounts it in the action bar)",
+    "profiles::profile_overlay(ui, state) -> Vec<Message> draws the backdrop and anchored panel when a dialog is open",
+    "profiles::focus_profile_name(ui) records the deferred focus request for Effect::FocusProfileName",
+    "profiles::profile_name_input_id() / PROFILE_PANEL_TOP exported",
+    "language::language_rows(ui, state) -> Vec<Message> is the language panel body"
+  ],
+  "integration_requirements": [
+    "Register `pub mod header;` and `pub mod profiles;` in src/ui2/mod.rs (the T2-T4 precedent: 869a78a).",
+    "The language.rs move needs no registration change: `pub mod language;` now resolves to language.rs."
+  ],
+  "risks": [
+    "Registration of header/profiles in src/ui2/mod.rs is outside this task's ownership; without it the modules do not compile in-tree. Verified by temporary local registration only, reverted before the commit.",
+    "No native visual pass: anchoring, tints, hover states and text metrics are pinned by shape/label assertions only (the verification.md 'Native visual checks' gap applies).",
+    "Drawn panel width is 388px (PROFILE_PANEL_WIDTH 384 + 2*(PANEL_PADDING 1 + 1px stroke)), not the Iced 386: egui's Frame adds the stroke around the content on top of the inner margin. T3/T4 accept the same stroke-expansion convention; if exact 386 is wanted, the call site must subtract the stroke width.",
+    "theme::SlotState (T2) and state::SlotState (T1) are distinct enums for one three-state contract; profiles.rs bridges them in `theme_slot_state`. A third consumer would add another bridge; consolidating is a Master-level decision.",
+    "The four page glyphs (Layers, Languages, Power, Close) are painted in header.rs because theme::Icon (T2) carries only the five action glyphs and this task owns no theme file; folding them into theme::Icon is the same pending wave as mapping.rs's private set.",
+    "Iced published card presses on press; egui reports clicks on release (the established ui2 translation, same as T3/T4). One press still yields one message per control.",
+    "The dirty badge is drawn by header.rs although the Iced action bar owns its position; T7 must mount it there.",
+    "Accessible names are invented English strings ('Profile slots', 'Language', 'Engine on/off', 'Profile slot N', 'Close') pending the accessible-name localization policy raised in T2's report.",
+    "Effect::FocusProfileName is executed through a deferred flag consumed on the frame the rename field mounts, because requesting focus for a widget that frame has not drawn leaves AccessKit with a dangling focus. T7 must call profiles::focus_profile_name(ui). Escape stays on the global key path (T7).",
+    "The name box hover is published as Message::NameHovered and painted from the state (one-frame lag, as in Iced); only the positive side is emitted per box and slot_list clears it, so card order cannot cancel a fresh hover."
+  ],
+  "blockers": []
+}
