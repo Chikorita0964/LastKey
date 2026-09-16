@@ -1,10 +1,10 @@
 {
   "status": "completed",
   "merged_branches": [
-    "agent/worker-3"
+    "agent/worker-1"
   ],
   "merge_commits": [
-    "ff04e033fd5492ca63f132d0c78f8833541c1d63"
+    "d9760e7832b6c1fbc3b0ad5a9dfdbe9636d8d9f3"
   ],
   "tests": [
     {
@@ -47,9 +47,9 @@
   "conflicts_resolved": [],
   "unresolved_conflicts": [],
   "risks": [
-    "agent/worker-3 T10 round-2 rework (19032fc README §Tests alignment + ff04e03 T10 report) was a direct descendant of agent/integration at c8ee071, so git fast-forwarded to ff04e03 with no merge commit and no conflicts; changed files are README.md (2 test-command lines) and .orchestrator/reports/T10.json.",
-    "Docs-only production change: README §Tests now matches the gate (--test ui_semantic on the test line, --all-targets on the clippy line), closing the drift the prior round carried as a risk. Gate re-run on the final tree passes all 9 updated commands: 199 lib + 0 bin + 6 semantic.",
-    "default-tree GUI-freedom still confirmed by zero matches for egui/eframe/wgpu/winit/accesskit/iced/lyon.",
+    "agent/worker-1 T9 (4cdd0a6 agent-inspection feature + inspection.rs + d9760e7 T9 report) was a direct descendant of agent/integration at 6f86882, so git fast-forwarded to d9760e7 with no merge commit and no conflicts; changed files are Cargo.toml, Cargo.lock, src/ui2/inspection.rs (new), src/ui2/mod.rs (1 line), and .orchestrator/reports/T9.json.",
+    "Gate run used the T10-updated command set: egui-ui run reports 199 lib + 0 settings bin + 6 semantic, all passing. default-tree remains GUI-free (zero matches for egui/eframe/wgpu/winit/accesskit/iced/lyon); agent-inspection correctly pulls egui_inspection 0.36.2 only when the feature is enabled (verified via cargo tree --features agent-inspection).",
+    "Inspection release-safety rests on worker evidence (release build without the feature carries no egui_inspection strings/tree entries); the gate itself does not rebuild the release binary, so that claim was not re-executed in-tree here.",
     "Native visual acceptance remains uncovered per docs/architecture/verification.md Unverified Areas; test success is not visual evidence."
   ]
 }
