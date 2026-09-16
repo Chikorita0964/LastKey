@@ -1,0 +1,94 @@
+{
+  "task_id": "T8",
+  "status": "completed",
+  "summary": "Added tests/ui_semantic.rs: an egui_kittest integration file that mounts the shipped public controls (header, the mapping/timing card row, the dirty badge the action bar mounts, and the profile overlay) and drives five flows purely by accessible label -- rebind a key, switch a mode, edit a timing value, toggle the filter, and rename a profile. Three negative controls show the file fails when a control loses its label.",
+  "branch": "agent/worker-2",
+  "commit": "5871822",
+  "base": "e4fb5d1 (agent/integration; agent/worker-2 was fast-forwarded to it before this task)",
+  "owned_files": [
+    "tests/ui_semantic.rs",
+    ".orchestrator/reports/T8.json"
+  ],
+  "changed_files": [
+    "tests/ui_semantic.rs",
+    ".orchestrator/reports/T8.json"
+  ],
+  "tests": [
+    {
+      "command": "cargo test --locked --no-default-features --features egui-ui --test ui_semantic",
+      "result": "pass (6 tests, 0 failed)"
+    },
+    {
+      "command": "cargo fmt --all -- --check",
+      "result": "pass"
+    },
+    {
+      "command": "cargo test --locked --all-targets",
+      "result": "pass (ui_semantic compiles empty without the feature; 72 lib + 60 integration)"
+    },
+    {
+      "command": "cargo clippy --locked --all-targets -- -D warnings",
+      "result": "pass"
+    },
+    {
+      "command": "cargo test --locked --no-default-features --features egui-ui --lib --bin lastkey-settings --test ui_semantic",
+      "result": "pass (199 lib, 0 bin, 6 ui_semantic)"
+    },
+    {
+      "command": "cargo clippy --locked --no-default-features --features egui-ui --all-targets -- -D warnings",
+      "result": "pass (lints tests/ui_semantic.rs too)"
+    },
+    {
+      "command": "cargo check --locked --target x86_64-unknown-linux-gnu --all-targets",
+      "result": "pass"
+    },
+    {
+      "command": "cargo tree --no-default-features -e normal",
+      "result": "pass (no egui, eframe, wgpu, or iced)"
+    },
+    {
+      "command": "git diff --check",
+      "result": "pass"
+    },
+    {
+      "command": ".github\\scripts\\Test-ReleaseFormDefault.ps1",
+      "result": "pass"
+    }
+  ],
+  "test_evidence": {
+    "tests_added": 6,
+    "test_names": [
+      "the_page_controls_are_reachable_by_label",
+      "rebinding_a_key_is_driven_by_the_keycap_label",
+      "switching_the_mode_by_label_swaps_the_conditional_controls",
+      "editing_a_timing_value_by_label_commits_the_typed_number",
+      "toggling_the_filter_by_label_sends_the_command",
+      "renaming_a_profile_by_label_commits_the_typed_name"
+    ],
+    "flows_covered": [
+      "rebind a key: click 'UP keycap: W', the shell mirrors the runtime's capture arming, the injected UiEvent::KeyCaptured turns the label into 'UP keycap: E' and writes the draft binding",
+      "change a mode: click the 'Press Delay' / 'Release Delay' buttons; the conditional duration groups and the Immediate-only preview mount and unmount",
+      "edit a timing value: click 'Transition Minimum', type 15.5, Enter; draft micros, the input buffer, the editing flag, and the box's read-back all agree",
+      "toggle the filter: click 'Engine on/off'; SetFilterEnabled(false) is sent and pending_filter is set",
+      "rename a profile: click 'Profile slots', click the stored name, type 'Renamed', Enter; RenameProfile{slot:0} is sent and the new name is reachable"
+    ],
+    "negative_controls": [
+      "keycap widget_info label set to empty (src/ui2/keycap.rs, reverted): the_page_controls_are_reachable_by_label and rebinding_a_key_is_driven_by_the_keycap_label fail",
+      "mode button WidgetInfo::selected label set to empty (src/ui2/timing.rs, reverted): switching_the_mode_by_label_swaps_the_conditional_controls, editing_a_timing_value_by_label_commits_the_typed_number, and the_page_controls_are_reachable_by_label fail",
+      "name box widget_info label set to empty (src/ui2/profiles.rs, reverted): renaming_a_profile_by_label_commits_the_typed_name fails",
+      "all three edits were reverted; git status shows only tests/ui_semantic.rs added"
+    ]
+  },
+  "scope_notes": {
+    "shell_composition": "src/ui2/app.rs is a private module, so the file cannot call app::settings_cards. The shell composes the same public cards the page does (header::header, mapping::key_mappings_card, timing::timing_card with PreviewMount, header::dirty_badge, profiles::profile_overlay) in the same two-column layout app::settings_cards uses, runs every message through state::update, records the UiCommand stream a real connection would send, and mirrors BeginKeyCapture/CancelKeyCapture back into the snapshot. The fakes sit at the process boundary; nothing talks to a live runtime.",
+    "dev_dependency_and_widget_tests": "egui_kittest was already a dev-dependency and the widget-side test modules already exist from T2-T7 (199 egui-ui lib tests). This task adds the integration-level file the migration doc assigned to T8 and does not duplicate the widget-side tests."
+  },
+  "risks": [
+    "The shell mirrors the page's composition rather than calling it: if app::settings_cards changes a card's mount or layout, this file can drift without failing. The controls it drives are the shipped widgets, so a lost label still fails, but a composition regression would not. If the Master wants the row driven directly, T7's settings_cards (or a page-level harness entry) needs to become reachable from integration tests.",
+    "The mode buttons are queried by role and label (Role::Button) because their painted inner label is an AccessKit node of its own, so a plain label query matches two nodes. A Button node that keeps its label but loses the inner text still passes.",
+    "Asserted strings are English; State::default() selects English. The accessible-name localization policy is still open (T2/T7 reports), and a default language change would require localized expectations.",
+    "The rebind completion injects the runtime's KeyCaptured event through the state seam; the live capture path is not exercised (the T7 report's live-smoke-test gap stands).",
+    "Press/click semantics are egui's release-based clicks, the same translation T3-T7 ship; each test performs one press per control."
+  ],
+  "blockers": []
+}
