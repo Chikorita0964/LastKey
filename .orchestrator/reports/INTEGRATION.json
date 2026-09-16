@@ -4,7 +4,7 @@
     "agent/worker-1"
   ],
   "merge_commits": [
-    "bd71c1c3698f29be229a6cf74790908d061b2064"
+    "2cbeff83890f02d09c36dc082ca2739b594f090d"
   ],
   "tests": [
     {
@@ -47,9 +47,8 @@
   "conflicts_resolved": [],
   "unresolved_conflicts": [],
   "risks": [
-    "agent/worker-1 T11 (90ee347 Iced retirement + ui2->ui rename, bd71c1c T11 report) was a direct descendant of agent/integration at 521986e, so git fast-forwarded to bd71c1c with no merge commit and no conflicts; 38 files changed spanning src/ui|ui2, src/lib.rs, src/bin/lastkey-settings.rs, build.rs, tests/ui_semantic.rs, docs/architecture/ui.md, docs/lastkey-architecture.md, and docs/architecture/verification.md.",
-    "Gate re-run on the final tree passes all 9 commands: default all-targets 72+9+15+18+18 lib/integration tests, egui-ui 199 lib + 0 bin + 6 semantic, both clippy configs clean, Linux cross-check clean. egui-ui dependency tree verified free of iced/lyon; default tree remains GUI-free (zero egui/eframe/wgpu/winit/accesskit/iced/lyon matches).",
-    "T11 is a tree-wide rename plus Iced deletion: any Worker branch cut from the pre-rename tree will no longer merge cleanly and must be rebased onto the renamed paths. No such branch was designated for this round.",
+    "agent/worker-1 T11 round-2 rework (a0d71d9 residual Iced/ui2 reference cleanup in Cargo.toml comment, docs/architecture/engine.md flow labels, AGENTS.md, and report + 2cbeff8 T11 report) was a direct descendant of agent/integration at f5e4535, so git fast-forwarded to 2cbeff8 with no merge commit and no conflicts; changed files are Cargo.toml (comment path only), docs/architecture/engine.md (comment labels only), and .orchestrator/reports/T11.json.",
+    "Docs/comment-only production change: no code, feature, or dependency input changed, so gate counts are unchanged (default 72+9+15+18+18, egui-ui 199 lib + 0 bin + 6 semantic). Full updated gate re-run on the final tree passes all 9 commands; default tree remains GUI-free.",
     "Native visual acceptance remains uncovered per docs/architecture/verification.md Unverified Areas; test success is not visual evidence."
   ]
 }
