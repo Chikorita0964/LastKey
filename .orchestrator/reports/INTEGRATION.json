@@ -1,10 +1,10 @@
 {
   "status": "completed",
   "merged_branches": [
-    "agent/worker-1"
+    "agent/worker-2"
   ],
   "merge_commits": [
-    "3099f9b30ff17caa7fbb57fbee7240db9f77055a"
+    "5b471a671e3140dea8cdcf237164aef8e35c01b8"
   ],
   "tests": [
     {
@@ -47,8 +47,10 @@
   "conflicts_resolved": [],
   "unresolved_conflicts": [],
   "risks": [
-    "agent/worker-1 T5 rework (92a6513 timeline graph + mode preview port, 3099f9b T5 report) was a direct descendant of agent/integration at b884b44, so git fast-forwarded to 3099f9b with no merge commit and no conflicts; changed files are src/ui2/timeline.rs, src/ui2/preview.rs, and .orchestrator/reports/T5.json.",
-    "egui-ui suite reports 178 lib tests passed on the merged tree (up from 159 in the prior round); default-tree GUI-freedom confirmed by zero matches for egui/eframe/wgpu/winit/accesskit/iced/lyon.",
+    "agent/worker-2 T6 port (160748c header/profile/language panels + 7a306b8 T6 report) merged conflict-free via ort into 5b471a6; changed files are src/ui2/header.rs, src/ui2/profiles.rs, src/ui2/language.rs (new entry replacing language/mod.rs), and .orchestrator/reports/T6.json.",
+    "egui-ui suite passes with 178 lib tests on the merged tree; the T6 worker added no new in-tree tests (header/profiles/language modules carry no #[cfg(test)] per --list scan), so coverage for the new panels rests on worker evidence and review, not on executed in-tree tests — recorded as residual uncertainty, not as a gate failure.",
+    "egui-ui count is unchanged from the prior round (178) despite new modules; consistent with the test-free T6 port.",
+    "default-tree GUI-freedom confirmed by zero matches for egui/eframe/wgpu/winit/accesskit/iced/lyon.",
     "Native visual acceptance remains uncovered per docs/architecture/verification.md Unverified Areas; test success is not visual evidence."
   ]
 }
