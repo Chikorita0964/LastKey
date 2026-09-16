@@ -129,8 +129,8 @@ Use the settings window to choose four unique physical keys, configure transitio
 cargo fmt --all -- --check
 cargo test --all-targets
 cargo clippy --all-targets -- -D warnings
-cargo test --no-default-features --features egui-ui --lib --bin lastkey-settings
-cargo clippy --no-default-features --features egui-ui --lib --bin lastkey-settings -- -D warnings
+cargo test --no-default-features --features egui-ui --lib --bin lastkey-settings --test ui_semantic
+cargo clippy --no-default-features --features egui-ui --all-targets -- -D warnings
 ```
 
 ## Credits and license

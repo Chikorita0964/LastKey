@@ -1,14 +1,15 @@
 {
   "task_id": "T10",
   "status": "completed",
-  "summary": "T10 trimmed the eframe feature set and closed R2's T10 finding. The egui-ui gate in docs/architecture/verification.md (full gate plus the src/ui2/ scoped-loop row) and the Settings UI tests step in .github/workflows/rust-tests.yml now select tests/ui_semantic, so the label-driven tests run in both the standing gate and CI; before this change they only ran when someone repeated T8's explicit command. eframe now uses default-features = false with accesskit, default_fonts and wgpu: the Windows egui-ui graph drops 37 crates (232 -> 195) and Cargo.lock loses 42 package entries, while the app still builds, launches, and exposes its 9-node UI Automation tree. The full gate passes and the default dependency tree stays GUI-free.",
+  "summary": "T10 trimmed the eframe feature set and closed R2's T10 findings. The egui-ui gate in docs/architecture/verification.md (full gate plus the src/ui2/ scoped-loop row) and the Settings UI tests step in .github/workflows/rust-tests.yml now select tests/ui_semantic, so the label-driven tests run in both the standing gate and CI; before this change they only ran when someone repeated T8's explicit command. eframe now uses default-features = false with accesskit, default_fonts and wgpu: the Windows egui-ui graph drops 37 crates (232 -> 195) and Cargo.lock loses 42 package entries, while the app still builds, launches, and exposes its 9-node UI Automation tree. The full gate passes and the default dependency tree stays GUI-free. Rework round 2: README.md §Tests was still showing the pre-round egui-ui commands, so it now matches the gate (--test ui_semantic on the test line, --all-targets on the clippy line).",
   "branch": "agent/worker-3",
-  "commit": "f30af15",
-  "integration_base": "agent/integration@11f57b0",
+  "commit": "PENDING",
+  "integration_base": "agent/integration@c8ee071",
   "owned_files": [
     "Cargo.toml",
     "docs/architecture/verification.md",
     ".github/workflows/rust-tests.yml",
+    "README.md",
     ".orchestrator/reports/T10.json"
   ],
   "changed_files": [
@@ -16,6 +17,7 @@
     "Cargo.lock",
     "docs/architecture/verification.md",
     ".github/workflows/rust-tests.yml",
+    "README.md",
     ".orchestrator/reports/T10.json"
   ],
   "review_actions": [
@@ -24,6 +26,13 @@
       "required": "Add the semantic target to the egui-ui gate line in docs/architecture/verification.md and to the src/ui2/ scoped-loop row, and mirror the addition in the Settings UI tests step of .github/workflows/rust-tests.yml so the gate and CI agree.",
       "changed": "docs/architecture/verification.md: the full-gate line is now `cargo test --locked --no-default-features --features egui-ui --lib --bin lastkey-settings --test ui_semantic`, the src/ui2/ scoped-loop row gained `--test ui_semantic`, and a new bullet records why the flag is load-bearing (`--lib --bin` selects only those two targets, and the default-feature run compiles the file but its crate-level cfg leaves it empty). .github/workflows/rust-tests.yml: the Settings UI tests step gained `--test ui_semantic`, matching the gate.",
       "evidence": "Ran the amended command in-tree: `cargo test --locked --no-default-features --features egui-ui --lib --bin lastkey-settings --test ui_semantic` reports 199 lib + 0 bin + 6 semantic tests passing, i.e. the semantic target is now selected. The pre-change command reported only 199 + 0 and never ran ui_semantic.rs, which is the gap R2 described.",
+      "result": "done"
+    },
+    {
+      "id": "R2 round-2 low (T10) - README.md §Tests still showed the pre-round egui-ui commands",
+      "required": "Add `--test ui_semantic` to the README's egui-ui test command and align its egui clippy command with `--all-targets -- -D warnings` to match docs/architecture/verification.md; update .orchestrator/reports/T10.json and commit.",
+      "changed": "README.md §Tests: the egui-ui test line is now `cargo test --no-default-features --features egui-ui --lib --bin lastkey-settings --test ui_semantic`, and the egui clippy line is now `cargo clippy --no-default-features --features egui-ui --all-targets -- -D warnings` (was `--lib --bin lastkey-settings`, which skipped the test targets). The section's first three lines (fmt, default tests, default clippy) already matched the gate and were left alone. This was the drift the previous round recorded as a risk; it is now closed rather than carried.",
+      "evidence": "Both amended README commands were executed verbatim in-tree: the test line reports 199 lib + 0 bin + 6 semantic tests passing, and the clippy line finishes clean with -D warnings. Diffing the README block against verification.md's code block shows the two agree line for line apart from the gate's `--locked` (README's §Build and package documents the unlocked form throughout).",
       "result": "done"
     }
   ],
@@ -140,11 +149,15 @@
       "command": ".github\\scripts\\Test-ReleaseFormDefault.ps1",
       "result": "pass",
       "note": "Exit 0. The script asserts with throwing helpers and prints nothing on success."
+    },
+    {
+      "command": "README.md §Tests, round-2 rework: both amended commands executed verbatim (unlocked, as the README documents them)",
+      "result": "pass",
+      "note": "`cargo test --no-default-features --features egui-ui --lib --bin lastkey-settings --test ui_semantic` reports 199 lib + 0 bin + 6 semantic; `cargo clippy --no-default-features --features egui-ui --all-targets -- -D warnings` finishes clean. Run against the final tree at c8ee071. Only README.md changed in this rework, so no other gate input was affected and the earlier full-gate evidence still stands; `git diff --check` was re-run for the markdown edit."
     }
   ],
   "risks": [
     "The eframe feature trim is verified on Windows only. It is a cfg(windows) dependency and the gate's Linux check never enables egui-ui, so a future cross-platform settings build would need its own feature list (x11/wayland/winit-default would come back); nothing in the gate covers that today.",
-    "README.md §Tests (line 132) still lists `cargo test --no-default-features --features egui-ui --lib --bin lastkey-settings` without --test ui_semantic, and its line 133 lints with --lib --bin rather than the gate's --all-targets. README.md is outside this task's assigned scope, so it was not edited; it is a documentation mirror of the gate and now drifts from it.",
     "docs/architecture/ui.md still describes the Iced UI (lines 44-47 name `iced-ui`, `lyon` and the src/ui/ owners, line 216 refers to iced-ui in build.rs). That file is T11's scope ('update docs/architecture/ui.md ... where they name Iced'), so it was not touched; the gate itself contains no stale iced-ui command.",
     "The default_fonts feature is currently redundant (egui's own defaults already enable egui/default_fonts for the direct egui dependency). It is kept explicit deliberately; if egui is later switched to default-features = false without adding default_fonts here, text rendering breaks.",
     "Removing the glow capability means eframe can no longer fall back to a GL renderer if wgpu fails to initialise on a given machine. This matches the pre-existing configuration (glow was never enabled) but is now explicit rather than incidental.",
