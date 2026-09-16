@@ -1,10 +1,12 @@
 {
   "status": "completed",
   "merged_branches": [
-    "agent/worker-2"
+    "agent/worker-2",
+    "agent/worker-1"
   ],
   "merge_commits": [
-    "5b471a671e3140dea8cdcf237164aef8e35c01b8"
+    "5b471a671e3140dea8cdcf237164aef8e35c01b8",
+    "ddb5f00d90351840f225e0edf19f6505e6b81a5e"
   ],
   "tests": [
     {
@@ -47,9 +49,9 @@
   "conflicts_resolved": [],
   "unresolved_conflicts": [],
   "risks": [
-    "agent/worker-2 T6 port (160748c header/profile/language panels + 7a306b8 T6 report) merged conflict-free via ort into 5b471a6; changed files are src/ui2/header.rs, src/ui2/profiles.rs, src/ui2/language.rs (new entry replacing language/mod.rs), and .orchestrator/reports/T6.json.",
-    "egui-ui suite passes with 178 lib tests on the merged tree; the T6 worker added no new in-tree tests (header/profiles/language modules carry no #[cfg(test)] per --list scan), so coverage for the new panels rests on worker evidence and review, not on executed in-tree tests — recorded as residual uncertainty, not as a gate failure.",
-    "egui-ui count is unchanged from the prior round (178) despite new modules; consistent with the test-free T6 port.",
+    "Round A: agent/worker-2 T6 port (160748c header/profile/language panels + 7a306b8 T6 report) merged conflict-free via ort into 5b471a6; report committed as 68c4d10. The T6 worker added no new in-tree tests (header/profiles/language modules carry no #[cfg(test)]), so coverage for the new panels rests on worker evidence and review — residual uncertainty, not a gate failure.",
+    "Round B: agent/worker-1 T5 round-2 rework (329f874 preview-clock gating + switch geometry, 1ebe221 T5 report) merged conflict-free via ort into ddb5f00; changed files are src/ui2/preview.rs, src/ui2/timeline.rs, and .orchestrator/reports/T5.json.",
+    "Full gate was run once on the final combined tree and passed all 9 commands: egui-ui suite reports 181 lib tests (up from 178 after Round A), consistent with the T5 rework adding 3 tests. The gate on the final tree subsumes both rounds since Round B only adds to Round A's tree.",
     "default-tree GUI-freedom confirmed by zero matches for egui/eframe/wgpu/winit/accesskit/iced/lyon.",
     "Native visual acceptance remains uncovered per docs/architecture/verification.md Unverified Areas; test success is not visual evidence."
   ]
