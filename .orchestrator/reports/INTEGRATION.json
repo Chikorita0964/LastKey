@@ -6,7 +6,7 @@
     "agent/worker-3"
   ],
   "merge_commits": [
-    "bb33f85f46d4e12e3664c92419b066f5020811ac"
+    "8c95cd11545124d929284d908701c48b885b040d"
   ],
   "tests": [
     {
@@ -49,9 +49,9 @@
   "conflicts_resolved": [],
   "unresolved_conflicts": [],
   "risks": [
-    "agent/worker-1 tip 0308d87 and agent/worker-2 tip a16a0ef were already ancestors of agent/integration from the prior round, so this round's git merge reported Already up to date for both with no new merge commit; their integration state was re-verified via the full gate rather than re-merged.",
-    "agent/worker-3 round-3 rework (64a07ef timing card Iced strip/mixer/range geometry + 47d6846 T4 report) merged conflict-free via ort into bb33f85; changed files this round are src/ui2/timing.rs and .orchestrator/reports/T4.json only.",
-    "egui-ui suite reports 159 lib tests passed on the merged tree (up from 154 in the prior round); default-tree GUI-freedom confirmed by zero matches for egui/eframe/wgpu/winit/accesskit/iced/lyon.",
+    "agent/worker-2 tip a16a0ef and agent/worker-3 tip 47d6846 were already ancestors of agent/integration, so this round's git merge reported Already up to date for both with no new merge commit; their integration state was re-verified via the full gate rather than re-merged.",
+    "agent/worker-1 round-3 rework (3d88f0c theme slider contract doc-comment correction + 6348f22 T2 report) merged conflict-free via ort into 8c95cd1; changed files this round are src/ui2/theme.rs (comments only, 11 lines) and .orchestrator/reports/T2.json.",
+    "egui-ui suite reports 159 lib tests passed on the merged tree (unchanged from prior round, consistent with a comment-only production change); default-tree GUI-freedom confirmed by zero matches for egui/eframe/wgpu/winit/accesskit/iced/lyon.",
     "Native visual acceptance remains uncovered per docs/architecture/verification.md Unverified Areas; test success is not visual evidence."
   ]
 }
