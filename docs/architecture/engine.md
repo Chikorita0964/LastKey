@@ -9,8 +9,8 @@ the process map and the runtime invariants these contracts serve.
 The UI sends editing intent; it never owns authoritative settings.
 
 ```text
-Iced widget state -> draft intent -> IPC -> AppController validation
-  -> persist -> runtime activation -> authoritative snapshot -> Iced display state
+egui widget state -> draft intent -> IPC -> AppController validation
+  -> persist -> runtime activation -> authoritative snapshot -> egui display state
 ```
 
 `AppController` holds saved and draft settings separately, plus capture and measurement generations.

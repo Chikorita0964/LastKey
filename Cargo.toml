@@ -16,7 +16,7 @@ egui-ui = ["dep:eframe", "dep:egui", "dep:png"]
 # drive the UI. Two-step gate -- this feature at build time, `EGUI_INSPECTION`
 # at run time (unset / `0` / `false` keeps it off; the default bind is
 # loopback `127.0.0.1:5719`). Never enable it for a release build; see
-# `src/ui2/inspection.rs` for the full contract and the loopback warning.
+# `src/ui/inspection.rs` for the full contract and the loopback warning.
 agent-inspection = ["egui-ui", "eframe/inspection"]
 
 [[bin]]
