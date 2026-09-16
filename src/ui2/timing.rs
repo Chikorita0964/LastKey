@@ -14,13 +14,13 @@ use crate::settings::{SocdMode, TimingSettings};
 
 use super::{
     language::Language,
-    message::{Message, PreviewAction, TimingField},
-    preview::Preview,
+    message::{Message, TimingField},
+    preview::{self, Preview},
     state::{TimingInputs, format_rate, parse_ms_text, parse_rate_text},
     theme::{
         self, BODY_TEXT, BORDER, CARD_PADDING, ERROR_TEXT, GROUP_PADDING, HEADING_SIZE,
-        IMMEDIATE_ACCENT, INDIGO_600, INSET, MIX_TEXT, MUTED_TEXT, PRIMARY_TEXT, PURPLE_600,
-        RELEASE_TEXT, SECTION_GAP, SLATE_100, SLIDER_HANDLE_BORDER, SLIDER_HANDLE_RADIUS,
+        IMMEDIATE_ACCENT, INDIGO_600, INSET, MIX_TEXT, MUTED_TEXT, PRIMARY_TEXT, RELEASE_TEXT,
+        SECTION_GAP, SLATE_100, SLIDER_HANDLE_BORDER, SLIDER_HANDLE_RADIUS,
         SLIDER_HANDLE_RADIUS_DRAG, SLIDER_RAIL_DISABLED, SLIDER_RAIL_RADIUS, SLIDER_RAIL_WIDTH,
         SURFACE, VIOLET_600,
     },
@@ -835,169 +835,34 @@ pub fn mechanism_steps(ui: &mut Ui, mode: SocdMode, timing: &TimingSettings, lan
 }
 
 // ----------------------------------------------------------------------------
-// Immediate Mode Illustrative Preview
-// ----------------------------------------------------------------------------
-
-/// Illustrative preview section displayed only in Immediate mode.
-///
-/// Note: Ownership of preview animation and interactive graph belongs to T5 per
-/// the EGUI_MIGRATION.md work split. This section provides the Immediate mode mount
-/// point until coordinated with T5's `preview::preview_card`.
-pub fn timing_preview_section(
-    ui: &mut Ui,
-    timing: &TimingSettings,
-    preview: Option<&Preview>,
-    language: Language,
-    messages: &mut Vec<Message>,
-) {
-    let dummy_preview = Preview::default();
-    let p = preview.unwrap_or(&dummy_preview);
-    let (old, new) = p.held();
-
-    // R1 issue 6: Bounds check access to prevent panic on arbitrary example values
-    let mode = [
-        SocdMode::Immediate,
-        SocdMode::PressDelay,
-        SocdMode::ReleaseDelay,
-    ]
-    .get(p.example % 3)
-    .copied()
-    .unwrap_or(SocdMode::Immediate);
-
-    let (min, max) = match mode {
-        SocdMode::PressDelay => (
-            timing.socd_transition_min_micros,
-            timing.socd_transition_max_micros,
-        ),
-        SocdMode::ReleaseDelay => (
-            timing.preserved_overlap_min_micros,
-            timing.preserved_overlap_max_micros,
-        ),
-        _ => (0, 0),
-    };
-    let delay = super::preview::delay_label(min, max);
-
-    theme::slot_style()
-        .inner_margin(Margin::same(12))
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing = vec2(0.0, 8.0);
-
-            // Controls header: Previous / Play-Pause Pill / Next
-            // With accessible labels for label-driven testing
-            ui.horizontal(|ui| {
-                let prev_btn = ui.button("⏴");
-                prev_btn.widget_info(|| {
-                    WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), "Previous example")
-                });
-                if prev_btn.clicked() {
-                    messages.push(Message::Preview(PreviewAction::Previous));
-                }
-
-                let pill_text = format!(
-                    "{} {} {}",
-                    language.text("Preview"),
-                    mode_label(mode, language),
-                    if p.playing { "⏸" } else { "▶" }
-                );
-                let pill_btn = ui.add(
-                    egui::Button::new(
-                        egui::RichText::new(pill_text)
-                            .font(FontId::new(11.0, egui::FontFamily::Proportional))
-                            .strong(),
-                    )
-                    .corner_radius(theme::CONTROL_RADIUS),
-                );
-                pill_btn.widget_info(|| {
-                    WidgetInfo::labeled(
-                        WidgetType::Button,
-                        ui.is_enabled(),
-                        if p.playing {
-                            "Pause preview"
-                        } else {
-                            "Play preview"
-                        },
-                    )
-                });
-                if pill_btn.clicked() {
-                    messages.push(Message::Preview(PreviewAction::Toggle));
-                }
-
-                let next_btn = ui.button("⏵");
-                next_btn.widget_info(|| {
-                    WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), "Next example")
-                });
-                if next_btn.clicked() {
-                    messages.push(Message::Preview(PreviewAction::Next));
-                }
-
-                // 3-example position dots
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing = vec2(4.0, 0.0);
-                    for i in 0..3 {
-                        let dot_color = if (p.example % 3) == i {
-                            mode_color(mode)
-                        } else {
-                            BORDER
-                        };
-                        theme::example_dot(dot_color).show(ui, |ui| {
-                            ui.allocate_exact_size(vec2(6.0, 6.0), Sense::hover());
-                        });
-                    }
-                });
-            });
-
-            // Key state visualization (A / D)
-            ui.horizontal(|ui| {
-                let render_key = |ui: &mut Ui, name: &str, held: bool, accent: Color32| {
-                    let fill = if held { accent } else { SURFACE };
-                    let stroke = Stroke::new(1.0, if held { accent } else { BORDER });
-                    let text_color = if held { SURFACE } else { accent };
-
-                    Frame::NONE
-                        .fill(fill)
-                        .stroke(stroke)
-                        .corner_radius(theme::CHIP_RADIUS)
-                        .inner_margin(Margin::same(10))
-                        .show(ui, |ui| {
-                            ui.colored_label(
-                                text_color,
-                                egui::RichText::new(name)
-                                    .font(FontId::new(16.0, egui::FontFamily::Proportional))
-                                    .strong(),
-                            );
-                        });
-                };
-
-                render_key(ui, "A", old, PRIMARY_TEXT);
-
-                // Phase 1 highlights delay range per ui.md line 143
-                let delay_bg = if p.phase == 1 {
-                    theme::step_badge(Some(mode_color(mode)))
-                } else {
-                    Frame::NONE.fill(INSET)
-                };
-                delay_bg.show(ui, |ui| {
-                    ui.colored_label(MUTED_TEXT, format!("Delay: {delay}"));
-                });
-
-                render_key(ui, "D", new, PURPLE_600);
-            });
-        });
-}
-
-// ----------------------------------------------------------------------------
 // Full Timing Card
 // ----------------------------------------------------------------------------
 
+/// The Immediate-mode preview mount: the preview state plus the two gates the
+/// app owns. `awake` is the window focus and `clock_mounted` is the view's
+/// clock mount condition (`matches!(state.profiles, ProfileDialog::Closed)`),
+/// both forwarded verbatim to [`preview::preview_card`].
+#[derive(Clone, Copy)]
+pub struct PreviewMount<'a> {
+    pub preview: &'a Preview,
+    pub awake: bool,
+    pub clock_mounted: bool,
+}
+
 /// The full Input Timings card containing the mode selector, conditional duration
 /// ranges, Random Mix slider, and mechanism steps.
+///
+/// The Immediate-mode preview is [`preview::preview_card`] (T5's owner): it
+/// carries the procedural transport glyphs, the 850 ms phase clock, and the
+/// viewport/dialog gates. The card itself stays state-free; the mount carries
+/// the gates in.
 pub fn timing_card(
     ui: &mut Ui,
     timing: &TimingSettings,
     inputs: &TimingInputs,
     editing: &[bool; 5],
     language: Language,
-    preview: Option<&Preview>,
+    preview: Option<PreviewMount<'_>>,
     messages: &mut Vec<Message>,
 ) -> Response {
     theme::card_style()
@@ -1047,9 +912,19 @@ pub fn timing_card(
                     // 1. Mode selector
                     mode_selector(ui, timing.mode, language, messages);
 
-                    // 2. Immediate mode illustrative preview
-                    if timing.mode == SocdMode::Immediate {
-                        timing_preview_section(ui, timing, preview, language, messages);
+                    // 2. Immediate mode illustrative preview (T5's card)
+                    if timing.mode == SocdMode::Immediate
+                        && let Some(mount) = preview
+                    {
+                        preview::preview_card(
+                            ui,
+                            timing,
+                            mount.preview,
+                            language,
+                            mount.awake,
+                            mount.clock_mounted,
+                            messages,
+                        );
                     }
 
                     // 3. Random Mix ratio group
@@ -1312,7 +1187,11 @@ mod tests {
                     &self.state.inputs,
                     &self.state.editing,
                     self.state.language,
-                    Some(&self.state.preview),
+                    Some(PreviewMount {
+                        preview: &self.state.preview,
+                        awake: true,
+                        clock_mounted: true,
+                    }),
                     &mut messages,
                 );
                 self.card_rect = resp.rect;
