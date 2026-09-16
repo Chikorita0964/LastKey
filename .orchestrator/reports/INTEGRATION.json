@@ -1,12 +1,10 @@
 {
   "status": "completed",
   "merged_branches": [
-    "agent/worker-2",
     "agent/worker-1"
   ],
   "merge_commits": [
-    "5b471a671e3140dea8cdcf237164aef8e35c01b8",
-    "ddb5f00d90351840f225e0edf19f6505e6b81a5e"
+    "ac695dceed7218174faca3729ced90d386b34264"
   ],
   "tests": [
     {
@@ -49,9 +47,8 @@
   "conflicts_resolved": [],
   "unresolved_conflicts": [],
   "risks": [
-    "R1/R2 FAIL (High) resolved: src/ui2/mod.rs now declares `pub mod header;` and `pub mod profiles;` in alphabetical placement beside `pub mod language;`. Worker-2 commit 160748c had explicitly deferred this registration to integration, so no Worker intent was altered.",
-    "T6 tests now execute in-tree: egui-ui suite reports 191 lib tests (up from 181), with --list confirming 10 T6 tests (3 ui2::header::tests + 7 ui2::profiles::tests) all passing in the gate run. The prior round's residual uncertainty about unexecuted T6 tests is retired.",
-    "Changed files in this rework step are src/ui2/mod.rs (2 lines added) and .orchestrator/reports/INTEGRATION.json; prior merges 5b471a6 (T6) and ddb5f00 (T5 rework) unchanged.",
+    "agent/worker-1 T7 port (8f01508 page composition + IPC client wiring, 9c5e7b2 T7 report, 9fe71fd harness sizing, ac695dc report pointer) was a direct descendant of agent/integration at 1a269d5, so git fast-forwarded to ac695dc with no merge commit and no conflicts; changed files are src/ui2/app.rs, src/ui2/ipc_client.rs (new), src/ui2/mod.rs (1 line), and .orchestrator/reports/T7.json.",
+    "T7 tests execute in-tree: egui-ui suite reports 198 lib tests (up from 191), with --list confirming 7 T7 tests (4 ui2::app::tests + 3 ui2::ipc_client::tests) all passing in the gate run.",
     "default-tree GUI-freedom confirmed by zero matches for egui/eframe/wgpu/winit/accesskit/iced/lyon.",
     "Native visual acceptance remains uncovered per docs/architecture/verification.md Unverified Areas; test success is not visual evidence."
   ]
