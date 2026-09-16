@@ -1,0 +1,50 @@
+{
+  "task_id": "T5",
+  "status": "completed",
+  "summary": "T5 ports the timeline graph painter and the mode preview card into src/ui2/timeline.rs and src/ui2/preview.rs: the graph reproduces the Iced canvas (lanes, keycaps, blocks, overlap columns and badges, ruler, NOW playhead) and its stopped frame, the timeline card owns the collapsed stopped state with its monitor switch, and the preview owns its three examples, the 850 ms four-phase clock, and procedural transport glyphs (no bundled font-glyph dependency, R2 round 1 issue 7). 19 new tests; the full gate passes (178 egui-ui lib tests).",
+  "branch": "agent/worker-1",
+  "commit": "92a6513",
+  "base": "b884b44 (agent/integration; agent/worker-1 was fast-forwarded to it before this task so the registered theme/timing modules compile -- see branch_sync)",
+  "branch_sync": "`git merge --ff-only agent/integration` moved agent/worker-1 from 6348f22 to b884b44. T5's files are registered modules (src/ui2/mod.rs) and import super::theme, which is registered only on the integration base; the assignment named agent/integration as the integration base. The fast-forward authored no file contents -- it only received integration history. The T2 doc-fix commits (3d88f0c, 6348f22) were already merged into integration (8c95cd1).",
+  "owned_files": ["src/ui2/timeline.rs", "src/ui2/preview.rs", ".orchestrator/reports/T5.json"],
+  "changed_files": ["src/ui2/timeline.rs", "src/ui2/preview.rs", ".orchestrator/reports/T5.json"],
+  "delivered_api": {
+    "timeline::graph": "pub fn graph(ui: &mut Ui, timeline: Option<&Timeline>, names: [&str; 4], language: Language, awake: bool) -> Response -- paints the whole canvas in one pass and publishes exactly one container-level node (WidgetType::Other -> accesskit Role::Unknown) labelled language.text(\"Key Input Timeline\"). Display-only: no interactive node. Repaints every 16 ms only while awake and a span is held or the last release is inside the 1 s window (the Iced cadence).",
+    "timeline::timeline_section": "pub fn timeline_section(ui: &mut Ui, monitor: &MonitorState, names: [&str; 4], language: Language, awake: bool, messages: &mut Vec<Message>) -> Response -- the Key Input Timeline card: header (Target mark + title + lifecycle subtitle) with the monitor switch, collapsed to that header while stopped; the graph mounts only while MonitorState::Recording, wrapped in theme::graph_frame(). The switch publishes Role::CheckBox with the selected/toggled state and the label Start timeline / Stop timeline / Starting… / Stopping…; a click pushes Message::ToggleMonitor. Geometry is the Iced toggler at .size(24): 48x24 pill, radius 12, padding round(0.1*24)=2, 20px knob 2px from either end (iced rev f8127c8 widget/src/toggler.rs).",
+    "preview::preview_card": "pub fn preview_card(ui: &mut Ui, timing: &TimingSettings, preview: &Preview, language: Language, awake: bool, messages: &mut Vec<Message>) -> Response -- the mode preview card: Previous / Play-Pause pill / Next, the A-D example keys, the game-view indicator, the delay badge (phase 1 highlight), the caption, the example dots, and the clock. The transport controls publish labelled button nodes (Previous example / Next example / Play preview / Pause preview); clicks push Message::Preview(Previous|Next|Toggle). The caption publishes a Label with the resolved \"Game receives ...\" text. Matches the Iced timing_preview layout (padding 12, spacing 8; 52x52 example keys, 60x26 indicator, 18x3 both-held bar, 20/6 px dots, 16-radius pill).",
+    "preview::PreviewClock": "pub struct PreviewClock with pub fn poll(&mut self, now: f64, playing: bool, visible: bool, example: usize) -> bool and pub fn remaining(&self, now: f64) -> Option<f64> -- the 850 ms four-phase clock, stored in egui temp memory by preview_card. Pure timing rule so tests drive it with explicit times (Rule 8); ticks only while playing, awake, and visible, which is where the Iced Clock widget's own redraw requests ran."
+  },
+  "integration_requirements_T7": [
+    "src/ui2/timing.rs (T4's file, outside this task): timing_preview_section is now a duplicate. Replace its body/call site with preview::preview_card(ui, timing, &preview, language, awake, messages). The mount currently takes `preview: Option<&Preview>` and no awake flag; the new card takes `&Preview` and the awake flag the app already tracks for the deactivation idle. The mount's font-glyph transport controls (⏴ ⏵ ⏸ ▶) are superseded and must be deleted with the mount body -- the new card draws them as paths.",
+    "src/ui2/app.rs (T7): mount timeline::timeline_section the way the Iced app mounted its timeline_section, with the four mapped names from the snapshot and the focus/awake signal. The Iced view returned nothing while no snapshot existed; keep that decision in the caller.",
+    "Accessible names: the graph container label is language.text(\"Key Input Timeline\"); the switch labels use the existing language entries where they exist (Starting…, Stopping…) and fall back to the English source for Start timeline / Stop timeline, pending the localization policy."
+  ],
+  "tests": [
+    { "command": "cargo fmt --all -- --check", "result": "pass" },
+    { "command": "cargo test --locked --all-targets", "result": "pass" },
+    { "command": "cargo clippy --locked --all-targets -- -D warnings", "result": "pass" },
+    { "command": "cargo test --locked --no-default-features --features egui-ui --lib --bin lastkey-settings", "result": "pass (178 lib tests, 0 failed)" },
+    { "command": "cargo clippy --no-default-features --features egui-ui --all-targets -- -D warnings", "result": "pass" },
+    { "command": "cargo check --locked --target x86_64-unknown-linux-gnu --all-targets", "result": "pass" },
+    { "command": "cargo tree --no-default-features -e normal", "result": "pass (no egui, eframe, wgpu, iced, or lyon)" },
+    { "command": "git diff --check", "result": "pass" },
+    { "command": ".github\\scripts\\Test-ReleaseFormDefault.ps1", "result": "pass (exit 0)" }
+  ],
+  "tests_actually_executed_note": "The scoped loop for the slice was `cargo test --no-default-features --features egui-ui --lib`: 159 passed before this change, 178 after (19 new: 11 timeline, 8 preview). The new painter tests render through egui_kittest and read painted shapes (rect fills/strokes, path fills, text galleys) and AccessKit nodes; the clock rule is a pure function tested with explicit times, no sleeps. The graph tests use `run_steps` because a live graph requests repaints by design, which would loop `run()` to its step cap.",
+  "unresolved_dependencies_for_master": [
+    "Preview ownership: T5 has now implemented the real card in src/ui2/preview.rs; the old mount point in timing.rs is the duplicate to remove in the T7/integration wave (see integration_requirements_T7).",
+    "Font-weight strategy (carried, unchanged): graph block/ruler/keycap/badge/preview bold text uses theme::stamp_galley, the port's double-stamp approximation of the Iced UI_FONT_BOLD; registering a weighted face or recording the stamp stays the Master's open decision.",
+    "Accessible-name localization policy (carried): the new labels use language.text where a key exists; Start timeline / Stop timeline have no entry and render the English source.",
+    "Long-label hover-scroll (ui.md:146) remains unported and unscheduled (R1/R2 flagged it, not T5's mandate).",
+    "Native visual acceptance is still zero for these surfaces (docs/architecture/verification.md Unverified Areas); the new tests are shape- and node-level evidence only."
+  ],
+  "risks": [
+    "T5 owns four private glyph painters (header Target mark, nav chevrons, Play/Stop, key arrows) because theme::Icon carries no transport or arrow glyphs. If a shared icon owner is created later, consolidate them (Rule 2). The transport set is the R2 round-1 issue 7 mandate for this task.",
+    "The graph's repaint cadence is the Iced 16 ms while animating; a deactivated window (awake=false) requests no frames, matching ui.md:25-29.",
+    "epaint strokes have no per-segment round caps, so the keycap arrows are drawn with the Iced coordinates but without the Iced LineCap::Round; at 1.4 px width the difference is sub-pixel.",
+    "The example-key pressed ring uses egui's Shadow blur (RectShape feathered edge) for the Iced keycap Pressed shadow; the keys' fill/border/ink are the Iced values.",
+    "The timeline card renders the monitor switch as a new interactive control; the EGUI_MIGRATION T5 note's \"no interactive nodes\" is honoured by the graph and the preview illustration, while the card controls (switch, transport) publish labelled nodes by the same rationale R1 used for the preview transport names.",
+    "timeline.rs previously had no data-model tests on disk; the five Iced timeline tests were ported here as part of the painter's contract (Rule 10: repeated violations / coverage), which is why the test delta is larger than the painter tests alone."
+  ],
+  "blockers": []
+}
