@@ -4,7 +4,7 @@
     "agent/worker-1"
   ],
   "merge_commits": [
-    "d9760e7832b6c1fbc3b0ad5a9dfdbe9636d8d9f3"
+    "bd71c1c3698f29be229a6cf74790908d061b2064"
   ],
   "tests": [
     {
@@ -47,9 +47,9 @@
   "conflicts_resolved": [],
   "unresolved_conflicts": [],
   "risks": [
-    "agent/worker-1 T9 (4cdd0a6 agent-inspection feature + inspection.rs + d9760e7 T9 report) was a direct descendant of agent/integration at 6f86882, so git fast-forwarded to d9760e7 with no merge commit and no conflicts; changed files are Cargo.toml, Cargo.lock, src/ui2/inspection.rs (new), src/ui2/mod.rs (1 line), and .orchestrator/reports/T9.json.",
-    "Gate run used the T10-updated command set: egui-ui run reports 199 lib + 0 settings bin + 6 semantic, all passing. default-tree remains GUI-free (zero matches for egui/eframe/wgpu/winit/accesskit/iced/lyon); agent-inspection correctly pulls egui_inspection 0.36.2 only when the feature is enabled (verified via cargo tree --features agent-inspection).",
-    "Inspection release-safety rests on worker evidence (release build without the feature carries no egui_inspection strings/tree entries); the gate itself does not rebuild the release binary, so that claim was not re-executed in-tree here.",
+    "agent/worker-1 T11 (90ee347 Iced retirement + ui2->ui rename, bd71c1c T11 report) was a direct descendant of agent/integration at 521986e, so git fast-forwarded to bd71c1c with no merge commit and no conflicts; 38 files changed spanning src/ui|ui2, src/lib.rs, src/bin/lastkey-settings.rs, build.rs, tests/ui_semantic.rs, docs/architecture/ui.md, docs/lastkey-architecture.md, and docs/architecture/verification.md.",
+    "Gate re-run on the final tree passes all 9 commands: default all-targets 72+9+15+18+18 lib/integration tests, egui-ui 199 lib + 0 bin + 6 semantic, both clippy configs clean, Linux cross-check clean. egui-ui dependency tree verified free of iced/lyon; default tree remains GUI-free (zero egui/eframe/wgpu/winit/accesskit/iced/lyon matches).",
+    "T11 is a tree-wide rename plus Iced deletion: any Worker branch cut from the pre-rename tree will no longer merge cleanly and must be rebased onto the renamed paths. No such branch was designated for this round.",
     "Native visual acceptance remains uncovered per docs/architecture/verification.md Unverified Areas; test success is not visual evidence."
   ]
 }
