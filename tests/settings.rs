@@ -60,11 +60,52 @@ fn invalid_timing_settings_are_rejected() {
 
     settings.timing.socd_transition_min_micros = 0;
     settings.timing.socd_transition_max_micros = 0;
-    settings.timing.overlap_preservation_rate = 101;
+    for rate in [0, 100, 101] {
+        settings.timing.overlap_preservation_rate = rate;
+        assert!(
+            matches!(
+                settings.validate(),
+                Err(SettingsError::InvalidOverlapPreservationRate)
+            ),
+            "rate {rate} is outside 1..=99"
+        );
+    }
+
+    for rate in [1, 50, 99] {
+        settings.timing.overlap_preservation_rate = rate;
+        assert!(settings.validate().is_ok(), "rate {rate} is inside 1..=99");
+    }
+}
+
+#[test]
+fn a_stored_whole_overlap_rate_now_fails_the_file() {
+    // The released band was 1..=100, so 100 is the one value the 1..=99 band
+    // excludes. Stored files keep the documented whole-file policy (no
+    // per-field clamping), so a file that still holds 100 fails validation
+    // and the user re-enters a value.
+    let stored = r#"
+mode = "RandomMix"
+overlap_preservation_rate = 100
+"#;
+    let timing: TimingSettings = toml::from_str(stored).expect("stored timing settings");
+    let rejected = Settings {
+        timing,
+        ..Settings::default()
+    };
     assert!(matches!(
-        settings.validate(),
+        rejected.validate(),
         Err(SettingsError::InvalidOverlapPreservationRate)
     ));
+
+    // The pre-mode mapping is unchanged: full overlap with both switches was
+    // Release Delay, and that mapping reads the raw stored value.
+    let legacy = r#"
+socd_transition_delay_enabled = true
+preserve_overlap = true
+overlap_preservation_rate = 100
+"#;
+    let timing: TimingSettings = toml::from_str(legacy).expect("stored timing settings");
+    assert_eq!(timing.mode, SocdMode::ReleaseDelay);
 }
 
 #[test]
