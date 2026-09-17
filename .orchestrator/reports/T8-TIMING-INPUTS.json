@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "execution_id": "ce110559-c0d6-414a-8236-0436e01c0856",
+  "task_id": "T8-TIMING-INPUTS",
+  "status": "completed",
+  "summary": "F10 is implemented across src/ui/timing.rs, src/ui/message.rs, and src/ui/state.rs: the press share of the Random Mix ratio is an editable value box now (new TimingField::PressRate with its own buffer and editing flag), and editing either half writes the preservation rate and refreshes the other, so press + release = 100 stays true and the mixer rail follows. F25 is verified by new regression tests: the release-delay manual input is rejected by the validator with its 0.1 ms message, and the rail clamps a left-edge drag to 0.1 ms.",
+  "branch": "agent/worker-2",
+  "implementation_commit": "daa784ab88e0cb2c89ac5ca9479c36c7e172a8df",
+  "owned_files": ["src/ui/timing.rs", "src/ui/message.rs", "src/ui/state.rs"],
+  "changed_files": ["src/ui/message.rs", "src/ui/state.rs", "src/ui/timing.rs"],
+  "tests": [
+    {"command": "cargo test --no-default-features --features egui-ui --lib timing::", "result": "pass"},
+    {"command": "cargo test --no-default-features --features egui-ui --lib --test ui_semantic", "result": "pass"},
+    {"command": "cargo fmt --all -- --check", "result": "pass"},
+    {"command": "cargo test --locked --all-targets", "result": "pass"},
+    {"command": "cargo clippy --locked --all-targets -- -D warnings", "result": "pass"},
+    {"command": "cargo test --locked --no-default-features --features egui-ui --lib --bin lastkey-settings --test ui_semantic", "result": "pass"},
+    {"command": "cargo clippy --locked --no-default-features --features egui-ui --all-targets -- -D warnings", "result": "pass"},
+    {"command": "cargo check --locked --target x86_64-unknown-linux-gnu --all-targets", "result": "pass"},
+    {"command": "cargo tree --no-default-features -e normal", "result": "pass"},
+    {"command": "git diff --check", "result": "pass"},
+    {"command": ".github\\scripts\\Test-ReleaseFormDefault.ps1", "result": "pass"}
+  ],
+  "mandatory_acceptance": {
+    "TIMING-DUAL-SIDED-MIX-INPUT": {
+      "status": "satisfied",
+      "evidence": "TimingField::PressRate joins TimingField::ALL (index 5, editable only in Random Mix) with its own TimingInputs::press_rate buffer, a stable value-box id, and an editing flag (state.editing is now [bool; 6]); rate_group mounts a second value box on the press side of the pill with the mixer's press indigo, and commit_field writes the preservation rate from whichever half commits (the press half clamped to the reference's 1..=99) while refreshing the other buffer. The new test test_mix_ratio_boxes_edit_both_sides_reciprocally proves press 30 -> rate 70 with the release box reading 70 and the painted mixer rail split at 0.30, then release 80 -> rate 80 with the press box reading 20."
+    },
+    "TIMING-RELEASE-DELAY-MIN-FLOOR": {
+      "status": "satisfied",
+      "evidence": "The floor was already enforced on both paths and the new tests pin it: test_release_delay_manual_input_keeps_the_floor drives the Preserved Minimum box to 0.0 ms and asserts Apply emits no Send effects and reports 'preserved overlap duration must be at least 0.1 ms', then drives 0.1 ms on a fresh harness and asserts the draft holds 100 micros with Apply sending; test_release_delay_slider_keeps_the_floor drags the 'Previous Key Release Delay duration range' rail to its left edge and asserts the stored minimum is 100 micros. No production change was required for the floor itself."
+    }
+  },
+  "risks": [
+    "The assigned base_commit 5c81c73 is not an ancestor of this branch (the integration line and this worker branch diverge, as the other worker branches do). All three owned files were byte-identical between the branch tip and 5c81c73 before this change, and the commit's diff against 5c81c73 is exactly the commit's change (386 insertions, 35 deletions across the three files), so the owned-file changes apply cleanly to the assigned base.",
+    "The release box still clamps typed input to 1..=100 while the press box follows the reference's 1..=99; that asymmetry is F09's scope (it owns tightening the rate clamp, and its tests live in the unowned state_tests.rs) and disappears once F09 lands.",
+    "The two halves keep the reference's single-draft behaviour: activating one box resets the other's uncommitted text to the committed value, and if both were left dirty the Apply commit order (PressRate last in TimingField::ALL) lets the press buffer win. The widget tests cover the normal single-edit flows.",
+    "Native on-screen validation was not performed: the acceptance evidence is widget-level interaction, state, and painted-shape assertions, not a desktop screenshot."
+  ],
+  "blockers": []
+}
