@@ -1,43 +1,44 @@
 {
   "schema_version": 1,
-  "execution_id": "bff7b581-6402-4d1e-818a-5824592172fb",
+  "execution_id": "42f9c058-db88-4aa9-ba9c-431f22e7909d",
   "task_id": "T2-MAPPING",
   "status": "completed",
-  "summary": "F01, F03, and F05 are implemented in src/ui/mapping.rs: the D-pad middle row now declares its size so the centered stage centers it, the card footer pairs the left-aligned \"4 directions mapped\" caption with the right-aligned unique/duplicate status, and the joystick dot interpolates its displacement with the reference's 75 ms ease-out segment instead of teleporting.",
+  "summary": "F03's footer caption is registered in the language inventory: \"4 directions mapped\" is an identity entry in en.rs and a real translation in es.rs and zh.rs, guarded by a new mapping test. The F01/F03/F05 implementation committed in this execution's ancestry is unchanged, and all three acceptance criteria hold at the new implementation commit.",
   "branch": "agent/worker-2",
-  "implementation_commit": "6d50f009cdaf2e9c609f43d501939222ad9a75d5",
-  "owned_files": ["src/ui/mapping.rs"],
-  "changed_files": ["src/ui/mapping.rs"],
+  "implementation_commit": "edde0ce8e98b62376ce90f2c4385eded5405cbce",
+  "owned_files": ["src/ui/mapping.rs", "src/ui/language/en.rs", "src/ui/language/es.rs", "src/ui/language/zh.rs"],
+  "changed_files": ["src/ui/language/en.rs", "src/ui/language/es.rs", "src/ui/language/zh.rs", "src/ui/mapping.rs"],
   "tests": [
+    {"command": "cargo test --no-default-features --features egui-ui --lib mapping::", "result": "pass"},
     {"command": "cargo test --no-default-features --features egui-ui --lib --test ui_semantic", "result": "pass"},
+    {"command": "cargo fmt --all -- --check", "result": "pass"},
     {"command": "cargo test --locked --all-targets", "result": "pass"},
     {"command": "cargo clippy --locked --all-targets -- -D warnings", "result": "pass"},
     {"command": "cargo test --locked --no-default-features --features egui-ui --lib --bin lastkey-settings --test ui_semantic", "result": "pass"},
     {"command": "cargo clippy --locked --no-default-features --features egui-ui --all-targets -- -D warnings", "result": "pass"},
     {"command": "cargo check --locked --target x86_64-unknown-linux-gnu --all-targets", "result": "pass"},
     {"command": "cargo tree --no-default-features -e normal", "result": "pass"},
-    {"command": "cargo fmt --all -- --check", "result": "pass"},
     {"command": "git diff --check", "result": "pass"},
     {"command": ".github\\scripts\\Test-ReleaseFormDefault.ps1", "result": "pass"}
   ],
   "mandatory_acceptance": {
     "DPAD-CLUSTER-ALIGNMENT": {
       "status": "satisfied",
-      "evidence": "mapping_pad now lays the LEFT/tile/RIGHT row out through ui.allocate_ui_with_layout(DPAD_ROW_SIZE, ...) so the centered stage centers a child whose size it can measure before layout; the widget test the_dpad_cluster_rows_share_one_center_axis asserts UP, DOWN, and the tile share the vertical axis, LEFT, RIGHT, and the tile share the horizontal axis, and the row is symmetric about the tile (the same harness measured the tile center at x=187 against UP at x=520 before the change)."
+      "evidence": "The declared-size middle row (DPAD_ROW_SIZE through ui.allocate_ui_with_layout) is in this commit's ancestry; at the implementation commit the passing widget test the_dpad_cluster_rows_share_one_center_axis asserts that UP, DOWN, and the tile share the vertical axis, LEFT, RIGHT, and the tile share the horizontal axis, and the row is symmetric about the tile."
     },
     "MAPPING-FOOTER-LABEL": {
       "status": "satisfied",
-      "evidence": "footer paints the left-aligned, non-bold \"4 directions mapped\" caption in theme::ICON_MUTED (#94a3b8, the reference's slate-400) beside the right-aligned assignment_status; the widget test the_footer_pairs_the_direction_count_with_the_status asserts the caption and the status exist, share one row (center y within 1 px), and the caption sits left of the status."
+      "evidence": "The footer paints the left-aligned \"4 directions mapped\" caption beside the right-aligned assignment status, and the caption is now registered in all three language files next to the unique/duplicate strings (en.rs identity mapping \"4 directions mapped\", es.rs \"4 direcciones asignadas\", zh.rs \"已映射 4 个方向\"). The passing test the_direction_count_caption_is_registered_in_every_language asserts the English identity mapping and that Spanish and Chinese no longer fall back to the English source; the widget test the_footer_pairs_the_direction_count_with_the_status asserts the caption and status share one footer row with the caption on the left."
     },
     "DPAD-DOT-INTERPOLATION": {
       "status": "satisfied",
-      "evidence": "dpad_center_tile keeps a DotMotion segment (frame temp memory) and paints its interpolated offset; DOT_TRAVEL_SECS is 0.075 with the CSS cubic-bezier(0, 0, 0.58, 1) ease-out curve, a mid-flight retarget continues from the displayed offset, and the tile requests repaints only while in flight. The widget test the_dpad_dot_glides_to_its_target shows the toggle frame keeping the previous offset, the next 16 ms frame strictly inside the travel, and the settle on the 18 px cardinal target with no remaining repaint request; pure tests cover the curve shape, the duration, and retargeting."
+      "evidence": "dpad_center_tile keeps a DotMotion segment (frame temp memory) and paints its interpolated offset; DOT_TRAVEL_SECS is 0.075 with the CSS cubic-bezier(0, 0, 0.58, 1) ease-out curve, a mid-flight retarget continues from the displayed offset, and the tile requests repaints only while in flight. The passing widget test the_dpad_dot_glides_to_its_target shows the toggle frame keeping the previous offset, the next 16 ms frame strictly inside the travel, and the settle on the 18 px cardinal target with no remaining repaint request; pure tests cover the curve shape, the duration, and retargeting."
     }
   },
   "risks": [
-    "The F03 caption is not yet an entry in src/ui/language/en.rs (not an owned file), so it renders through the documented English-source fallback in every language until the language inventory owner adds it.",
-    "The stage's hint row (\"Click keycap to rebind\") is still left-aligned by the same bare ui.horizontal mechanism this task fixed for the middle row; measured in the test harness at center x=122 against the stage center x=520. It is outside F01's cluster and unchanged by this diff; the stage owner may want a bounded item for it.",
-    "Native on-screen validation was not performed: the acceptance evidence is widget-level layout, painted-shape, and state assertions in egui_kittest, not a desktop screenshot."
+    "The Spanish and Chinese wordings are newly authored against the existing files' register and match the treatment of the neighboring footer string; no native-speaker review or localized screenshot was performed.",
+    "The stage's hint row (\"Click keycap to rebind\") is still left-aligned by the bare ui.horizontal mechanism fixed for the middle row; measured earlier at center x=122 against the stage center x=520. It is outside F01's cluster and unchanged by this diff; the stage owner may want a bounded item for it.",
+    "Native on-screen validation was not performed: the acceptance evidence is widget-level layout, painted-shape, state assertions, and language-file lookups, not a desktop screenshot."
   ],
   "blockers": []
 }
