@@ -30,11 +30,17 @@ Rendering rules, stated as what to use rather than only what to avoid:
   in the runtime process and keeps resolving SOCD while the window sleeps, so nothing here may gate
   filtering, the engine's monitor tap, or the tray. Focus restores the previous behavior, and a
   command queued on the way out still wakes the pump immediately.
-- Text uses generic font families, never a named one. `theme::UI_FONT` is `FontFamily::Proportional`
-  and `theme::MONO_FONT` is `FontFamily::Monospace`, so the shaper resolves the OS default and then
-  walks its own fallback chain for glyphs that face lacks — Hangul and CJK included. A named family
-  (`FontFamily::Name(..)`) pins a face that is absent on other targets and renders tofu. Canvas text
-  takes the same rule.
+- Text uses generic font families at call sites, never a named one: `theme::UI_FONT` is
+  `FontFamily::Proportional` and `theme::MONO_FONT` is `FontFamily::Monospace`. The face those
+  families resolve is owned by `theme::fonts()` (F24): it registers the native Windows UI face
+  (Segoe UI, read from `%WINDIR%\Fonts\segoeui.ttf`) at the head of `FontFamily::Proportional` and
+  keeps eframe's bundled `default_fonts` faces behind it, which epaint walks in order as the
+  per-glyph fallback — Hangul, CJK, and emoji included. A missing or unreadable system file leaves
+  the bundled set untouched, so the window still renders where Segoe UI is absent. A named family
+  (`FontFamily::Name(..)`) pins a face that is absent on other targets and renders tofu; canvas
+  text takes the same generic-family rule. Bold emphasis remains the double-stamp approximation
+  (`theme::stamp_galley`) until a weighted family has call sites: egui selects a face by family,
+  not by weight, so loading a bold file alone changes nothing.
 - Still excluded: icon fonts (glyph coverage differs per OS) and runtime image decoding (`png` stays
   in `[build-dependencies]`).
 - UI strings live in `src/ui/language/`, one file per language including `en.rs`. Each exports
@@ -106,9 +112,15 @@ load-bearing, because both are easy to "fix" back into a defect:
 - One page starts at 1040×800 with a 960×600 minimum. The header holds branding, connection status,
   profile selection, and engine on/off as compact icon-only controls. Mappings and timing are side
   by side at matched height; timeline, measurement, and results follow in a single body. Only the
-  body scrolls; actions stay pinned. Narrow reflow is outside this port. Profile and language menus
-  overlay the stable page slot as panels anchored to the top-right below the header — not centered
-  modals — preserving scroll position, and profile errors remain visible inside the panel.
+  body scrolls, and the header and the action bar sit outside that one scroll owner in the page's
+  vertical flow, separated from the body by `theme::SECTION_GAP`. Both keep the card chrome (rounded
+  `theme::CARD_RADIUS`, the 2px card border, and the card shadow) inset by `theme::PAGE_PADDING`
+  from the page edge, and the body reserves the action bar's full frame (`theme::SECTION_GAP` plus
+  `ACTION_BAR_HEIGHT`), so the bar's margin survives. The body clips its content at its own viewport
+  edge: a scrolled card is clipped there rather than sliding behind the bars. Narrow reflow is
+  outside this port. Profile and language menus overlay the stable page slot as panels anchored to
+  the top-right below the header — not centered modals — preserving scroll position, and profile
+  errors remain visible inside the panel.
 - Existing UiView launch/focus requests navigate to the top or bottom of that body. Pre-snapshot
   requests wait until it mounts; ordinary snapshots never reset its scroll offset.
 - The Key mappings card groups its title and subtitle tightly in a column beside the Restore button.
@@ -132,10 +144,11 @@ load-bearing, because both are easy to "fix" back into a defect:
   Press or Release Delay their own group, Random Mix the ratio and both groups — while the draft
   keeps every hidden value. A group hidden by the mode is unmounted, not disabled, and `is_editable`
   still gates its messages so no hidden control can act.
-- The Random Mix slider controls complementary press/release shares shown as one `press : release`
-  value; the press share derives from the stored release share, which is the editable side. The
-  numeric release share retains the backend's 1–100 percent validation range. Delay decisions shown
-  on the timeline come from the engine, never from the displayed share.
+- The Random Mix ratio controls complementary press/release shares shown as one `press : release`
+  pill. The stored release share is the single value both numeric editors and the mixer slider
+  write: the release box edits it directly, the press box edits its complement, and committing
+  either refreshes the other box. The editors retain the backend's percent validation range.
+  Delay decisions shown on the timeline come from the engine, never from the displayed share.
 - The timing card explains the selected mode as numbered steps with a highlighted final step; the
   block is absent in Random Mix, where the ratio and both groups already fill the card.
 - A stopped timeline collapses to its title, subtitle, and start control; the graph, source,
@@ -151,9 +164,10 @@ load-bearing, because both are easy to "fix" back into a defect:
   at 70 px/s clamped to 260–2400 ms. Pointer reversal continues from the displayed offset; content
   or width changes reset it, and off-screen labels do not request animation frames.
 - Profile slots include four directional keycap chips. The UI reuses authoritative display names
-  available in the current snapshot. Other physical keys display their explicit SC:xx or E0:xx
-  scan code because the current wire does not provide inactive-profile key names; no keyboard-layout
-  table or platform call is added to the settings process. Complete labels remain in tooltips.
+  available in the current snapshot. Every other physical key resolves through the platform
+  key-name resolver (`platform::windows::physical_key_name`), the same function the runtime fills
+  the wire names with, so a key held only by an inactive profile still reads as a key name; the
+  port adds no keyboard-layout table of its own. The resolved name is the chip's accessible label.
 - A slot card paints from two inputs: its mode and its interaction state
   (`theme::{SlotState, slot_tint, slot_ink, slot_mode_ink}`). The loaded slot always draws active;
   otherwise the card under the pointer draws hovered and the rest draw idle, which is the
@@ -180,8 +194,8 @@ load-bearing, because both are easy to "fix" back into a defect:
   `<kbd>`. A proportional bold renders W/S/A/D at different widths and widens the pair row past the
   reference's. Each chip is square (`theme::CHIP_SIZE`, `rounded-md`, radius 6) and the label is
   centred on both axes; the reference's chip is wider than it is tall. The height is fixed on every
-  chip while the width is a floor, so the computed `SC:xx` fallback grows only its own chip sideways
-  and no label can make the row taller. Squaring the chip is +4px on the card, so
+  chip while the width is a floor, so a long key name grows only its own chip sideways and no
+  label can make the row taller. Squaring the chip is +4px on the card, so
   `theme::SLOT_ROW_GAP` takes 2 of them (10 → 8) and the card is 80px rather than the reference's 78.
 - The slot name box and the box that replaces it while renaming are one control in two states. The
   rename field keeps the name box's fill, radius and left inset — measured at the same `x` — so only
