@@ -85,6 +85,11 @@ What the command set above does not cover. Each line is a known gap, not a plan.
   clippy configurations, and fmt passed. None of it has been seen on screen: the panel anchor offset
   `PROFILE_PANEL_TOP`, card height matching, and every restyled control need a native visual pass,
   and the comparison document's own unverified list still applies.
+- Native-font glyph coverage: `theme::fonts()` leads the proportional family with Segoe UI and falls
+  back to eframe's bundled Ubuntu-Light plus the two emoji faces (NotoEmoji-Regular and
+  emoji-icon-font). None of those covers Hangul or CJK, so `src/ui/language/zh.rs` strings render
+  tofu until a face that covers them is registered; registering one is deliberately out of scope for
+  the correction that recorded this gap. No on-screen pass has measured the missing glyphs.
 
 End-to-end tests are added without adding abstractions to production code to enable them. Four now
 run against a real named pipe in `src/platform/windows/ipc.rs`: a malformed payload, an oversized
