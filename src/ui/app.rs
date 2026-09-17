@@ -34,10 +34,15 @@ const WINDOW_WIDTH: f32 = 1040.0;
 const WINDOW_HEIGHT: f32 = 800.0;
 /// The Iced action bar's container padding.
 const ACTION_BAR_PADDING: f32 = 16.0;
+/// The card frame stroke `theme::card_style()` draws, which counts toward the
+/// frame's layout size. The bar's reserve has to include it, or the bar sits
+/// in the page's bottom margin instead of keeping it.
+const CARD_STROKE: f32 = 2.0;
 /// The action bar's height, derived from the same constants it is built from
-/// (padding top+bottom plus one button row). The body reserves it before the
-/// bar is drawn so the scroll owner never jumps.
-const ACTION_BAR_HEIGHT: f32 = 2.0 * ACTION_BAR_PADDING + theme::BUTTON_HEIGHT;
+/// (padding top+bottom plus the frame's two strokes and one button row). The
+/// body reserves it before the bar is drawn so the scroll owner never jumps
+/// and the bar keeps its page-edge margin.
+const ACTION_BAR_HEIGHT: f32 = 2.0 * ACTION_BAR_PADDING + 2.0 * CARD_STROKE + theme::BUTTON_HEIGHT;
 /// The body never collapses below this; a tiny window scrolls instead.
 const BODY_MIN_HEIGHT: f32 = 160.0;
 /// Table geometry from the reference: fixed pattern and samples columns, the
@@ -207,6 +212,44 @@ impl SettingsApp {
             ui.ctx().send_viewport_cmd(ViewportCommand::Focus);
         }
     }
+    /// The page as it ships: the canvas, the PAGE_PADDING frame, the floating
+    /// header bar, one scrolling body, the floating action bar, and the
+    /// overlays. The `App` impl delegates here so the tests can draw the same
+    /// page without an eframe frame.
+    fn page(&mut self, ui: &mut Ui) {
+        let mut messages = Vec::new();
+
+        // The Iced canvas: page background behind everything, the page itself
+        // inset by PAGE_PADDING.
+        ui.painter()
+            .rect_filled(ui.max_rect(), CornerRadius::ZERO, theme::CANVAS);
+        egui::Frame::NONE
+            .inner_margin(Margin::same(theme::PAGE_PADDING as i8))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.spacing_mut().item_spacing = Vec2::new(0.0, theme::SECTION_GAP);
+                messages.extend(header::header(ui, &self.state));
+                if self.state.snapshot.is_some() && self.state.draft.is_some() {
+                    self.body(ui, &mut messages);
+                    actions_bar(ui, &self.state, &mut messages);
+                } else {
+                    disconnected_body(ui, &self.state, &mut messages);
+                }
+            });
+
+        // The rename focus request belongs to the frame the box mounts on.
+        if self.focus_profile_name {
+            profiles::focus_profile_name(ui);
+            self.focus_profile_name = false;
+        }
+        messages.extend(profiles::profile_overlay(ui, &self.state));
+
+        if let Some(field) = self.focus_value_box.take() {
+            ui.memory_mut(|memory| memory.request_focus(timing::value_box_id(field)));
+        }
+
+        self.dispatch_all(messages, ui.ctx());
+    }
 }
 
 impl App for SettingsApp {
@@ -266,38 +309,7 @@ impl App for SettingsApp {
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut Frame) {
-        let mut messages = Vec::new();
-
-        // The Iced canvas: page background behind everything, the page itself
-        // inset by PAGE_PADDING.
-        ui.painter()
-            .rect_filled(ui.max_rect(), CornerRadius::ZERO, theme::CANVAS);
-        egui::Frame::NONE
-            .inner_margin(Margin::same(theme::PAGE_PADDING as i8))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.spacing_mut().item_spacing = Vec2::new(0.0, theme::SECTION_GAP);
-                messages.extend(header::header(ui, &self.state));
-                if self.state.snapshot.is_some() && self.state.draft.is_some() {
-                    self.body(ui, &mut messages);
-                    actions_bar(ui, &self.state, &mut messages);
-                } else {
-                    disconnected_body(ui, &self.state, &mut messages);
-                }
-            });
-
-        // The rename focus request belongs to the frame the box mounts on.
-        if self.focus_profile_name {
-            profiles::focus_profile_name(ui);
-            self.focus_profile_name = false;
-        }
-        messages.extend(profiles::profile_overlay(ui, &self.state));
-
-        if let Some(field) = self.focus_value_box.take() {
-            ui.memory_mut(|memory| memory.request_focus(timing::value_box_id(field)));
-        }
-
-        self.dispatch_all(messages, ui.ctx());
+        self.page(ui);
     }
 }
 
@@ -1476,6 +1488,26 @@ mod tests {
             )
     }
 
+    /// The app without a connection: the page tests draw the real page.
+    fn app(state: State) -> SettingsApp {
+        SettingsApp {
+            state,
+            connection: None,
+            events: std_mpsc::channel().1,
+            focus_profile_name: false,
+            focus_value_box: None,
+            pending_section: None,
+        }
+    }
+
+    /// A harness around the real page (`SettingsApp::page`) at the shipping
+    /// window size, so the floating bars are exercised exactly as they ship.
+    fn page_harness(state: State) -> Harness<'static, SettingsApp> {
+        egui_kittest::Harness::builder()
+            .with_size(egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT))
+            .build_ui_state(|ui, app: &mut SettingsApp| app.page(ui), app(state))
+    }
+
     /// Every path this frame painted, flattened out of `Shape::Vec`.
     fn painted_paths<State>(harness: &Harness<'_, State>) -> Vec<egui::epaint::PathShape> {
         fn collect(shape: &egui::Shape, out: &mut Vec<egui::epaint::PathShape>) {
@@ -1756,6 +1788,150 @@ mod tests {
             back_mapping.height(),
             immediate_mapping.height(),
             "returning to a mode restores its shared height"
+        );
+    }
+
+    /// Every card-chrome frame the last frame painted, in paint order: a
+    /// `theme::card_style` body with its 2px border.
+    fn card_frames<State>(harness: &Harness<'_, State>) -> Vec<egui::epaint::RectShape> {
+        fn collect(shape: &egui::Shape, out: &mut Vec<egui::epaint::RectShape>) {
+            match shape {
+                egui::Shape::Rect(rect)
+                    if rect.fill == theme::SURFACE
+                        && rect.stroke.color == theme::CARD_BORDER
+                        && (rect.stroke.width - 2.0).abs() < 0.01 =>
+                {
+                    out.push(rect.clone());
+                }
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for clipped in &harness.output().shapes {
+            collect(&clipped.shape, &mut out);
+        }
+        out
+    }
+
+    /// The page's canvas: the PAGE_PADDING frame's outer bounds.
+    fn canvas_rect<State>(harness: &Harness<'_, State>) -> Rect {
+        fn collect(shape: &egui::Shape, out: &mut Vec<Rect>) {
+            match shape {
+                egui::Shape::Rect(rect) if rect.fill == theme::CANVAS => out.push(rect.rect),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for clipped in &harness.output().shapes {
+            collect(&clipped.shape, &mut out);
+        }
+        out.into_iter()
+            .max_by(|left, right| left.area().total_cmp(&right.area()))
+            .expect("the page canvas is painted")
+    }
+
+    /// The header and action bar frames: the page's topmost and bottom-most
+    /// full-width card-chrome rectangles. Scrolled cards can sit above the
+    /// header, so the bar width is the discriminator.
+    fn floating_bars<State>(harness: &Harness<'_, State>, page: Rect) -> (Rect, Rect) {
+        let frames: Vec<Rect> = card_frames(harness)
+            .into_iter()
+            .map(|frame| frame.rect)
+            .filter(|rect| rect.width() > page.width() * 0.75)
+            .collect();
+        let header = frames
+            .iter()
+            .min_by(|left, right| left.top().total_cmp(&right.top()))
+            .expect("the header bar is painted")
+            .to_owned();
+        let bar = frames
+            .iter()
+            .max_by(|left, right| left.bottom().total_cmp(&right.bottom()))
+            .expect("the action bar is painted")
+            .to_owned();
+        (header, bar)
+    }
+
+    /// The topmost half-width card frame: the mappings/timing row inside the
+    /// scroll owner. The row is the only half-width chrome on the page, and it
+    /// may scroll up behind the header.
+    fn settings_cards_rect<State>(harness: &Harness<'_, State>, page: Rect) -> Rect {
+        card_frames(harness)
+            .into_iter()
+            .map(|frame| frame.rect)
+            .filter(|rect| rect.width() < page.width() * 0.75)
+            .min_by(|left, right| left.top().total_cmp(&right.top()))
+            .expect("the settings cards are painted")
+    }
+
+    /// F18: the header and the action bar are floating sticky bars. Each keeps
+    /// a page-edge margin on every side of the page canvas.
+    #[test]
+    fn the_floating_bars_keep_their_window_edge_margins() {
+        let mut harness = page_harness(baseline_state());
+        harness.run();
+        let page = canvas_rect(&harness);
+        let (header, bar) = floating_bars(&harness, page);
+        assert!(
+            (header.top() - page.top() - theme::PAGE_PADDING).abs() < 0.5,
+            "the header's top margin is {}, expected PAGE_PADDING",
+            header.top() - page.top()
+        );
+        assert!(
+            (header.left() - page.left() - theme::PAGE_PADDING).abs() < 0.5,
+            "the header's left margin is {}, expected PAGE_PADDING",
+            header.left() - page.left()
+        );
+        assert!(
+            (page.bottom() - bar.bottom() - theme::PAGE_PADDING).abs() < 0.5,
+            "the action bar's bottom margin is {}, expected PAGE_PADDING",
+            page.bottom() - bar.bottom()
+        );
+        assert!(
+            (page.right() - bar.right() - theme::PAGE_PADDING).abs() < 0.5,
+            "the action bar's right margin is {}, expected PAGE_PADDING",
+            page.right() - bar.right()
+        );
+    }
+
+    /// F18: the bars float above the scroll owner: scrolling the body moves the
+    /// cards but leaves both bars where they are.
+    #[test]
+    fn the_floating_bars_stay_pinned_while_the_body_scrolls() {
+        let mut harness = page_harness(baseline_state());
+        harness.run();
+        let page = canvas_rect(&harness);
+        let (header, bar) = floating_bars(&harness, page);
+        let content = settings_cards_rect(&harness, page);
+
+        harness.get_by_label("Input timings").scroll_down();
+        harness.run();
+        let (header_after, bar_after) = floating_bars(&harness, page);
+        let content_after = settings_cards_rect(&harness, page);
+
+        assert!(
+            content_after.top() < content.top() - 10.0,
+            "the body must scroll, the cards moved {} to {}",
+            content.top(),
+            content_after.top()
+        );
+        assert_eq!(
+            header, header_after,
+            "the header stays pinned while the body scrolls (was {header:?}, now {header_after:?})"
+        );
+        assert_eq!(
+            bar, bar_after,
+            "the action bar stays pinned while the body scrolls (was {bar:?}, now {bar_after:?})"
         );
     }
 }
