@@ -26,10 +26,11 @@
 //! that decision lands.
 
 use std::f32::consts::PI;
+use std::time::Duration;
 
 use egui::{
-    Align, Color32, Id, Layout, Margin, Painter, Pos2, Rect, Response, RichText, Sense, Shape,
-    Stroke, StrokeKind, Ui, Vec2, WidgetInfo, WidgetType,
+    Align, Color32, CornerRadius, Id, Layout, Margin, Painter, Pos2, Rect, Response, RichText,
+    Sense, Shape, Stroke, StrokeKind, Ui, Vec2, WidgetInfo, WidgetType,
 };
 
 use super::{message::Message, state::State, theme};
@@ -57,10 +58,32 @@ const HEADER_CONTENT_HEIGHT: f32 =
 const HEADER_ICON: f32 = 14.0;
 /// The status dot's 8px box (`fn dot`, iced-ui/app.rs:2462).
 const STATUS_DOT: f32 = 8.0;
+/// The dot's `ring-4` outer band: 4px outside the dot box (Header.tsx:143-148).
+const STATUS_RING: f32 = 4.0;
+/// Tailwind's `animate-pulse` period: the dot's opacity falls to half and
+/// returns over 2 s.
+const PULSE_SECONDS: f32 = 2.0;
+/// Tailwind's `animate-ping` period and the 75% keyframe where it is fully
+/// expanded and transparent.
+const PING_SECONDS: f32 = 1.0;
+const PING_RISE: f32 = 0.75;
+/// The fallback frame time when the backend predicts none.
+const ANIMATION_FRAME_FALLBACK: Duration = Duration::from_millis(16);
 /// The dot-to-status gap (Iced `.spacing(14)`).
 const STATUS_GAP: f32 = 14.0;
 /// The Iced `widgets::logo` is a fixed 32x32.
 const LOGO_SIZE: f32 = 32.0;
+/// The dot's ring steps the theme does not publish (`ring-amber-100`,
+/// `ring-emerald-100`), plus the reference's `bg-indigo-500` rebinding ink.
+/// All three are derived from the reference's Tailwind v4 oklch declarations;
+/// the same conversion reproduces the theme's verified indigo-100, slate-100,
+/// slate-200, amber-500, and emerald-500 read-backs exactly. They stay beside
+/// their only consumer because this task owns no theme file; `preview.rs`
+/// carries the same indigo-500 value for its neutral-dot highlight, and both
+/// should fold into the theme when that file is next owned.
+const AMBER_100: Color32 = Color32::from_rgb(0xfe, 0xf3, 0xc6);
+const EMERALD_100: Color32 = Color32::from_rgb(0xd0, 0xfa, 0xe5);
+const INDIGO_500: Color32 = Color32::from_rgb(0x61, 0x5f, 0xff);
 
 /// Draws the header bar and returns the messages this frame produced.
 pub fn header(ui: &mut Ui, state: &State) -> Vec<Message> {
@@ -71,11 +94,6 @@ pub fn header(ui: &mut Ui, state: &State) -> Vec<Message> {
         .snapshot
         .as_ref()
         .is_some_and(|snapshot| snapshot.filter_enabled);
-    let state_color = if connected {
-        theme::EMERALD_500
-    } else {
-        theme::SLATE_300
-    };
     // Iced gates each control with `on_press_maybe`: a control whose condition
     // fails is inert, not an error path, so a press simply produces no message.
     let profiles_enabled = connected && has_snapshot;
@@ -98,9 +116,10 @@ pub fn header(ui: &mut Ui, state: &State) -> Vec<Message> {
                 ui.spacing_mut().item_spacing.x = theme::SECTION_GAP;
                 logo(ui);
                 ui.label(RichText::new("LastKey").size(theme::HEADING_SIZE).strong());
+                title_divider(ui);
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = STATUS_GAP;
-                    status_dot(ui, state_color);
+                    status_dot(ui, state);
                     ui.label(
                         RichText::new(state.language.text(&state.status))
                             .size(theme::BODY_TEXT_SIZE)
@@ -248,11 +267,120 @@ fn logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
     handle
 }
 
-/// The connection/status mark (`fn dot`): an 8px filled circle.
-fn status_dot(ui: &mut Ui, color: Color32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::splat(STATUS_DOT), Sense::hover());
+/// The title/status divider (`h-4 w-px bg-slate-200`, Header.tsx:136).
+fn title_divider(ui: &mut Ui) {
+    /// `h-4`.
+    const DIVIDER_HEIGHT: f32 = 16.0;
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(1.0, DIVIDER_HEIGHT), Sense::hover());
     ui.painter()
-        .circle_filled(rect.center(), STATUS_DOT / 2.0, color);
+        .rect_filled(rect, CornerRadius::ZERO, theme::BORDER);
+}
+
+/// The connection/status mark: the reference's 8px circle inside its 4px state
+/// ring (`w-2 h-2 ... ring-4`, Header.tsx:140-151), with the `animate-pulse`
+/// and `animate-ping` states driven while they are shown (ui.md:24-26).
+fn status_dot(ui: &mut Ui, state: &State) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(STATUS_DOT), Sense::hover());
+    let now = ui.input(|input| input.time) as f32;
+    let paint = DotState::of(state).paint(now);
+    let painter = ui.painter();
+    painter.circle_filled(rect.center(), paint.ring_radius, paint.ring);
+    painter.circle_filled(rect.center(), paint.dot_radius, paint.dot);
+    if paint.animating {
+        request_animation_frame(ui);
+    }
+}
+
+/// Asks for one more frame just after the predicted next one. egui subtracts
+/// the predicted frame time from a repaint request, so a fixed small delay
+/// collapses into an immediate repaint loop; one frame time plus a millisecond
+/// keeps the animation on the backend's cadence with a non-zero delay. The dot
+/// drives its own repaint and only while it animates (ui.md:24-26).
+fn request_animation_frame(ui: &Ui) {
+    let frame = Duration::try_from_secs_f32(ui.input(|input| input.predicted_dt))
+        .unwrap_or(ANIMATION_FRAME_FALLBACK);
+    ui.ctx()
+        .request_repaint_after(frame + Duration::from_millis(1));
+}
+
+/// The status dot's four reference states (Header.tsx:142-148): the engine-off
+/// or disconnected grey, the measuring amber pulse, the rebinding indigo ping,
+/// and the synchronized emerald.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DotState {
+    Idle,
+    Measuring,
+    Rebinding,
+    Synced,
+}
+
+/// One frame of the dot's paint programme: the dot and ring circles, and
+/// whether the state keeps animating.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct DotPaint {
+    dot_radius: f32,
+    dot: Color32,
+    ring_radius: f32,
+    ring: Color32,
+    animating: bool,
+}
+
+impl DotState {
+    /// The reference's precedence: the inactive state wins, then measuring,
+    /// then rebinding. The port counts the disconnected runtime as inactive
+    /// because the reference has no separate connection state, and no engine
+    /// status can be trusted without a connection.
+    fn of(state: &State) -> Self {
+        let snapshot = state.snapshot.as_ref();
+        let engine_on = state.connected && snapshot.is_some_and(|snapshot| snapshot.filter_enabled);
+        if !engine_on {
+            Self::Idle
+        } else if snapshot.is_some_and(|snapshot| snapshot.measurement_active) {
+            Self::Measuring
+        } else if snapshot.is_some_and(|snapshot| snapshot.capture_slot.is_some()) {
+            Self::Rebinding
+        } else {
+            Self::Synced
+        }
+    }
+
+    /// The dot and ring inks at rest (`bg-*-500 ring-*-100`).
+    fn ink(self) -> (Color32, Color32) {
+        match self {
+            Self::Idle => (theme::SLATE_300, theme::SLATE_100),
+            Self::Measuring => (theme::AMBER_500, AMBER_100),
+            Self::Rebinding => (INDIGO_500, theme::INDIGO_100),
+            Self::Synced => (theme::EMERALD_500, EMERALD_100),
+        }
+    }
+
+    /// The frame's circles at `now` (seconds): `animate-pulse`'s opacity wave,
+    /// `animate-ping`'s expansion, or the static pair. The ping is the whole
+    /// circle expanding to double size and fading out, holding the invisible
+    /// tail of its cycle exactly as the reference's keyframes do.
+    fn paint(self, now: f32) -> DotPaint {
+        let (dot, ring) = self.ink();
+        let (scale, alpha, animating) = match self {
+            Self::Measuring => {
+                let phase = now.rem_euclid(PULSE_SECONDS) / PULSE_SECONDS;
+                let wave = 0.5 + 0.5 * (phase * std::f32::consts::TAU).cos();
+                (1.0, 0.5 + 0.5 * wave, true)
+            }
+            Self::Rebinding => {
+                let phase = (now.rem_euclid(PING_SECONDS) / PING_SECONDS / PING_RISE).min(1.0);
+                let eased = 1.0 - (1.0 - phase).powi(3);
+                (1.0 + eased, 1.0 - eased, true)
+            }
+            Self::Idle | Self::Synced => (1.0, 1.0, false),
+        };
+        DotPaint {
+            dot_radius: STATUS_DOT / 2.0 * scale,
+            dot: dot.gamma_multiply(alpha),
+            ring_radius: (STATUS_DOT / 2.0 + STATUS_RING) * scale,
+            ring: ring.gamma_multiply(alpha),
+            animating,
+        }
+    }
 }
 
 /// The four page glyphs this task paints; see the module-level boundary note.
@@ -338,9 +466,12 @@ pub(super) fn paint_icon(painter: &Painter, rect: Rect, kind: Icon, color: Color
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use egui_kittest::{Harness, kittest::Queryable};
+
     use crate::{
         core::PhysicalKey,
-        protocol::{DisplayKey, UiSnapshot},
+        protocol::{DisplayKey, KeySlot, UiSnapshot},
         settings::Settings,
     };
 
@@ -383,8 +514,6 @@ mod tests {
 
     #[test]
     fn the_header_controls_open_the_panels() {
-        use egui_kittest::{Harness, kittest::Queryable};
-
         let mut harness = Harness::builder()
             .with_size(egui::vec2(1040.0, 800.0))
             .build_ui_state(
@@ -411,8 +540,6 @@ mod tests {
 
     #[test]
     fn the_engine_control_asks_the_engine_to_toggle() {
-        use egui_kittest::{Harness, kittest::Queryable};
-
         let mut harness = Harness::builder()
             .with_size(egui::vec2(1040.0, 800.0))
             .build_ui_state(
@@ -429,8 +556,6 @@ mod tests {
 
     #[test]
     fn the_dirty_badge_follows_the_draft() {
-        use egui_kittest::{Harness, kittest::Queryable};
-
         let mut harness = Harness::builder()
             .with_size(egui::vec2(1040.0, 800.0))
             .build_ui_state(
@@ -453,5 +578,242 @@ mod tests {
             .socd_transition_max_micros += 1;
         harness.run();
         harness.get_by_label("Unsaved Draft Changes");
+    }
+
+    /// Renders one status dot in `state` and runs one frame.
+    fn dot_harness(state: State) -> Harness<'static, State> {
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(160.0, 40.0))
+            .build_ui_state(|ui, state: &mut State| status_dot(ui, state), state);
+        harness.run();
+        harness
+    }
+
+    /// The shortest repaint request the last frame made; `Duration::MAX` when
+    /// the frame requested none.
+    fn repaint_delay<State>(harness: &Harness<'_, State>) -> Duration {
+        harness
+            .output()
+            .viewport_output
+            .values()
+            .map(|output| output.repaint_delay)
+            .min()
+            .unwrap_or(Duration::MAX)
+    }
+
+    /// Every `Shape::Rect` this frame painted, flattened out of `Shape::Vec`.
+    fn painted_rects<State>(harness: &Harness<'_, State>) -> Vec<egui::epaint::RectShape> {
+        fn collect(shape: &egui::Shape, out: &mut Vec<egui::epaint::RectShape>) {
+            match shape {
+                egui::Shape::Rect(rect) => out.push(rect.clone()),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for clipped in &harness.output().shapes {
+            collect(&clipped.shape, &mut out);
+        }
+        out
+    }
+
+    /// Every `Shape::Circle` this frame painted, flattened out of `Shape::Vec`.
+    fn painted_circles<State>(harness: &Harness<'_, State>) -> Vec<egui::epaint::CircleShape> {
+        fn collect(shape: &egui::Shape, out: &mut Vec<egui::epaint::CircleShape>) {
+            match shape {
+                egui::Shape::Circle(circle) => out.push(*circle),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for clipped in &harness.output().shapes {
+            collect(&clipped.shape, &mut out);
+        }
+        out
+    }
+
+    /// Compares two colours channel-wise, tolerating the sub-byte rounding of
+    /// a fade factor at an arbitrary animation instant.
+    fn close(left: Color32, right: Color32, tolerance: u8) -> bool {
+        left.to_srgba_unmultiplied()
+            .iter()
+            .zip(right.to_srgba_unmultiplied().iter())
+            .all(|(left, right)| left.abs_diff(*right) <= tolerance)
+    }
+
+    /// Whether the frame painted the 8px dot and its 4px ring in the given
+    /// inks (each within a two-byte tolerance for fades).
+    fn ring_and_dot<State>(harness: &Harness<'_, State>, ring: Color32, dot: Color32) -> bool {
+        let circles = painted_circles(harness);
+        let ring_painted = circles.iter().any(|circle| {
+            (circle.radius - (STATUS_DOT / 2.0 + STATUS_RING)).abs() < 0.01
+                && close(circle.fill, ring, 2)
+        });
+        let dot_painted = circles.iter().any(|circle| {
+            (circle.radius - STATUS_DOT / 2.0).abs() < 0.01 && close(circle.fill, dot, 2)
+        });
+        ring_painted && dot_painted
+    }
+
+    #[test]
+    fn the_title_and_status_are_separated_by_the_reference_divider() {
+        let harness = Harness::builder()
+            .with_size(egui::vec2(1040.0, 800.0))
+            .build_ui_state(
+                |ui, runtime: &mut FakeRuntime| runtime.frame(ui),
+                FakeRuntime {
+                    state: baseline_state(),
+                },
+            );
+
+        let dividers: Vec<_> = painted_rects(&harness)
+            .into_iter()
+            .filter(|rect| {
+                rect.fill == theme::BORDER
+                    && (rect.rect.width() - 1.0).abs() < 0.01
+                    && (rect.rect.height() - 16.0).abs() < 0.01
+            })
+            .collect();
+        assert_eq!(dividers.len(), 1, "the header draws one 1px x 16px divider");
+        assert!(
+            dividers[0].rect.center().x > harness.get_by_label("LastKey").rect().right(),
+            "the divider must follow the title"
+        );
+    }
+
+    #[test]
+    fn the_dot_state_follows_the_reference_precedence() {
+        let state = baseline_state();
+        assert_eq!(DotState::of(&state), DotState::Synced);
+
+        // Measuring and rebinding are the middle states.
+        let mut measuring = baseline_state();
+        measuring.snapshot.as_mut().unwrap().measurement_active = true;
+        assert_eq!(DotState::of(&measuring), DotState::Measuring);
+        let mut rebinding = baseline_state();
+        rebinding.snapshot.as_mut().unwrap().capture_slot = Some(KeySlot::VerticalFirst);
+        assert_eq!(DotState::of(&rebinding), DotState::Rebinding);
+        let mut both = baseline_state();
+        both.snapshot.as_mut().unwrap().measurement_active = true;
+        both.snapshot.as_mut().unwrap().capture_slot = Some(KeySlot::VerticalFirst);
+        assert_eq!(
+            DotState::of(&both),
+            DotState::Measuring,
+            "measuring wins over rebinding"
+        );
+
+        // The inactive state wins over both, for an engine off or a
+        // disconnected runtime.
+        let mut engine_off = both;
+        engine_off.snapshot.as_mut().unwrap().filter_enabled = false;
+        assert_eq!(DotState::of(&engine_off), DotState::Idle);
+        let mut disconnected = baseline_state();
+        disconnected.connected = false;
+        assert_eq!(DotState::of(&disconnected), DotState::Idle);
+    }
+
+    #[test]
+    fn the_synced_dot_wears_the_emerald_ring() {
+        let harness = dot_harness(baseline_state());
+        assert!(
+            ring_and_dot(&harness, EMERALD_100, theme::EMERALD_500),
+            "the synchronized dot must paint the emerald ring and dot"
+        );
+        assert!(
+            repaint_delay(&harness) > Duration::from_millis(100),
+            "a static dot must not request animation frames"
+        );
+    }
+
+    #[test]
+    fn the_measuring_dot_pulses_amber() {
+        let mut harness = dot_harness(baseline_state());
+        harness
+            .state_mut()
+            .snapshot
+            .as_mut()
+            .unwrap()
+            .measurement_active = true;
+        // A pulsing dot keeps requesting frames, so the frame is stepped with
+        // its cycle pinned to zero rather than run to completion.
+        harness.input_mut().time = Some(0.0);
+        harness.step();
+        assert!(
+            ring_and_dot(&harness, AMBER_100, theme::AMBER_500),
+            "the measuring dot must paint the amber ring and dot"
+        );
+        assert!(
+            repaint_delay(&harness) <= Duration::from_millis(50),
+            "the pulse must schedule its own frames"
+        );
+    }
+
+    #[test]
+    fn the_rebinding_dot_pings_indigo() {
+        let mut harness = dot_harness(baseline_state());
+        harness.state_mut().snapshot.as_mut().unwrap().capture_slot = Some(KeySlot::VerticalFirst);
+        // A pinging dot keeps requesting frames, so the frame is stepped with
+        // its cycle pinned to zero rather than run to completion.
+        harness.input_mut().time = Some(0.0);
+        harness.step();
+        assert!(
+            ring_and_dot(&harness, theme::INDIGO_100, INDIGO_500),
+            "the rebinding dot must paint the indigo ring and dot"
+        );
+        assert!(
+            repaint_delay(&harness) <= Duration::from_millis(50),
+            "the ping must schedule its own frames"
+        );
+    }
+
+    #[test]
+    fn the_idle_dot_stays_slate_without_an_animation() {
+        let mut harness = dot_harness(baseline_state());
+        harness.state_mut().connected = false;
+        harness.run();
+        assert!(
+            ring_and_dot(&harness, theme::SLATE_100, theme::SLATE_300),
+            "the inactive dot must paint the slate ring and dot"
+        );
+        assert!(
+            repaint_delay(&harness) > Duration::from_millis(100),
+            "the inactive dot must not request animation frames"
+        );
+    }
+
+    #[test]
+    fn the_pulse_and_ping_waves_match_the_reference_cycles() {
+        // The static states paint their exact inks and request nothing.
+        let synced = DotState::Synced.paint(123.0);
+        assert_eq!(synced.dot, theme::EMERALD_500);
+        assert_eq!(synced.ring, EMERALD_100);
+        assert!(!synced.animating);
+
+        // `animate-pulse`: full opacity at the cycle start, half at its end.
+        let start = DotState::Measuring.paint(0.0);
+        assert_eq!(start.dot, theme::AMBER_500);
+        assert!(start.animating);
+        let halfway = DotState::Measuring.paint(PULSE_SECONDS / 2.0);
+        assert!(close(halfway.dot, theme::AMBER_500.gamma_multiply(0.5), 1));
+
+        // `animate-ping`: the circle doubles and vanishes by the 75% keyframe.
+        let start = DotState::Rebinding.paint(0.0);
+        assert_eq!(start.dot, INDIGO_500);
+        assert_eq!(start.dot_radius, STATUS_DOT / 2.0);
+        assert!(start.animating);
+        let gone = DotState::Rebinding.paint(PING_SECONDS * PING_RISE);
+        assert_eq!(gone.dot_radius, STATUS_DOT);
+        assert_eq!(gone.ring_radius, STATUS_DOT + 2.0 * STATUS_RING);
+        assert_eq!(gone.dot.to_srgba_unmultiplied()[3], 0);
+        assert!(gone.animating);
     }
 }
