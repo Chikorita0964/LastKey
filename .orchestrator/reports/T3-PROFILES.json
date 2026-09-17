@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "execution_id": "bff7b581-6402-4d1e-818a-5824592172fb",
+  "task_id": "T3-PROFILES",
+  "status": "completed",
+  "summary": "Profiles fixes: inactive slot chips now resolve key names through the runtime's physical_key_name resolver instead of a scan-code fallback, and the rename field takes the typed text's width in the same frame instead of scrolling on the stale state name. Both fixes ship with egui_kittest widget regression tests and the full gate passes.",
+  "branch": "agent/worker-3",
+  "implementation_commit": "3b20592943227aa42301c8b77309193519e3bf6b",
+  "owned_files": ["src/ui/profiles.rs"],
+  "changed_files": ["src/ui/profiles.rs"],
+  "tests": [
+    { "command": "cargo test --no-default-features --features egui-ui --lib -- profiles::tests::", "result": "pass" },
+    { "command": "cargo test --locked --no-default-features --features egui-ui --lib --test ui_semantic", "result": "pass" },
+    { "command": "cargo fmt --all -- --check", "result": "pass" },
+    { "command": "cargo test --locked --all-targets", "result": "pass" },
+    { "command": "cargo clippy --locked --all-targets -- -D warnings", "result": "pass" },
+    { "command": "cargo test --locked --no-default-features --features egui-ui --lib --bin lastkey-settings --test ui_semantic", "result": "pass" },
+    { "command": "cargo clippy --locked --no-default-features --features egui-ui --all-targets -- -D warnings", "result": "pass" },
+    { "command": "cargo check --locked --target x86_64-unknown-linux-gnu --all-targets", "result": "pass" },
+    { "command": "cargo tree --no-default-features -e normal", "result": "pass" },
+    { "command": "git diff --check", "result": "pass" },
+    { "command": ".github\\scripts\\Test-ReleaseFormDefault.ps1", "result": "pass" }
+  ],
+  "mandatory_acceptance": {
+    "PROFILE-RENAME-JITTER": {
+      "status": "satisfied",
+      "evidence": "rename_field now renders its TextEdit with clip_text(false): egui's singleline scroll-to-caret is disabled and the widget takes the live galley width in the keystroke's own frame instead of the one-frame-stale committed name, so the box grows rightward and the text never shifts. Widget test ui::profiles::tests::the_rename_field_takes_the_typed_texts_width_in_the_typing_frame passes (the field rect covers the typed text on the typing frame); before the fix the same test measured a 97.6px rect against 204.3px typed text and failed. The scoped loop and full gate passed."
+    },
+    "PROFILE-INACTIVE-KEY-NAMES": {
+      "status": "satisfied",
+      "evidence": "chip resolves keys absent from the active draft's snapshot.keys through physical_key_name, the same resolver the runtime fills wire names with, replacing the SC:xx/E0:xx scan-code fallback. Widget test ui::profiles::tests::an_inactive_slots_chip_names_a_key_the_active_draft_no_longer_binds renders a draft remapped to Right Shift (0x36) while inactive slots keep W (0x11) and asserts zero SC:11 labels, at least three chips carrying the platform name, and the wire name still winning for the draft binding; before the fix the same test found three SC:11 chips and failed. The scoped loop and full gate passed."
+    }
+  },
+  "risks": [
+    "docs/architecture/ui.md (Profile slots section) still documents the SC:xx scan-code fallback and states that no platform name call is added to the settings process; that owner-doc sentence is stale after this fix and is outside this task's owned files, so updating the owning contract remains a Master/owner follow-up.",
+    "Both fixes are verified by widget tests and the full gate, not by native on-screen inspection; the stage's native-visual gap in docs/architecture/verification.md (Unverified Areas) remains for the rename box and the profile chips.",
+    "Chip labels now resolve at render time through the platform key-name call, so a keyboard-layout change while the settings window is open could relabel keys that are not in the current draft before the next snapshot refreshes the wire names; keys named by the snapshot keep the snapshot name."
+  ],
+  "blockers": []
+}
