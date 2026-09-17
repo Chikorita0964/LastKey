@@ -1279,6 +1279,26 @@ mod tests {
         );
     }
 
+    /// F03's caption is registered in every language file, so the footer
+    /// renders a translation rather than the English-source fallback.
+    #[test]
+    fn the_direction_count_caption_is_registered_in_every_language() {
+        use crate::ui::language::Language;
+
+        assert_eq!(
+            Language::English.text("4 directions mapped"),
+            "4 directions mapped",
+            "the English file keeps the identity mapping"
+        );
+        for language in [Language::Chinese, Language::Spanish] {
+            assert_ne!(
+                language.text("4 directions mapped"),
+                "4 directions mapped",
+                "{language:?} must register its own entry, not fall back to English"
+            );
+        }
+    }
+
     /// The moving dot's centre from the tile's own painted circles: the
     /// topmost circle of the moving set (`9..=12` px: dot, its shadow, its
     /// glow). The 4 px resting guide dot cannot join that set.
