@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "execution_id": "ce110559-c0d6-414a-8236-0436e01c0856",
+  "task_id": "T7-HEADER",
+  "status": "completed",
+  "summary": "F19 header fidelity: the title and status line are separated by the reference's 16px slate-200 divider, and the status dot wears its 4px state ring with the measuring amber pulse and the rebinding indigo ping, driving its own frames only while it animates.",
+  "branch": "agent/worker-1",
+  "implementation_commit": "a8641026cedc4f1e380b26f92479cd2bcd74d99f",
+  "owned_files": ["src/ui/header.rs"],
+  "changed_files": ["src/ui/header.rs"],
+  "tests": [
+    {"command": "cargo test --no-default-features --features egui-ui --lib --test ui_semantic", "result": "pass"},
+    {"command": "cargo fmt --all -- --check", "result": "pass"},
+    {"command": "cargo test --locked --all-targets", "result": "pass"},
+    {"command": "cargo clippy --locked --all-targets -- -D warnings", "result": "pass"},
+    {"command": "cargo test --locked --no-default-features --features egui-ui --lib --bin lastkey-settings --test ui_semantic", "result": "pass"},
+    {"command": "cargo clippy --locked --no-default-features --features egui-ui --all-targets -- -D warnings", "result": "pass"},
+    {"command": "cargo check --locked --target x86_64-unknown-linux-gnu --all-targets", "result": "pass"},
+    {"command": "cargo tree --no-default-features -e normal", "result": "pass"},
+    {"command": "git diff --check", "result": "pass"},
+    {"command": ".github\\scripts\\Test-ReleaseFormDefault.ps1", "result": "pass"}
+  ],
+  "mandatory_acceptance": {
+    "HEADER-TITLE-DIVIDER-AND-STATUS-RING": {"status": "satisfied", "evidence": "The header now paints the reference's `h-4 w-px bg-slate-200` divider between the title and the status line, pinned by the_title_and_status_are_separated_by_the_reference_divider (exactly one 1x16 theme::BORDER rect, right of the title label). The status dot paints the 8px circle inside its 4px ring in the reference's four state pairs, pinned by the_synced_dot_wears_the_emerald_ring and the_idle_dot_stays_slate_without_an_animation, and the two animations are pinned by the_measuring_dot_pulses_amber and the_rebinding_dot_pings_indigo (state inks plus a sub-50ms repaint request) and by the_pulse_and_ping_waves_match_the_reference_cycles (full-to-half opacity at the pulse midpoint; double radius and zero alpha at the ping's 75% keyframe). The dot state precedence is pinned by the_dot_state_follows_the_reference_precedence, and the unowned ui_semantic rebinding flow passes against the animated dot in the gate."}
+  },
+  "risks": [
+    "The ring steps amber-100 (#fef3c6) and emerald-100 (#d0fae5) and the indigo-500 ink (#615fff) are derived from the reference's Tailwind v4 oklch declarations; the conversion reproduces five verified theme read-backs exactly, but theme.rs owns no such tokens and is outside this task's ownership (preview.rs carries the same indigo-500 for its dot highlight).",
+    "The dot requests its next frame at the backend's predicted frame time plus a millisecond rather than a fixed 60 Hz delay, because egui subtracts the predicted frame time from every request and a smaller delay collapses into an immediate repaint loop; the animation therefore follows the backend cadence.",
+    "The inactive state folds the disconnected runtime into the reference's engine-off slate pair, because the reference has no separate connection state and no engine status can be trusted without a connection; this replaces the previous connected-based emerald/slate pair.",
+    "Native visual confirmation is outside this execution; the divider, ring, and animations are pinned by egui_kittest widget and unit tests only."
+  ],
+  "blockers": []
+}
