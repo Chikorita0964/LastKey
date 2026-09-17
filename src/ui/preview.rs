@@ -81,6 +81,24 @@ const PILL_RADIUS: CornerRadius = CornerRadius::same(16);
 /// The unselected example dot: the Iced `app.rs:1351` literal
 /// `Color::from_rgb8(0xcb, 0xd5, 0xe1)`, one byte off [`theme::SLATE_300`].
 const DOT_IDLE: Color32 = Color32::from_rgb(0xcb, 0xd5, 0xe1);
+/// The neutral gap dot (`w-2.5 h-2.5`). The reference lets the Press Delay
+/// gap -- the only phase the neutral dot renders in -- highlight it at
+/// `scale-110` with its `shadow-2xs` lift.
+const NEUTRAL_DOT: f32 = 10.0;
+const NEUTRAL_DOT_HIGHLIGHT: f32 = 1.1;
+/// The highlight ink, the reference's `bg-indigo-500`. Tailwind v4's
+/// `oklch(58.5% 0.233 277.117)` resolves to `#615fff`; the same conversion
+/// reproduces the theme's verified indigo-400/600/700 and slate-300
+/// read-backs exactly. The theme publishes no indigo-500 token, so the value
+/// stays beside its only consumer.
+const NEUTRAL_DOT_INDIGO: Color32 = Color32::from_rgb(0x61, 0x5f, 0xff);
+/// The highlight's `shadow-2xs` lift (`0 1px rgb(0 0 0 / 0.05)`).
+const NEUTRAL_DOT_SHADOW: egui::epaint::Shadow = egui::epaint::Shadow {
+    offset: [0, 1],
+    blur: 0,
+    spread: 0,
+    color: Color32::from_black_alpha(13),
+};
 
 /// The 850 ms four-phase clock's timing state. egui is immediate-mode, so the
 /// card keeps this in the frame's temp memory keyed by the card instead of a
@@ -126,8 +144,8 @@ impl PreviewClock {
 }
 
 /// The mode preview card: Previous / Play-Pause pill / Next, the A-D example
-/// illustration, the "Game receives ..." caption, the example-position
-/// indicator, and the animation clock.
+/// illustration, the output-state caption, the example-position indicator, and
+/// the animation clock.
 ///
 /// Display-only apart from the three transport controls; the caller maps a
 /// click to a `Message` (migration constraint 2). `awake` mirrors window
@@ -185,16 +203,29 @@ pub fn preview_card(
                             example_key(ui, "A", true, old, theme::PRIMARY_TEXT);
                             ui.vertical(|ui| {
                                 ui.spacing_mut().item_spacing = Vec2::new(0.0, 4.0);
-                                key_indicator(ui, old, new);
+                                // The reference highlights the neutral dot only
+                                // in the Press Delay gap (`phase === 1 &&
+                                // example === 1`), which is the one phase the
+                                // neutral state renders in.
+                                key_indicator(
+                                    ui,
+                                    old,
+                                    new,
+                                    mode == SocdMode::PressDelay && preview.phase == 1,
+                                );
                                 delay_badge(ui, &delay, mode, preview.phase);
                             });
                             example_key(ui, "D", false, new, theme::PURPLE_600);
                         });
+                        // The caption names the game's resolved output, not a
+                        // raw input pair: during the Release Delay overlap the
+                        // old direction stays held, so the pair state is
+                        // described as an overlap rather than two outputs.
                         let state_key = match (old, new) {
-                            (true, true) => "Game receives A + D",
-                            (false, false) => "Game receives no direction",
-                            (true, false) => "Game receives A",
-                            (false, true) => "Game receives D",
+                            (true, true) => "Opposite-direction overlap",
+                            (false, false) => "Neutral gap (neither key active)",
+                            (true, false) => "A output active",
+                            (false, true) => "D output active",
                         };
                         caption(ui, language.text(state_key));
                         example_dots(ui, preview.example);
@@ -415,9 +446,11 @@ fn example_key(ui: &mut Ui, name: &str, left: bool, held: bool, accent: Color32)
     );
 }
 
-/// The game's view between the two example keys: an arrow for one live key, a
-/// dot for none, and the reference's short bar when both are live.
-fn key_indicator(ui: &mut Ui, old: bool, new: bool) {
+/// The game's view between the two example keys: an arrow for one live key,
+/// the reference's neutral gap dot for none, and its short bar when both are
+/// live. `gap_highlight` is the Press Delay gap phase, where the reference
+/// raises the neutral dot in indigo.
+fn key_indicator(ui: &mut Ui, old: bool, new: bool, gap_highlight: bool) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(60.0, 26.0), Sense::hover());
     let painter = ui.painter();
     match (old, new) {
@@ -438,7 +471,21 @@ fn key_indicator(ui: &mut Ui, old: bool, new: bool) {
             );
         }
         (false, false) => {
-            painter.circle_filled(rect.center(), 4.0, theme::INDIGO_600);
+            // The reference's neutral dot: `w-2.5 h-2.5 rounded-full
+            // bg-slate-300`, highlighted `bg-indigo-500 scale-110 shadow-2xs`
+            // during the Press Delay gap.
+            let (color, diameter) = if gap_highlight {
+                (NEUTRAL_DOT_INDIGO, NEUTRAL_DOT * NEUTRAL_DOT_HIGHLIGHT)
+            } else {
+                (theme::SLATE_300, NEUTRAL_DOT)
+            };
+            if gap_highlight {
+                painter.add(NEUTRAL_DOT_SHADOW.as_shape(
+                    Rect::from_center_size(rect.center(), Vec2::splat(diameter)),
+                    theme::CIRCLE_RADIUS,
+                ));
+            }
+            painter.circle_filled(rect.center(), diameter / 2.0, color);
         }
         (true, true) => {
             painter.rect_filled(
@@ -724,6 +771,26 @@ mod tests {
         out
     }
 
+    /// Every circle this frame painted, flattened out of `Shape::Vec`.
+    fn painted_circles<State>(harness: &Harness<'_, State>) -> Vec<egui::epaint::CircleShape> {
+        fn collect(shape: &egui::Shape, out: &mut Vec<egui::epaint::CircleShape>) {
+            match shape {
+                egui::Shape::Circle(circle) => out.push(*circle),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for clipped in &harness.output().shapes {
+            collect(&clipped.shape, &mut out);
+        }
+        out
+    }
+
     /// Every text drawn this frame, in paint order.
     fn painted_texts<State>(harness: &Harness<'_, State>) -> Vec<String> {
         fn collect(shape: &egui::Shape, out: &mut Vec<String>) {
@@ -855,9 +922,75 @@ mod tests {
     }
 
     #[test]
-    fn the_caption_publishes_the_resolved_state() {
-        let harness = card_harness(Preview::default(), TimingSettings::default());
-        harness.get_by_label("Game receives A");
+    fn the_caption_names_every_resolved_state() {
+        // Release Delay phase 1 is the physical overlap; Press Delay phase 1
+        // is the neutral gap; the two single-key states come from the
+        // Immediate example's first two phases.
+        let cases = [
+            (0, 0, "A output active"),
+            (0, 1, "D output active"),
+            (1, 1, "Neutral gap (neither key active)"),
+            (2, 1, "Opposite-direction overlap"),
+        ];
+        for (example, phase, label) in cases {
+            let harness = card_harness(
+                Preview {
+                    example,
+                    phase,
+                    playing: false,
+                },
+                TimingSettings::default(),
+            );
+            harness.get_by_label(label);
+        }
+    }
+
+    #[test]
+    fn the_neutral_gap_dot_keeps_the_reference_styling() {
+        // The neutral dot renders only in the Press Delay gap phase, where
+        // the reference highlights it `bg-indigo-500 scale-110 shadow-2xs`.
+        let harness = card_harness(
+            Preview {
+                example: 1,
+                phase: 1,
+                playing: false,
+            },
+            TimingSettings::default(),
+        );
+        let dot = painted_circles(&harness)
+            .into_iter()
+            .find(|circle| circle.fill == NEUTRAL_DOT_INDIGO)
+            .expect("the gap dot paints the indigo highlight");
+        assert!(
+            (dot.radius - NEUTRAL_DOT * NEUTRAL_DOT_HIGHLIGHT / 2.0).abs() < 0.01,
+            "the highlighted dot keeps the reference's scale-110 diameter"
+        );
+        assert!(
+            painted_rects(&harness).iter().any(|rect| {
+                rect.fill == Color32::from_black_alpha(13)
+                    && rect.blur_width == 0.0
+                    && rect.rect.contains(dot.center)
+            }),
+            "the highlight keeps the reference's shadow-2xs lift"
+        );
+    }
+
+    #[test]
+    fn the_neutral_dot_rests_on_slate_without_the_gap_highlight() {
+        // The reference's resting branch (`bg-slate-300`) cannot be reached
+        // through the four-phase card -- the neutral state only exists in the
+        // highlighted gap -- so the rule is pinned directly.
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(120.0, 60.0))
+            .build_ui(|ui| {
+                key_indicator(ui, false, false, false);
+            });
+        harness.run();
+        let dot = painted_circles(&harness)
+            .into_iter()
+            .find(|circle| circle.fill == theme::SLATE_300)
+            .expect("the resting neutral dot is slate-300");
+        assert!((dot.radius - NEUTRAL_DOT / 2.0).abs() < 0.01);
     }
 
     #[test]

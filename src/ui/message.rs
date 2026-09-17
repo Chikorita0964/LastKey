@@ -18,15 +18,19 @@ pub enum TimingField {
     PreservationRate = 2,
     PreservedMinimum = 3,
     PreservedMaximum = 4,
+    /// The press share of the Random Mix ratio: the reciprocal view of
+    /// [`Self::PreservationRate`], so `press + release = 100`.
+    PressRate = 5,
 }
 
 impl TimingField {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::TransitionMinimum,
         Self::TransitionMaximum,
         Self::PreservationRate,
         Self::PreservedMinimum,
         Self::PreservedMaximum,
+        Self::PressRate,
     ];
 
     pub const fn index(self) -> usize {
@@ -43,20 +47,20 @@ impl TimingField {
             Self::TransitionMinimum | Self::TransitionMaximum => {
                 matches!(timing.mode, SocdMode::PressDelay | SocdMode::RandomMix)
             }
-            Self::PreservationRate => matches!(timing.mode, SocdMode::RandomMix),
+            Self::PreservationRate | Self::PressRate => matches!(timing.mode, SocdMode::RandomMix),
             Self::PreservedMinimum | Self::PreservedMaximum => {
                 matches!(timing.mode, SocdMode::ReleaseDelay | SocdMode::RandomMix)
             }
         }
     }
 
-    /// The draft slot this field edits. `PreservationRate` is a percentage,
-    /// not a duration, so it has none and keeps its own path.
+    /// The draft slot this field edits. The rate fields are percentages, not
+    /// durations, so they have none and share the draft's rate slot.
     pub fn micros_mut(self, timing: &mut TimingSettings) -> Option<&mut u32> {
         match self {
             Self::TransitionMinimum => Some(&mut timing.socd_transition_min_micros),
             Self::TransitionMaximum => Some(&mut timing.socd_transition_max_micros),
-            Self::PreservationRate => None,
+            Self::PreservationRate | Self::PressRate => None,
             Self::PreservedMinimum => Some(&mut timing.preserved_overlap_min_micros),
             Self::PreservedMaximum => Some(&mut timing.preserved_overlap_max_micros),
         }
@@ -68,14 +72,15 @@ impl TimingField {
         match self {
             Self::TransitionMinimum => Some(timing.socd_transition_min_micros),
             Self::TransitionMaximum => Some(timing.socd_transition_max_micros),
-            Self::PreservationRate => None,
+            Self::PreservationRate | Self::PressRate => None,
             Self::PreservedMinimum => Some(timing.preserved_overlap_min_micros),
             Self::PreservedMaximum => Some(timing.preserved_overlap_max_micros),
         }
     }
 
-    /// Whether this field's own min/max pair is inverted. The rate field has
-    /// no pair; its validity is purely textual and decided by its caller.
+    /// Whether this field's own min/max pair is inverted. The rate fields
+    /// have no pair; their validity is purely textual and decided by their
+    /// caller.
     pub fn pair_invalid(self, timing: &TimingSettings) -> bool {
         match self {
             Self::TransitionMinimum | Self::TransitionMaximum => timing_pair_invalid(
@@ -86,7 +91,7 @@ impl TimingField {
                 timing.preserved_overlap_min_micros,
                 timing.preserved_overlap_max_micros,
             ),
-            Self::PreservationRate => false,
+            Self::PreservationRate | Self::PressRate => false,
         }
     }
 }
