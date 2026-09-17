@@ -1,14 +1,15 @@
 {
   "schema_version": 1,
-  "execution_id": "bff7b581-6402-4d1e-818a-5824592172fb",
+  "execution_id": "42f9c058-db88-4aa9-ba9c-431f22e7909d",
   "task_id": "T3-PROFILES",
   "status": "completed",
-  "summary": "Profiles fixes: inactive slot chips now resolve key names through the runtime's physical_key_name resolver instead of a scan-code fallback, and the rename field takes the typed text's width in the same frame instead of scrolling on the stale state name. Both fixes ship with egui_kittest widget regression tests and the full gate passes.",
+  "summary": "Re-verification of the reviewed implementation commit 3b20592 for this execution: inactive slot chips resolve key names through the runtime's physical_key_name resolver instead of a scan-code fallback, and the rename field takes the typed text's width in the same frame instead of scrolling on the stale state name. The unchanged implementation was re-checked against the commit and both fixes pass the widget tests, the scoped loop, and the full gate.",
   "branch": "agent/worker-3",
   "implementation_commit": "3b20592943227aa42301c8b77309193519e3bf6b",
   "owned_files": ["src/ui/profiles.rs"],
   "changed_files": ["src/ui/profiles.rs"],
   "tests": [
+    { "command": "git diff --exit-code 3b20592943227aa42301c8b77309193519e3bf6b -- src/ui/profiles.rs", "result": "pass" },
     { "command": "cargo test --no-default-features --features egui-ui --lib -- profiles::tests::", "result": "pass" },
     { "command": "cargo test --locked --no-default-features --features egui-ui --lib --test ui_semantic", "result": "pass" },
     { "command": "cargo fmt --all -- --check", "result": "pass" },
@@ -24,11 +25,11 @@
   "mandatory_acceptance": {
     "PROFILE-RENAME-JITTER": {
       "status": "satisfied",
-      "evidence": "rename_field now renders its TextEdit with clip_text(false): egui's singleline scroll-to-caret is disabled and the widget takes the live galley width in the keystroke's own frame instead of the one-frame-stale committed name, so the box grows rightward and the text never shifts. Widget test ui::profiles::tests::the_rename_field_takes_the_typed_texts_width_in_the_typing_frame passes (the field rect covers the typed text on the typing frame); before the fix the same test measured a 97.6px rect against 204.3px typed text and failed. The scoped loop and full gate passed."
+      "evidence": "rename_field renders its TextEdit with clip_text(false): egui's singleline scroll-to-caret is disabled and the widget takes the live galley width in the keystroke's own frame instead of the one-frame-stale committed name, so the box grows rightward and the text never shifts. Widget test ui::profiles::tests::the_rename_field_takes_the_typed_texts_width_in_the_typing_frame passes (the field rect covers the typed text on the typing frame); before the fix the same test measured a 97.6px rect against 204.3px typed text and failed. Re-verified for execution 42f9c058-db88-4aa9-ba9c-431f22e7909d: the worktree still matches implementation commit 3b20592 and the scoped loop and full gate passed again."
     },
     "PROFILE-INACTIVE-KEY-NAMES": {
       "status": "satisfied",
-      "evidence": "chip resolves keys absent from the active draft's snapshot.keys through physical_key_name, the same resolver the runtime fills wire names with, replacing the SC:xx/E0:xx scan-code fallback. Widget test ui::profiles::tests::an_inactive_slots_chip_names_a_key_the_active_draft_no_longer_binds renders a draft remapped to Right Shift (0x36) while inactive slots keep W (0x11) and asserts zero SC:11 labels, at least three chips carrying the platform name, and the wire name still winning for the draft binding; before the fix the same test found three SC:11 chips and failed. The scoped loop and full gate passed."
+      "evidence": "chip resolves keys absent from the active draft's snapshot.keys through physical_key_name, the same resolver the runtime fills wire names with, replacing the SC:xx/E0:xx scan-code fallback. Widget test ui::profiles::tests::an_inactive_slots_chip_names_a_key_the_active_draft_no_longer_binds renders a draft remapped to Right Shift (0x36) while inactive slots keep W (0x11) and asserts zero SC:11 labels, at least three chips carrying the platform name, and the wire name still winning for the draft binding; before the fix the same test found three SC:11 chips and failed. Re-verified for execution 42f9c058-db88-4aa9-ba9c-431f22e7909d: the worktree still matches implementation commit 3b20592 and the scoped loop and full gate passed again."
     }
   },
   "risks": [
