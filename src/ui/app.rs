@@ -785,7 +785,16 @@ fn recommendations_card(
                     }
                 });
             });
-            ui.horizontal(|ui| {
+            let transition = timing_range(measurement.recommended_transition);
+            let overlap = timing_range(measurement.recommended_overlap);
+            let value_height = suggestion_value_height(
+                ui,
+                [
+                    (&transition, measurement.recommended_transition.is_some()),
+                    (&overlap, measurement.recommended_overlap.is_some()),
+                ],
+            );
+            ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = theme::ROW_GAP;
                 let width = ((ui.available_width() - theme::ROW_GAP) / 2.0).max(0.0);
                 suggestion_tile(
@@ -793,23 +802,26 @@ fn recommendations_card(
                     width,
                     language.text("New Key Press Delay"),
                     language.text("Based on neutral transitions"),
-                    &timing_range(measurement.recommended_transition),
+                    &transition,
                     measurement.recommended_transition.is_some(),
+                    value_height,
                 );
                 suggestion_tile(
                     ui,
                     width,
                     language.text("Previous Key Release Delay"),
                     language.text("Based on physical overlaps"),
-                    &timing_range(measurement.recommended_overlap),
+                    &overlap,
                     measurement.recommended_overlap.is_some(),
+                    value_height,
                 );
             });
         });
 }
 
 /// One recommendation tile: the delay name and its hint stacked on the left,
-/// the value hugging the right edge.
+/// the value hugging the right edge in the shared `value_height` slot, so the
+/// tiles in the pair keep one top line and one height (F13).
 fn suggestion_tile(
     ui: &mut Ui,
     width: f32,
@@ -817,6 +829,7 @@ fn suggestion_tile(
     hint: &str,
     value: &str,
     available: bool,
+    value_height: f32,
 ) {
     ui.allocate_ui_with_layout(Vec2::new(width, 0.0), Layout::top_down(Align::Min), |ui| {
         theme::group_style()
@@ -839,11 +852,46 @@ fn suggestion_tile(
                         } else {
                             theme::ICON_MUTED
                         };
-                        label(ui, value, size, color, true);
+                        value_box(ui, value, size, color, value_height);
                     });
                 });
             });
     });
+}
+
+/// The recommendation value slot both tiles share. The value is a single line
+/// for a range and two lines for the collect prompt, so the pair's height is
+/// the taller of the two and the shorter tile keeps the same baseline (F13).
+fn suggestion_value_height(ui: &Ui, values: [(&str, bool); 2]) -> f32 {
+    values
+        .into_iter()
+        .map(|(value, available)| {
+            let size = if available { 17.0 } else { 13.0 };
+            ui.painter()
+                .layout_no_wrap(
+                    value.to_owned(),
+                    FontId::new(size, theme::UI_FONT),
+                    Color32::PLACEHOLDER,
+                )
+                .size()
+                .y
+        })
+        .fold(0.0, f32::max)
+}
+
+/// A recommendation value painted on its slot's centre line; the slot keeps the
+/// shared height whether the galley is one line or two.
+fn value_box(ui: &mut Ui, value: &str, size: f32, color: Color32, height: f32) {
+    let galley = ui.painter().layout_no_wrap(
+        value.to_owned(),
+        FontId::new(size, theme::UI_FONT),
+        Color32::PLACEHOLDER,
+    );
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(galley.size().x, height), Sense::hover());
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, ui.is_enabled(), value));
+    let position = Pos2::new(rect.left(), rect.center().y - galley.size().y / 2.0);
+    theme::stamp_galley(ui.painter(), position, &galley, color, size);
 }
 
 /// One table row: seven cells sharing the same widths and spacing, so columns
@@ -1809,6 +1857,93 @@ mod tests {
                 .all(|shape| shape.fallback_color == theme::INDIGO_600),
             "an available suggestion takes the indigo accent"
         );
+    }
+
+    /// F13 (APP-RECOMMENDATIONS-ALIGNMENT): the two recommendation tiles share
+    /// one top line and one height, including the mixed case where one value is
+    /// a range and the other is the two-line collect prompt.
+    #[test]
+    fn the_recommendation_tiles_share_one_top_and_height() {
+        let cases: [(&str, Option<TimingRange>, Option<TimingRange>); 3] = [
+            (
+                "range + prompt",
+                Some(TimingRange {
+                    min_micros: 2_400,
+                    max_micros: 3_700,
+                }),
+                None,
+            ),
+            (
+                "prompt + range",
+                None,
+                Some(TimingRange {
+                    min_micros: 1_100,
+                    max_micros: 2_200,
+                }),
+            ),
+            (
+                "range + range",
+                Some(TimingRange {
+                    min_micros: 2_400,
+                    max_micros: 3_700,
+                }),
+                Some(TimingRange {
+                    min_micros: 1_100,
+                    max_micros: 2_200,
+                }),
+            ),
+        ];
+        for (case, transition, overlap) in cases {
+            let mut measurement = table_measurement();
+            measurement.recommended_transition = transition;
+            measurement.recommended_overlap = overlap;
+            let mut harness = Harness::builder()
+                .with_size(egui::vec2(1040.0, 1600.0))
+                .build_ui_state(
+                    |ui, state: &mut State| {
+                        let mut messages = Vec::new();
+                        recommendations_card(ui, &measurement, state.language, &mut messages);
+                    },
+                    baseline_state(),
+                );
+            harness.run();
+
+            let mut frames = painted_rects_filled(&harness, theme::INSET);
+            frames.sort_by(|a, b| a.min.x.total_cmp(&b.min.x));
+            assert_eq!(frames.len(), 2, "{case}: two tile frames: {frames:?}");
+            let (first, second) = (frames[0], frames[1]);
+            assert!(
+                (first.min.y - second.min.y).abs() <= 0.5,
+                "{case}: one top line: {first:?} {second:?}"
+            );
+            assert!(
+                (first.height() - second.height()).abs() <= 0.5,
+                "{case}: one height: {first:?} {second:?}"
+            );
+        }
+    }
+
+    fn painted_rects_filled<State>(harness: &Harness<'_, State>, fill: Color32) -> Vec<egui::Rect> {
+        fn collect(shape: &egui::Shape, fill: Color32, out: &mut Vec<egui::Rect>) {
+            match shape {
+                egui::Shape::Rect(rect) => {
+                    if rect.fill == fill {
+                        out.push(rect.rect);
+                    }
+                }
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, fill, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for clipped in &harness.output().shapes {
+            collect(&clipped.shape, fill, &mut out);
+        }
+        out
     }
 
     /// F20 (APP-ACTION-BAR-NON-ITALIC): the dirty-draft hint stays upright.
