@@ -1,16 +1,16 @@
 {
   "schema_version": 1,
-  "execution_id": "18f1c556-712a-4c01-8d82-5b7bded1f373",
+  "execution_id": "e07cafb3-609d-4f1b-b059-d8343ec75dd1",
   "task_id": "T12-THEME-AND-DOCS-ALIGNMENT",
   "status": "completed",
-  "summary": "keycap.rs no longer carries a local stamp_galley: its call sites resolve through a re-export to theme::stamp_galley, the single owner. theme.rs retires the unconsumed single-handle slider tokens, and docs/architecture/ui.md now describes the dual-sided Random Mix ratio editors (F10) and the platform key-name resolver for inactive-profile chips (F17). The scoped loop and full gate pass.",
+  "summary": "Rework: the chip comments in theme.rs (CHIP_CONTENT_MIN) and profiles.rs (chip) now name the `Scan code 0x{:02X}` fallback that platform::windows::physical_key_name actually produces, matching ui.md's profile-chip contract. The deliberate negative-control references and the stamp dedupe are unchanged, and the scoped loop and full gate pass.",
   "branch": "agent/worker-3",
-  "implementation_commit": "b399cf3a0e10a5e90d2eb534fca1810027410487",
-  "owned_files": ["src/ui/theme.rs", "src/ui/keycap.rs", "docs/architecture/ui.md"],
-  "changed_files": ["src/ui/theme.rs", "src/ui/keycap.rs", "docs/architecture/ui.md"],
+  "implementation_commit": "5a4376260cb5da96b113fe2ac036506a23c1c509",
+  "owned_files": ["src/ui/theme.rs", "src/ui/keycap.rs", "src/ui/profiles.rs", "docs/architecture/ui.md"],
+  "changed_files": ["src/ui/theme.rs", "src/ui/profiles.rs"],
   "tests": [
-    { "command": "cargo test --locked --no-default-features --features egui-ui --lib --test ui_semantic", "result": "pass" },
     { "command": "cargo fmt --all -- --check", "result": "pass" },
+    { "command": "cargo test --locked --no-default-features --features egui-ui --lib --test ui_semantic", "result": "pass" },
     { "command": "cargo test --locked --all-targets", "result": "pass" },
     { "command": "cargo clippy --locked --all-targets -- -D warnings", "result": "pass" },
     { "command": "cargo test --locked --no-default-features --features egui-ui --lib --bin lastkey-settings --test ui_semantic", "result": "pass" },
@@ -23,13 +23,12 @@
   "mandatory_acceptance": {
     "THEME-CLEANUP-AND-DOCS-ALIGNMENT": {
       "status": "satisfied",
-      "evidence": "Dedupe: the keycap.rs copy of stamp_galley is deleted; the module re-exports theme::stamp_galley so mapping.rs's keycap::stamp_galley call sites keep resolving to the single owner, and new widget test ui::keycap::tests::the_legend_stamp_uses_the_shared_theme_offset asserts the keycap legend's two passes sit at max(18 * theme::STAMP_OFFSET_FACTOR, theme::STAMP_OFFSET_MIN), which a divergent local copy would fail; theme's the_label_is_stamped_twice_by_the_shared_approximation still passes. Retirement: SLIDER_RAIL_WIDTH, SLIDER_RAIL_RADIUS, SLIDER_HANDLE_RADIUS, and SLIDER_HANDLE_RADIUS_DRAG are removed from theme.rs; the gate's check/clippy runs across all targets compile, which proves no code references remain (the only remaining mention is the prose comment in the concurrently owned timing.rs, recorded in risks). Docs: ui.md's Random Mix bullet now states that the stored release share is the single value the release box, the press box, and the mixer slider write (F10); the profile-chip bullet now states that keys the snapshot does not name resolve through platform::windows::physical_key_name, the resolver the wire names come from, with the resolved name as the chip's accessible label (F17); the chip-width note drops the retired SC:xx fallback. A final search of ui.md finds no remaining SC:xx/E0:xx, tooltip, or single-editable-side wording."
+      "evidence": "Wording: theme.rs's CHIP_CONTENT_MIN comment and profiles.rs's chip comment now say the longer-label case is `Scan code 0x{:02X}` from `physical_key_name`, the format src/platform/windows/input.rs line 1523 actually returns, matching the profile-chip bullet in docs/architecture/ui.md's Profile slots contract; a search of the four owned files finds no other SC:xx wording except the deliberate negative controls at profiles.rs line 1161 and the SC:11 assertions around lines 1206-1212, which are left untouched. Dedupe maintained: keycap.rs still has no local stamp_galley (pub(super) use super::theme::stamp_galley; only), and the earlier theme-token retirement and ui.md alignment from T12 remain in the tree. The full gate passes."
     }
   },
   "risks": [
     "src/ui/timing.rs still names the retired SLIDER_RAIL_*/SLIDER_HANDLE_RADIUS* tokens in a prose comment (around line 35); that file belongs to the concurrent T10 task, so the wording is a follow-up for its owner.",
-    "The branch was synced to the pinned base_commit 2409bd7 with a conflict-free local merge before implementing; the merge brought the wave-3 files (header, preview, timing, state, language) into the branch and dropped .orchestrator/reports/T3-PROFILES.json and T6-APP-TABLE.json at the tip, matching the integration line. Those report commits remain in history and no report was rewritten.",
-    "This cleanup is verified by widget tests and the full gate; it changes no rendered geometry, but the stage's native-visual gap in docs/architecture/verification.md (Unverified Areas) still applies to the touched controls."
+    "This rework is comment-only and verified by the full gate; the stage's native-visual gap in docs/architecture/verification.md (Unverified Areas) still applies to the touched controls."
   ],
   "blockers": []
 }
