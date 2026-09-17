@@ -30,11 +30,17 @@ Rendering rules, stated as what to use rather than only what to avoid:
   in the runtime process and keeps resolving SOCD while the window sleeps, so nothing here may gate
   filtering, the engine's monitor tap, or the tray. Focus restores the previous behavior, and a
   command queued on the way out still wakes the pump immediately.
-- Text uses generic font families, never a named one. `theme::UI_FONT` is `FontFamily::Proportional`
-  and `theme::MONO_FONT` is `FontFamily::Monospace`, so the shaper resolves the OS default and then
-  walks its own fallback chain for glyphs that face lacks — Hangul and CJK included. A named family
-  (`FontFamily::Name(..)`) pins a face that is absent on other targets and renders tofu. Canvas text
-  takes the same rule.
+- Text uses generic font families at call sites, never a named one: `theme::UI_FONT` is
+  `FontFamily::Proportional` and `theme::MONO_FONT` is `FontFamily::Monospace`. The face those
+  families resolve is owned by `theme::fonts()` (F24): it registers the native Windows UI face
+  (Segoe UI, read from `%WINDIR%\Fonts\segoeui.ttf`) at the head of `FontFamily::Proportional` and
+  keeps eframe's bundled `default_fonts` faces behind it, which epaint walks in order as the
+  per-glyph fallback — Hangul, CJK, and emoji included. A missing or unreadable system file leaves
+  the bundled set untouched, so the window still renders where Segoe UI is absent. A named family
+  (`FontFamily::Name(..)`) pins a face that is absent on other targets and renders tofu; canvas
+  text takes the same generic-family rule. Bold emphasis remains the double-stamp approximation
+  (`theme::stamp_galley`) until a weighted family has call sites: egui selects a face by family,
+  not by weight, so loading a bold file alone changes nothing.
 - Still excluded: icon fonts (glyph coverage differs per OS) and runtime image decoding (`png` stays
   in `[build-dependencies]`).
 - UI strings live in `src/ui/language/`, one file per language including `en.rs`. Each exports
@@ -106,10 +112,12 @@ load-bearing, because both are easy to "fix" back into a defect:
 - One page starts at 1040×800 with a 960×600 minimum. The header holds branding, connection status,
   profile selection, and engine on/off as compact icon-only controls. Mappings and timing are side
   by side at matched height; timeline, measurement, and results follow in a single body. Only the
-  body scrolls. The header and the action bar are floating sticky bars: card chrome (rounded
+  body scrolls, and the header and the action bar sit outside that one scroll owner in the page's
+  vertical flow, separated from the body by `theme::SECTION_GAP`. Both keep the card chrome (rounded
   `theme::CARD_RADIUS`, the 2px card border, and the card shadow) inset by `theme::PAGE_PADDING`
-  from every window edge, drawn outside the one scroll owner so scrolled cards pass behind them.
-  The body reserves the bar's full frame, so the bar's bottom margin survives. Narrow reflow is
+  from the page edge, and the body reserves the action bar's full frame (`theme::SECTION_GAP` plus
+  `ACTION_BAR_HEIGHT`), so the bar's margin survives. The body clips its content at its own viewport
+  edge: a scrolled card is clipped there rather than sliding behind the bars. Narrow reflow is
   outside this port. Profile and language menus overlay the stable page slot as panels anchored to
   the top-right below the header — not centered modals — preserving scroll position, and profile
   errors remain visible inside the panel.
