@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "execution_id": "4e64e636-81e0-466c-bd8b-c707b480e690",
+  "execution_id": "9f1d4a2f-d556-4d38-9b6c-ec8016962c42",
   "task_id": "T8-TIMING-INPUTS",
   "status": "completed",
   "summary": "Reverified the reviewed implementation daa784ab for this execution: F10 dual-sided mix ratio input and F25 release-delay floor still pass the acceptance tests, the UI scoped loop, and the full gate, with no source changes (the three owned files are byte-identical to the pinned implementation commit).",
@@ -34,7 +34,7 @@
   "risks": [
     "The release box still clamps typed input to 1..=100 while the press box follows the reference's 1..=99; that asymmetry is F09's scope (it owns tightening the rate clamp, and its tests live in the unowned state_tests.rs) and disappears once F09 lands.",
     "The two halves keep the reference's single-draft behaviour: activating one box resets the other's uncommitted text to the committed value, and if both were left dirty the Apply commit order (PressRate last in TimingField::ALL) lets the press buffer win. The widget tests cover the normal single-edit flows.",
-    "Native on-screen validation was not performed in either execution: the acceptance evidence is widget-level interaction, state, and painted-shape assertions, not a desktop screenshot."
+    "Native on-screen validation was not performed in any execution of this task: the acceptance evidence is widget-level interaction, state, and painted-shape assertions, not a desktop screenshot."
   ],
   "blockers": []
 }
