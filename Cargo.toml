@@ -40,7 +40,9 @@ toml = "0.9"
 # exists to fix; `wgpu` is the renderer eframe's `Renderer` requires (dropping
 # every backend is a compile_error!, and `wgpu_no_default_features` alone would
 # leave no backend, as `dx12` arrives with `wgpu`'s own default); `default_fonts`
-# supplies the text faces, though egui's own default already enables it.
+# supplies the bundled fallback faces behind the native Segoe UI face that
+# `theme::fonts()` registers on top (F24), though egui's own default already
+# enables it.
 # The dropped defaults are unusable here: `links`, `wayland`, `x11` and
 # `web_screen_reader` are for targets and features this Windows-only dependency
 # never builds, and `winit/default` re-adds the Linux-only `x11`/`wayland` pair

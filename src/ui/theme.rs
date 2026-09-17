@@ -26,10 +26,11 @@
 //!   variant, and eframe's `default_fonts` ships no bold/semibold/italic
 //!   faces, so `UI_FONT_BOLD`, `UI_FONT_SEMIBOLD`, `UI_FONT_ITALIC`,
 //!   `UI_FONT_BLACK` and `CHIP_FONT` have no direct counterpart. The generic
-//!   families they were built from stay here ([`UI_FONT`], [`MONO_FONT`]);
-//!   emphasis is a size/colour decision at the call site until a weighted
-//!   face is registered, which is a behaviour question to raise, not to fix
-//!   in passing (migration constraint 5).
+//!   families they were built from stay here ([`UI_FONT`], [`MONO_FONT`]),
+//!   and [`fonts`] registers the native Windows UI face ahead of the bundled
+//!   faces (F24). Emphasis remains a size/colour decision at the call site
+//!   until egui can select a face by weight and not by family alone
+//!   (migration constraint 5).
 //! - The Iced file's style *closures* (`primary_button`, `keycap`,
 //!   `accent_slider`, ...) fed Iced's per-widget style hook. egui styles
 //!   widgets at the call site from `Style`/`Visuals` plus per-widget builders,
@@ -223,6 +224,62 @@ pub const UI_FONT: egui::FontFamily = egui::FontFamily::Proportional;
 /// `font-code` stack on every `<kbd>` (`[&_kbd]:font-code` on `<body>`), which
 /// is what keeps all four chips the same width.
 pub const MONO_FONT: egui::FontFamily = egui::FontFamily::Monospace;
+
+/// Registered name of the native UI face: the Windows shell face, Segoe UI.
+const NATIVE_UI_FACE: &str = "segoe-ui";
+/// The regular-weight Segoe UI file inside the Windows font directory.
+const NATIVE_UI_FACE_FILE: &str = "segoeui.ttf";
+
+/// The settings window's fonts: the native system UI face first, with
+/// eframe's bundled `default_fonts` faces behind it as the fallback (F24).
+///
+/// egui has no OS font lookup, so the face is read from `%WINDIR%\Fonts` when
+/// this is called; a missing or unreadable file leaves the bundled set alone,
+/// which is what the window rendered with before F24. epaint walks a family's
+/// font list in order and uses the first face that has the glyph, so the
+/// bundled faces behind the native one stay the per-glyph fallback.
+///
+/// The bold face is deliberately not loaded: egui picks a face by
+/// [`egui::FontFamily`], not by weight, so a second weight has no selection
+/// path until the text styles can name a weighted family; emphasis keeps
+/// [`stamp_galley`]'s approximation until then.
+pub fn fonts() -> egui::FontDefinitions {
+    compose_fonts(native_ui_font_bytes())
+}
+
+/// Composes the bundled definitions with an optional native face. Split from
+/// [`fonts`] so both branches are testable without the real system file.
+fn compose_fonts(native: Option<Vec<u8>>) -> egui::FontDefinitions {
+    let mut definitions = egui::FontDefinitions::default();
+    if let Some(bytes) = native {
+        definitions.font_data.insert(
+            NATIVE_UI_FACE.to_owned(),
+            Arc::new(egui::FontData::from_owned(bytes)),
+        );
+        definitions
+            .families
+            .entry(UI_FONT)
+            .or_default()
+            .insert(0, NATIVE_UI_FACE.to_owned());
+    }
+    definitions
+}
+
+/// The native UI face's bytes from the Windows font directory, or `None` on
+/// another platform or an install that does not ship Segoe UI.
+fn native_ui_font_bytes() -> Option<Vec<u8>> {
+    #[cfg(windows)]
+    {
+        let root = std::env::var_os("WINDIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"));
+        std::fs::read(root.join("Fonts").join(NATIVE_UI_FACE_FILE)).ok()
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
 
 /// Body text size from the preview; headings sit just above it.
 pub const BODY_TEXT_SIZE: f32 = 13.0;
@@ -1737,5 +1794,104 @@ mod controls_tests {
         assert_ne!(rest.2, hovered.2, "hover must actually move the ink");
         assert_ne!(rest.2, disabled.2, "disabled must actually dim the ink");
         assert_eq!(rest.0, disabled.0, "both keep the SURFACE shell");
+    }
+}
+
+#[cfg(test)]
+mod font_tests {
+    //! F24: the theme leads with the native system face and keeps the bundled
+    //! faces as its per-glyph fallback.
+
+    use super::{NATIVE_UI_FACE, compose_fonts, fonts, native_ui_font_bytes};
+    use egui::{FontDefinitions, FontFamily, FontId, RawInput};
+    use std::sync::Arc;
+
+    /// The bundled set the fallback branch must reproduce.
+    fn bundled() -> FontDefinitions {
+        FontDefinitions::default()
+    }
+
+    /// Runs one frame so `set_fonts` takes effect; the atlas deltas are
+    /// cleared because a context without a renderer never applies them.
+    fn run_one_frame(ctx: &egui::Context) {
+        let mut output = ctx.run_ui(RawInput::default(), |_ui| {});
+        output.textures_delta.clear();
+    }
+
+    /// The bundled set with only the native face in the proportional family,
+    /// so a live context can lay out with that face alone.
+    fn native_only_definitions(bytes: Vec<u8>) -> FontDefinitions {
+        let mut definitions = FontDefinitions::default();
+        definitions.font_data.insert(
+            NATIVE_UI_FACE.to_owned(),
+            Arc::new(egui::FontData::from_owned(bytes)),
+        );
+        definitions
+            .families
+            .insert(FontFamily::Proportional, vec![NATIVE_UI_FACE.to_owned()]);
+        definitions
+    }
+
+    #[test]
+    fn a_missing_native_face_leaves_the_bundled_set_untouched() {
+        assert_eq!(compose_fonts(None), bundled());
+    }
+
+    #[test]
+    fn the_native_face_leads_the_proportional_family_behind_the_bundled_fallback() {
+        let definitions = compose_fonts(Some(vec![0, 1, 2, 3]));
+        let proportional = &definitions.families[&FontFamily::Proportional];
+
+        assert_eq!(
+            proportional.first().map(String::as_str),
+            Some(NATIVE_UI_FACE)
+        );
+        assert_eq!(
+            &proportional[1..],
+            bundled().families[&FontFamily::Proportional].as_slice(),
+            "the bundled faces must stay in order behind the native one"
+        );
+        assert!(
+            definitions.font_data.contains_key(NATIVE_UI_FACE),
+            "the native face must be registered in font_data"
+        );
+    }
+
+    #[test]
+    fn the_installed_definitions_lead_with_the_native_face() {
+        let Some(bytes) = native_ui_font_bytes() else {
+            // Without the system file the fallback branch is the contract.
+            return;
+        };
+
+        let themed = egui::Context::default();
+        themed.set_fonts(fonts());
+        run_one_frame(&themed);
+
+        let native_only = egui::Context::default();
+        native_only.set_fonts(native_only_definitions(bytes));
+        run_one_frame(&native_only);
+
+        themed.fonts(|fonts| {
+            assert_eq!(
+                fonts.definitions().families[&FontFamily::Proportional]
+                    .first()
+                    .map(String::as_str),
+                Some(NATIVE_UI_FACE),
+                "the installed set must lead with the native family"
+            );
+        });
+
+        // The native metrics are what layout uses: a glyph's advance equals a
+        // context where only the native face is registered. A bundled first
+        // face would land on the bundled metrics instead.
+        let font = FontId::proportional(16.0);
+        for glyph in ['W', 'i', 'M', 'g'] {
+            assert_eq!(
+                themed.fonts_mut(|fonts| fonts.glyph_width(&font, glyph)),
+                native_only.fonts_mut(|fonts| fonts.glyph_width(&font, glyph)),
+                "{glyph} must be laid out by the native face"
+            );
+        }
     }
 }
