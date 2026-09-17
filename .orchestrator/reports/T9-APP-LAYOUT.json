@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "execution_id": "ce110559-c0d6-414a-8236-0436e01c0856",
+  "task_id": "T9-APP-LAYOUT",
+  "status": "blocked",
+  "summary": "F13 implemented and committed: the two Suggested delays tiles share one top line and one height in every value combination. F06 is blocked by file ownership: the top-row card frames are sized inside src/ui/mapping.rs and src/ui/timing.rs, so src/ui/app.rs cannot enforce matching card heights without bypassing those owners.",
+  "branch": "agent/worker-3",
+  "implementation_commit": "d547ade40a4749000f9366d3467fea5939c6d84f",
+  "owned_files": ["src/ui/app.rs"],
+  "changed_files": ["src/ui/app.rs"],
+  "tests": [
+    { "command": "cargo test --no-default-features --features egui-ui --lib -- ui::app::tests::", "result": "pass" },
+    { "command": "cargo test --locked --no-default-features --features egui-ui --lib --test ui_semantic", "result": "pass" },
+    { "command": "cargo fmt --all -- --check", "result": "pass" },
+    { "command": "cargo test --locked --all-targets", "result": "pass" },
+    { "command": "cargo clippy --locked --all-targets -- -D warnings", "result": "pass" },
+    { "command": "cargo test --locked --no-default-features --features egui-ui --lib --bin lastkey-settings --test ui_semantic", "result": "pass" },
+    { "command": "cargo clippy --locked --no-default-features --features egui-ui --all-targets -- -D warnings", "result": "pass" },
+    { "command": "cargo check --locked --target x86_64-unknown-linux-gnu --all-targets", "result": "pass" },
+    { "command": "cargo tree --no-default-features -e normal", "result": "pass" },
+    { "command": "git diff --check", "result": "pass" },
+    { "command": ".github\\scripts\\Test-ReleaseFormDefault.ps1", "result": "pass" }
+  ],
+  "mandatory_acceptance": {
+    "APP-RECOMMENDATIONS-ALIGNMENT": {
+      "status": "satisfied",
+      "evidence": "recommendations_card now top-aligns the tile row (horizontal_top) and measures the taller of the two value galleys (the 17px single-line range against the 13px two-line collect prompt) into one suggestion_value_height; suggestion_tile renders its value through value_box, which claims that shared height. Both tiles therefore end on one top line and one height in every availability combination. Widget test ui::app::tests::the_recommendation_tiles_share_one_top_and_height renders the card in isolation for range+prompt, prompt+range, and range+range and asserts the two tile frames share min.y within 0.5px and height within 0.5px. Before the fix the mixed case placed the second tile 25px lower (frames y 91 vs 116) and the test failed; with the fix it passes, and the scoped loop and full gate pass."
+    },
+    "APP-CARDS-HEIGHT-MATCH": {
+      "status": "failed",
+      "evidence": "Measured painted card frames across the four SOCD modes at the 1040px test width: the Key mappings card stays 493px while the Input timings card is 514px (Immediate), 430px (Press Delay), 482px (Random Mix), and 430px (Release Delay). Each card sizes its own frame to its content inside src/ui/mapping.rs (key_mappings_card) and src/ui/timing.rs (timing_card). A probe that set a 700px minimum height on the mapping column left the painted card frame at 493px, proving the settings_cards row in src/ui/app.rs cannot propagate a matched height from outside. No implementation was attempted in owned_files because the fix belongs to those card owners; see blockers."
+    }
+  },
+  "risks": [
+    "F13 is verified by widget tests and the full gate only; native on-screen behavior of the recommendation tiles remains unverified per docs/architecture/verification.md (Unverified Areas).",
+    "The blocked criterion leaves this task's deliverable partial; the committed F13 implementation stands on its own and can be re-referenced by a follow-up execution."
+  ],
+  "blockers": [
+    "APP-CARDS-HEIGHT-MATCH cannot be satisfied inside owned_files [src/ui/app.rs]: every top-row card sizes its own frame to its content (key_mappings_card in src/ui/mapping.rs and timing_card in src/ui/timing.rs), and a minimum height set on the settings_cards columns does not propagate into those frames (measured: the mapping frame stayed 493px with a 700px column minimum). A clean fix needs those owners to claim a shared minimum height from settings_cards; painting the card shells from src/ui/app.rs instead would duplicate the card style and is the kind of workaround Rule 4 forbids. timing.rs is concurrently owned by T8-TIMING-INPUTS in this execution, so re-scoping must sequence or widen ownership."
+  ]
+}
