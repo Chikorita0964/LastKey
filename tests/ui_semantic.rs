@@ -7,12 +7,19 @@
 //! mode, edit a timing value, toggle the filter, and rename a profile.
 //!
 //! `src/ui/app.rs` is a private module, so the shell below composes the same
-//! public cards the page does (`app::settings_cards`): the header, the
-//! mapping/timing card row, the amber dirty badge the action bar mounts, and
-//! the profile overlay. The fakes sit at the process boundary: the shell runs
-//! `state::update` and records the `UiCommand`s a real connection would send,
-//! and the rebind flow injects the runtime's `KeyCaptured` event the way the
-//! IPC reader would.
+//! public cards the page does (`app::settings_cards`) between the pinned
+//! header and action-bar lines (F18): the header, then a scrolling body with
+//! the mapping/timing card row, then the amber dirty badge the action bar
+//! mounts, and the profile overlay. The fakes sit at the process boundary: the
+//! shell runs `state::update` and records the `UiCommand`s a real connection
+//! would send, and the rebind flow injects the runtime's `KeyCaptured` event
+//! the way the IPC reader would.
+//!
+//! Two of the gates pin the suite against the wave-5 presentation changes: the
+//! scroll gate asserts the bars keep their place while the body scrolls under
+//! them (F18), and the scale gate replays a representative flow at several
+//! pixel scales so a native-font metrics change (F24) cannot silently break
+//! the label-driven interactions.
 //!
 //! `cargo test` compiles this file with default features, where `src/lib.rs`
 //! keeps `ui` behind `windows + egui-ui`; the crate-level cfg leaves the file
@@ -102,8 +109,21 @@ impl PageShell {
 
     fn frame(&mut self, ui: &mut Ui) {
         let mut messages = Vec::new();
+        // The page pins the header above the scrolling body and keeps the
+        // action-bar content below it (F18). The gates run in the same
+        // composition, so a control that scrolls under the bars still answers
+        // by label while the bars keep their place.
         messages.extend(header::header(ui, &self.state));
-        messages.extend(self.cards(ui));
+        // One action control plus the row spacing is reserved for the pinned
+        // action line; the body scrolls inside the rest.
+        let action_line = theme::BUTTON_HEIGHT + 12.0;
+        let body_height = (ui.available_height() - action_line).max(0.0);
+        egui::ScrollArea::vertical()
+            .id_salt("semantic-page-body")
+            .max_height(body_height)
+            .show(ui, |ui| {
+                messages.extend(self.cards(ui));
+            });
         // The action bar mounts the badge below the cards, as `actions_bar`
         // does; the badge itself stays T6's control.
         header::dirty_badge(ui, &self.state);
@@ -380,4 +400,94 @@ fn renaming_a_profile_by_label_commits_the_typed_name() {
         "Enter must commit the typed name"
     );
     harness.get_by_label("Renamed");
+}
+
+/// F18: the header and the action-bar content are pinned; scrolling the body
+/// must not move them, and the scrolled controls must still answer by label.
+#[test]
+fn scrolling_the_body_keeps_the_pinned_bars_in_place() {
+    // A short window forces the card body to overflow its viewport.
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1040.0, 460.0))
+        .build_ui_state(
+            |ui, shell: &mut PageShell| shell.frame(ui),
+            PageShell {
+                state: baseline_state(),
+                sent: Vec::new(),
+            },
+        );
+    harness.run();
+    switch_to_press_delay(&mut harness);
+
+    let header_before = harness.get_by_label("Engine on/off").rect();
+    let badge_before = harness.get_by_label("Unsaved Draft Changes").rect();
+    let mode_before = harness
+        .get_by_role_and_label(Role::Button, "Press Delay")
+        .rect();
+
+    // A wheel over the body scrolls it; the pinned bars must not move.
+    harness.hover_at(egui::pos2(520.0, 260.0));
+    harness.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: egui::vec2(0.0, -220.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: egui::Modifiers::default(),
+    });
+    harness.run();
+
+    let header_after = harness.get_by_label("Engine on/off").rect();
+    let badge_after = harness.get_by_label("Unsaved Draft Changes").rect();
+    let mode_after = harness
+        .get_by_role_and_label(Role::Button, "Press Delay")
+        .rect();
+
+    assert!(
+        (header_after.min.y - header_before.min.y).abs() <= 0.5,
+        "the header bar stays pinned: {header_before:?} -> {header_after:?}"
+    );
+    assert!(
+        (badge_after.min.y - badge_before.min.y).abs() <= 0.5,
+        "the action bar stays pinned: {badge_before:?} -> {badge_after:?}"
+    );
+    assert!(
+        mode_after.min.y < mode_before.min.y - 20.0,
+        "the body scrolls under the bars: {mode_before:?} -> {mode_after:?}"
+    );
+    harness.get_by_label("Engine on/off");
+    harness.get_by_label("Unsaved Draft Changes");
+    harness.get_by_role_and_label(Role::Button, "Press Delay");
+}
+
+/// F24 hardening: the gates drive controls by accessible label, so a font
+/// metrics change must not alter them. Replays a representative edit at
+/// several pixel scales.
+#[test]
+fn the_label_gates_hold_across_pixel_scales() {
+    for pixels_per_point in [1.0, 1.25, 1.5] {
+        let mut harness = harness(baseline_state());
+        harness.ctx.set_pixels_per_point(pixels_per_point);
+        harness.run();
+
+        switch_to_press_delay(&mut harness);
+        harness.get_by_label("Transition Minimum").click();
+        harness.run();
+        harness.get_by_label("Transition Minimum").type_text("12.5");
+        harness.run();
+        harness.key_press(egui::Key::Enter);
+        harness.run();
+
+        assert_eq!(
+            harness
+                .state()
+                .state
+                .draft
+                .as_ref()
+                .unwrap()
+                .timing
+                .socd_transition_min_micros,
+            12_500,
+            "the typed value commits at {pixels_per_point}x scale"
+        );
+        harness.get_by_label("Unsaved Draft Changes");
+    }
 }

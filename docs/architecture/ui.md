@@ -136,10 +136,11 @@ load-bearing, because both are easy to "fix" back into a defect:
   Press or Release Delay their own group, Random Mix the ratio and both groups — while the draft
   keeps every hidden value. A group hidden by the mode is unmounted, not disabled, and `is_editable`
   still gates its messages so no hidden control can act.
-- The Random Mix slider controls complementary press/release shares shown as one `press : release`
-  value; the press share derives from the stored release share, which is the editable side. The
-  numeric release share retains the backend's 1–100 percent validation range. Delay decisions shown
-  on the timeline come from the engine, never from the displayed share.
+- The Random Mix ratio controls complementary press/release shares shown as one `press : release`
+  pill. The stored release share is the single value both numeric editors and the mixer slider
+  write: the release box edits it directly, the press box edits its complement, and committing
+  either refreshes the other box. The editors retain the backend's percent validation range.
+  Delay decisions shown on the timeline come from the engine, never from the displayed share.
 - The timing card explains the selected mode as numbered steps with a highlighted final step; the
   block is absent in Random Mix, where the ratio and both groups already fill the card.
 - A stopped timeline collapses to its title, subtitle, and start control; the graph, source,
@@ -155,9 +156,10 @@ load-bearing, because both are easy to "fix" back into a defect:
   at 70 px/s clamped to 260–2400 ms. Pointer reversal continues from the displayed offset; content
   or width changes reset it, and off-screen labels do not request animation frames.
 - Profile slots include four directional keycap chips. The UI reuses authoritative display names
-  available in the current snapshot. Other physical keys display their explicit SC:xx or E0:xx
-  scan code because the current wire does not provide inactive-profile key names; no keyboard-layout
-  table or platform call is added to the settings process. Complete labels remain in tooltips.
+  available in the current snapshot. Every other physical key resolves through the platform
+  key-name resolver (`platform::windows::physical_key_name`), the same function the runtime fills
+  the wire names with, so a key held only by an inactive profile still reads as a key name; the
+  port adds no keyboard-layout table of its own. The resolved name is the chip's accessible label.
 - A slot card paints from two inputs: its mode and its interaction state
   (`theme::{SlotState, slot_tint, slot_ink, slot_mode_ink}`). The loaded slot always draws active;
   otherwise the card under the pointer draws hovered and the rest draw idle, which is the
@@ -184,8 +186,8 @@ load-bearing, because both are easy to "fix" back into a defect:
   `<kbd>`. A proportional bold renders W/S/A/D at different widths and widens the pair row past the
   reference's. Each chip is square (`theme::CHIP_SIZE`, `rounded-md`, radius 6) and the label is
   centred on both axes; the reference's chip is wider than it is tall. The height is fixed on every
-  chip while the width is a floor, so the computed `SC:xx` fallback grows only its own chip sideways
-  and no label can make the row taller. Squaring the chip is +4px on the card, so
+  chip while the width is a floor, so a long key name grows only its own chip sideways and no
+  label can make the row taller. Squaring the chip is +4px on the card, so
   `theme::SLOT_ROW_GAP` takes 2 of them (10 → 8) and the card is 80px rather than the reference's 78.
 - The slot name box and the box that replaces it while renaming are one control in two states. The
   rename field keeps the name box's fill, radius and left inset — measured at the same `x` — so only

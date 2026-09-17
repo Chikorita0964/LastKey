@@ -50,6 +50,7 @@ pub struct TimingInputs {
     pub transition_minimum: String,
     pub transition_maximum: String,
     pub preservation_rate: String,
+    pub press_rate: String,
     pub preserved_minimum: String,
     pub preserved_maximum: String,
 }
@@ -59,7 +60,11 @@ impl TimingInputs {
         Self {
             transition_minimum: format_ms(timing.socd_transition_min_micros),
             transition_maximum: format_ms(timing.socd_transition_max_micros),
-            preservation_rate: format_rate(timing.overlap_preservation_rate),
+            preservation_rate: rate_text(
+                TimingField::PreservationRate,
+                timing.overlap_preservation_rate,
+            ),
+            press_rate: rate_text(TimingField::PressRate, timing.overlap_preservation_rate),
             preserved_minimum: format_ms(timing.preserved_overlap_min_micros),
             preserved_maximum: format_ms(timing.preserved_overlap_max_micros),
         }
@@ -74,6 +79,7 @@ impl TimingInputs {
             TimingField::TransitionMinimum => &mut self.transition_minimum,
             TimingField::TransitionMaximum => &mut self.transition_maximum,
             TimingField::PreservationRate => &mut self.preservation_rate,
+            TimingField::PressRate => &mut self.press_rate,
             TimingField::PreservedMinimum => &mut self.preserved_minimum,
             TimingField::PreservedMaximum => &mut self.preserved_maximum,
         }
@@ -84,6 +90,7 @@ impl TimingInputs {
             TimingField::TransitionMinimum => &self.transition_minimum,
             TimingField::TransitionMaximum => &self.transition_maximum,
             TimingField::PreservationRate => &self.preservation_rate,
+            TimingField::PressRate => &self.press_rate,
             TimingField::PreservedMinimum => &self.preserved_minimum,
             TimingField::PreservedMaximum => &self.preserved_maximum,
         }
@@ -159,7 +166,7 @@ pub struct State {
     /// Whether each value box is the one being edited. Indexed by field
     /// discriminant. Any message that moves focus elsewhere rearms every box,
     /// so the next press selects all again, Explorer-style.
-    pub editing: [bool; 5],
+    pub editing: [bool; 6],
     pub session_details_open: bool,
     pub pressed_keys: [bool; 4],
     pub press_timestamps: [Option<Instant>; 4],
@@ -188,7 +195,7 @@ impl Default for State {
             draft: None,
             inputs: TimingInputs::default(),
             pending_section: Some(requested_view()),
-            editing: [false; 5],
+            editing: [false; 6],
             session_details_open: false,
             pressed_keys: [false; 4],
             press_timestamps: [None; 4],
@@ -411,8 +418,9 @@ pub fn update(state: &mut State, message: Message) -> Vec<Effect> {
             {
                 draft.timing.overlap_preservation_rate =
                     100 - press_share.round().clamp(1.0, 99.0) as u8;
-                state.inputs.preservation_rate =
-                    format_rate(draft.timing.overlap_preservation_rate);
+                // The mixer is a direct manipulation of the same value, so
+                // both percentage boxes follow it; no text edit to preserve.
+                sync_rate_buffers(state);
             }
         }
         Message::ModeSelected(mode) => {
@@ -441,6 +449,15 @@ pub fn update(state: &mut State, message: Message) -> Vec<Effect> {
             }
         }
         Message::ValueBoxActivated(field) => {
+            // The rate is one value behind two boxes, so activating one drops
+            // the other's uncommitted text back to the committed value, the
+            // way the reference keeps a single draft for the focused side.
+            if let Some(sibling) = rate_sibling(field)
+                && let Some(draft) = state.draft.as_ref()
+            {
+                let rate = draft.timing.overlap_preservation_rate;
+                *state.inputs.buffer_mut(sibling) = rate_text(sibling, rate);
+            }
             // Flag bookkeeping already ran in `track_box_focus`; this only
             // reveals the box with its whole value selected.
             return vec![Effect::FocusValueBox(field)];
@@ -580,10 +597,38 @@ fn track_box_focus(state: &mut State, message: &Message) {
         | Message::Ipc(..)
         | Message::Preview(PreviewAction::Tick) => {}
         Message::ValueBoxActivated(field) => {
-            state.editing = [false; 5];
+            state.editing = [false; 6];
             state.editing[field.index()] = true;
         }
-        _ => state.editing = [false; 5],
+        _ => state.editing = [false; 6],
+    }
+}
+
+/// The percentage box facing the other side of the Random Mix ratio.
+fn rate_sibling(field: TimingField) -> Option<TimingField> {
+    match field {
+        TimingField::PreservationRate => Some(TimingField::PressRate),
+        TimingField::PressRate => Some(TimingField::PreservationRate),
+        _ => None,
+    }
+}
+
+/// The text a percentage box shows for a committed rate: the release box
+/// shows the rate itself, the press box its complement.
+fn rate_text(field: TimingField, rate: u8) -> String {
+    if field == TimingField::PressRate {
+        format_rate(100u8.saturating_sub(rate))
+    } else {
+        format_rate(rate)
+    }
+}
+
+/// Rewrites both percentage boxes from the committed rate.
+fn sync_rate_buffers(state: &mut State) {
+    if let Some(draft) = state.draft.as_ref() {
+        let rate = draft.timing.overlap_preservation_rate;
+        state.inputs.preservation_rate = rate_text(TimingField::PreservationRate, rate);
+        state.inputs.press_rate = rate_text(TimingField::PressRate, rate);
     }
 }
 
@@ -595,13 +640,45 @@ fn commit_field(state: &mut State, field: TimingField) -> bool {
     };
     if field == TimingField::PreservationRate {
         // The rate is a percentage, not a duration, so it keeps its own parse
-        // and format. "Off" is a mode, not a rate of zero.
-        return commit_text(
+        // and format. "Off" is a mode, not a rate of zero. The press box is
+        // the reciprocal view, so it follows unless it holds its own
+        // uncommitted draft.
+        let previous = draft.timing.overlap_preservation_rate;
+        let committed = commit_text(
             &mut state.inputs.preservation_rate,
             &mut draft.timing.overlap_preservation_rate,
             parse_rate_text,
             format_rate,
         );
+        if committed {
+            let rate = draft.timing.overlap_preservation_rate;
+            if state.inputs.press_rate == rate_text(TimingField::PressRate, previous) {
+                state.inputs.press_rate = rate_text(TimingField::PressRate, rate);
+            }
+        }
+        return committed;
+    }
+    if field == TimingField::PressRate {
+        // The press box edits the complement: the reference clamps its input
+        // to `MIX_RATE_MIN..=MIX_RATE_MAX` (1..=99), which keeps the stored
+        // rate inside the mixer's own band too.
+        let previous = draft.timing.overlap_preservation_rate;
+        let mut press_share = 100u8.saturating_sub(previous);
+        let committed = commit_text(
+            &mut state.inputs.press_rate,
+            &mut press_share,
+            parse_press_rate_text,
+            format_rate,
+        );
+        if committed {
+            let rate = 100 - press_share;
+            draft.timing.overlap_preservation_rate = rate;
+            if state.inputs.preservation_rate == rate_text(TimingField::PreservationRate, previous)
+            {
+                state.inputs.preservation_rate = rate_text(TimingField::PreservationRate, rate);
+            }
+        }
+        return committed;
     }
     let Some(slot) = field.micros_mut(&mut draft.timing) else {
         return true;
@@ -956,12 +1033,22 @@ pub fn parse_ms_text(input: &str) -> Option<u32> {
     Some(millis_to_micros(value))
 }
 
+/// Parses a mix-ratio percentage box. The reference's `MIX_RATE_MIN` and
+/// `MIX_RATE_MAX` bound it to 1..=99, so neither half of the ratio can round
+/// to a 0% or 100% share.
 pub fn parse_rate_text(input: &str) -> Option<u8> {
     let value: f32 = input.trim().parse().ok()?;
     if !value.is_finite() {
         return None;
     }
-    Some(value.round().clamp(1.0, 100.0) as u8)
+    Some(value.round().clamp(1.0, 99.0) as u8)
+}
+
+/// Parses the press-side percentage box. The press share edits the same
+/// 1..=99 band as the release share, so it shares the rate parser; the
+/// complement is applied by the commit that consumes this value.
+pub fn parse_press_rate_text(input: &str) -> Option<u8> {
+    parse_rate_text(input)
 }
 
 /// States the buffer commit policy once: parse, store, and normalize the

@@ -60,9 +60,71 @@ fn invalid_timing_settings_are_rejected() {
 
     settings.timing.socd_transition_min_micros = 0;
     settings.timing.socd_transition_max_micros = 0;
-    settings.timing.overlap_preservation_rate = 101;
+    for rate in [0, 100, 101] {
+        settings.timing.overlap_preservation_rate = rate;
+        assert!(
+            matches!(
+                settings.validate(),
+                Err(SettingsError::InvalidOverlapPreservationRate)
+            ),
+            "rate {rate} is outside 1..=99"
+        );
+    }
+
+    for rate in [1, 50, 99] {
+        settings.timing.overlap_preservation_rate = rate;
+        assert!(settings.validate().is_ok(), "rate {rate} is inside 1..=99");
+    }
+}
+
+#[test]
+fn a_stored_whole_overlap_rate_migrates_into_the_band() {
+    // The released band was 1..=100, so 100 is the one value the 1..=99 band
+    // excludes. It migrates to 99 on read — the file upgrades itself on the
+    // next save — instead of failing validate() and rejecting the whole file.
+    let stored = r#"
+mode = "RandomMix"
+overlap_preservation_rate = 100
+"#;
+    let timing: TimingSettings = toml::from_str(stored).expect("stored timing settings");
+    assert_eq!(timing.overlap_preservation_rate, 99);
+
+    let migrated = Settings {
+        timing,
+        ..Settings::default()
+    };
+    assert!(migrated.validate().is_ok());
+
+    // The legacy pre-mode file asserts the same two things: it still maps to
+    // Release Delay (the mapping reads the raw stored 100) and it stays
+    // loadable.
+    let legacy = r#"
+socd_transition_delay_enabled = true
+preserve_overlap = true
+overlap_preservation_rate = 100
+"#;
+    let timing: TimingSettings = toml::from_str(legacy).expect("stored timing settings");
+    assert_eq!(timing.mode, SocdMode::ReleaseDelay);
+    assert_eq!(timing.overlap_preservation_rate, 99);
+
+    let migrated = Settings {
+        timing,
+        ..Settings::default()
+    };
+    assert!(migrated.validate().is_ok());
+
+    // A value that was never inside 1..=100 still rejects the file.
+    let invalid = r#"
+mode = "RandomMix"
+overlap_preservation_rate = 101
+"#;
+    let timing: TimingSettings = toml::from_str(invalid).expect("stored timing settings");
+    let rejected = Settings {
+        timing,
+        ..Settings::default()
+    };
     assert!(matches!(
-        settings.validate(),
+        rejected.validate(),
         Err(SettingsError::InvalidOverlapPreservationRate)
     ));
 }
@@ -157,7 +219,20 @@ preserve_overlap = true
     for (stored, expected) in cases {
         let timing: TimingSettings = toml::from_str(stored).expect("stored timing settings");
         assert_eq!(timing.mode, expected, "stored: {stored}");
+        // Every migrated file must still pass validate(), the 100 case
+        // included: its stored rate migrates into the narrowed band.
+        let settings = Settings {
+            timing,
+            ..Settings::default()
+        };
+        assert!(settings.validate().is_ok(), "stored: {stored}");
     }
+
+    // The full-overlap file predates the 1..=99 band, so its stored 100 reads
+    // back as 99 while the mode mapping above still sees the raw value.
+    let timing: TimingSettings = toml::from_str(cases[0].0).expect("stored timing settings");
+    assert_eq!(timing.mode, SocdMode::ReleaseDelay);
+    assert_eq!(timing.overlap_preservation_rate, 99);
 }
 
 #[test]

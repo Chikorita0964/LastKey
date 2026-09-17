@@ -118,6 +118,11 @@ impl StoredMilliseconds {
 /// they describe the same four modes as a master switch plus a sub-switch.
 /// They are read only when `mode` is absent and are never written back, so a
 /// file upgrades itself on the next save.
+///
+/// The mix rate carries a one-value migration: the band narrowed from 1..=100
+/// to 1..=99 after 100 had shipped, so a stored 100 reads back as 99 instead
+/// of failing `validate()` and rejecting the whole file. Values that were
+/// never inside 1..=100 are passed through for `validate()` to reject.
 #[derive(Default, Deserialize)]
 struct StoredTimingSettings {
     #[serde(default)]
@@ -159,6 +164,18 @@ impl StoredTimingSettings {
             (false, _, _) => SocdMode::Immediate,
         }
     }
+
+    /// The stored mix rate under the current 1..=99 band. The only value the
+    /// narrowing excluded is the old ceiling, 100, which migrates to 99 so a
+    /// file written before the change still loads; every other value is passed
+    /// through for `validate()` to accept or reject.
+    fn overlap_preservation_rate(&self) -> u8 {
+        match self.overlap_preservation_rate {
+            Some(100) => 99,
+            Some(rate) => rate,
+            None => DEFAULT_PRESERVATION_RATE,
+        }
+    }
 }
 
 const DEFAULT_PRESERVATION_RATE: u8 = 50;
@@ -169,8 +186,12 @@ impl<'de> Deserialize<'de> for TimingSettings {
         D: Deserializer<'de>,
     {
         let stored = StoredTimingSettings::deserialize(deserializer)?;
+        // The pre-mode mapping reads the raw stored rate: 100 signalled full
+        // overlap. Resolve both before the rate migrates into 1..=99.
+        let mode = stored.mode();
+        let overlap_preservation_rate = stored.overlap_preservation_rate();
         Ok(Self {
-            mode: stored.mode(),
+            mode,
             socd_transition_min_micros: stored
                 .socd_transition_min_ms
                 .map(StoredMilliseconds::into_micros)
@@ -181,9 +202,7 @@ impl<'de> Deserialize<'de> for TimingSettings {
                 .map(StoredMilliseconds::into_micros)
                 .transpose()?
                 .unwrap_or(4_000),
-            overlap_preservation_rate: stored
-                .overlap_preservation_rate
-                .unwrap_or(DEFAULT_PRESERVATION_RATE),
+            overlap_preservation_rate,
             preserved_overlap_min_micros: stored
                 .preserved_overlap_min_ms
                 .map(StoredMilliseconds::into_micros)
@@ -294,7 +313,7 @@ impl fmt::Display for SettingsError {
             Self::InvalidOverlapPreservationRate => {
                 write!(
                     formatter,
-                    "configured overlap preservation rate must be between 1 and 100"
+                    "configured overlap preservation rate must be between 1 and 99"
                 )
             }
             Self::InvalidPreservedOverlapDuration => {
@@ -448,7 +467,7 @@ impl Settings {
         {
             return Err(SettingsError::InvalidTimingMaximum);
         }
-        if !(1..=100).contains(&self.timing.overlap_preservation_rate) {
+        if !(1..=99).contains(&self.timing.overlap_preservation_rate) {
             return Err(SettingsError::InvalidOverlapPreservationRate);
         }
         if self.timing.preserved_overlap_min_micros < 100 {

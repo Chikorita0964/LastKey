@@ -66,6 +66,7 @@ pub fn text(source: &str) -> Option<&'static str> {
         "Enable the SOCD filter" => "Activar el filtro SOCD",
         "Disable the SOCD filter" => "Desactivar el filtro SOCD",
         "All keys uniquely assigned." => "Todas las teclas son únicas.",
+        "4 directions mapped" => "4 direcciones asignadas",
         "Duplicate key bindings detected." => "Hay teclas duplicadas.",
         "UP" => "ARRIBA",
         "DOWN" => "ABAJO",

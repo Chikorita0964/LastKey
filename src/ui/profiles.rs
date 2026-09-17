@@ -37,6 +37,7 @@ use egui::{
 };
 
 use crate::core::PhysicalKey;
+use crate::platform::windows::physical_key_name;
 use crate::protocol::UiSnapshot;
 use crate::settings::ProfileSlot;
 
@@ -490,6 +491,15 @@ fn committed_box(ui: &mut Ui, name: &str, ink: theme::SlotInk) {
 /// right as the name is typed (the owner's requested departure from the
 /// reference's fixed `w-28`). Enter saves; Escape unwinds through the app's
 /// global key path, exactly as it did in Iced.
+///
+/// The field's width is measured from the committed name, which the state
+/// layer updates one frame behind the keystroke that produced it. With egui's
+/// default singleline clipping the widget is then clamped to that stale width
+/// (`text_edit/builder.rs`), the overflowing text scrolls left to keep the
+/// caret in view, and the scroll offset resets on the next frame when the
+/// measured width catches up -- the per-keystroke jump. `clip_text(false)`
+/// turns that clamping off, so the widget takes the live galley's width in the
+/// same frame: the box grows rightward and the text never moves.
 fn rename_field(ui: &mut Ui, state: &State, name: &str, messages: &mut Vec<Message>) {
     let id = profile_name_input_id();
     let mut text = name.to_owned();
@@ -509,6 +519,7 @@ fn rename_field(ui: &mut Ui, state: &State, name: &str, messages: &mut Vec<Messa
                     .frame(egui::Frame::NONE)
                     .margin(Margin::ZERO)
                     .desired_width(width)
+                    .clip_text(false)
                     .font(FontId::proportional(12.0))
                     .text_color(theme::BODY_TEXT)
                     .hint_text(hint.to_owned())
@@ -642,22 +653,19 @@ fn chips_row(
     });
 }
 
-/// One keycap chip: a square floor that grows sideways for the computed
-/// `SC:xx` fallback, with the monospace label on its centre line. The key
-/// name comes from the snapshot when the wire names it (Iced comment).
+/// One keycap chip: a square floor that grows sideways for a longer label, with
+/// the monospace label on its centre line. The key name comes from the snapshot
+/// when the wire names it; every other key resolves through
+/// [`physical_key_name`], the resolver the runtime builds the wire names with,
+/// so a key held only by an inactive profile still reads as a key name rather
+/// than the resolver's `Scan code 0x{:02X}` fallback.
 fn chip(ui: &mut Ui, physical: PhysicalKey, snapshot: &UiSnapshot, ink: theme::SlotInk) {
     let name = snapshot
         .keys
         .iter()
         .find(|key| key.physical == physical)
         .map(|key| key.name.clone())
-        .unwrap_or_else(|| {
-            format!(
-                "{}{:02X}",
-                if physical.extended { "E0:" } else { "SC:" },
-                physical.scan_code
-            )
-        });
+        .unwrap_or_else(|| physical_key_name(physical));
     let galley = ui.painter().layout_no_wrap(
         name.clone(),
         FontId::new(10.0, theme::MONO_FONT),
@@ -1099,5 +1107,118 @@ mod tests {
         harness.hover_at(Pos2::new(4.0, 4.0));
         harness.run();
         assert_eq!(harness.state().state.hovered_slot, None);
+    }
+
+    /// F16: the field is content-sized, so the width it renders with must
+    /// already cover the text being typed in the frame the keystroke lands.
+    /// The committed name the width is measured from updates one frame later,
+    /// so a width measured only from it leaves the typed text overflowing for
+    /// one frame; egui's singleline clipping would scroll the text left there
+    /// and back as the width catches up.
+    #[test]
+    fn the_rename_field_takes_the_typed_texts_width_in_the_typing_frame() {
+        use egui_kittest::kittest::Queryable;
+
+        let mut state = baseline_state();
+        open_list(&mut state);
+        let stored = state.stored_profile_name(0).unwrap();
+        let mut harness = harness(state);
+
+        harness.get_by_label(&stored).click();
+        harness.run();
+        harness.run();
+        assert!(
+            harness.get_by_label("Profile name").is_focused(),
+            "the rename field must hold focus before typing"
+        );
+
+        let typed = "A name far longer than the stored one";
+        harness.get_by_label("Profile name").type_text(typed);
+        // One step runs the frame that applies the queued text event. The
+        // assertion below reads the rect of that same frame, before the state
+        // layer's name update can widen the field on the following frame.
+        harness.step();
+
+        let text_width = harness.ctx.fonts_mut(|fonts| {
+            fonts
+                .layout_no_wrap(
+                    typed.to_owned(),
+                    FontId::proportional(12.0),
+                    Color32::PLACEHOLDER,
+                )
+                .size()
+                .x
+        });
+        let rect = harness.get_by_label("Profile name").rect();
+        assert!(
+            rect.width() + 1.0 >= text_width,
+            "the field must take the typed text's width in the typing frame: \
+             rect {rect:?}, typed text width {text_width}"
+        );
+    }
+
+    /// F17: the active draft names only its own four bindings, but an inactive
+    /// slot's key must still read as a key name, not as its `SC:xx` scan code.
+    /// The fallback goes through the platform resolver the wire names come
+    /// from, so the same key reads the same way in either state.
+    #[test]
+    fn an_inactive_slots_chip_names_a_key_the_active_draft_no_longer_binds() {
+        use egui_kittest::kittest::Queryable;
+
+        // The user remapped the active profile's vertical-first key from W
+        // (0x11) to Right Shift (0x36); the inactive slots keep W.
+        let remapped = PhysicalKey::new(0x36, false);
+        let mut saved = Settings::default();
+        saved.set_binding(crate::core::LogicalKey::VerticalFirst, remapped);
+        let mut snapshot = baseline_snapshot();
+        snapshot.saved = saved.clone();
+        snapshot.draft = saved;
+        snapshot.keys = [
+            DisplayKey {
+                physical: remapped,
+                name: "Right Shift".into(),
+            },
+            DisplayKey {
+                physical: PhysicalKey::new(0x1F, false),
+                name: "S".into(),
+            },
+            DisplayKey {
+                physical: PhysicalKey::new(0x1E, false),
+                name: "A".into(),
+            },
+            DisplayKey {
+                physical: PhysicalKey::new(0x20, false),
+                name: "D".into(),
+            },
+        ];
+        let draft = snapshot.draft.clone();
+        let mut state = State {
+            snapshot: Some(snapshot),
+            draft: Some(draft),
+            ..baseline_state()
+        };
+        open_list(&mut state);
+        let mut harness = harness(state);
+        harness.run();
+
+        let platform_name = physical_key_name(PhysicalKey::new(0x11, false));
+        assert_ne!(
+            platform_name, "SC:11",
+            "the platform resolver must not fall back to the old scan code"
+        );
+        assert_eq!(
+            harness.query_all_by_label("SC:11").count(),
+            0,
+            "a key held only by inactive slots must not render its scan code"
+        );
+        assert!(
+            harness.query_all_by_label(&platform_name).count() >= 3,
+            "each inactive slot's W chip must carry the platform key name {platform_name:?}"
+        );
+        assert_eq!(
+            harness.query_all_by_label("Right Shift").count(),
+            1,
+            "the wire name must still win for the active draft's binding"
+        );
     }
 }
