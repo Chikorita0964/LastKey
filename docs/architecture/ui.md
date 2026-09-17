@@ -106,9 +106,13 @@ load-bearing, because both are easy to "fix" back into a defect:
 - One page starts at 1040×800 with a 960×600 minimum. The header holds branding, connection status,
   profile selection, and engine on/off as compact icon-only controls. Mappings and timing are side
   by side at matched height; timeline, measurement, and results follow in a single body. Only the
-  body scrolls; actions stay pinned. Narrow reflow is outside this port. Profile and language menus
-  overlay the stable page slot as panels anchored to the top-right below the header — not centered
-  modals — preserving scroll position, and profile errors remain visible inside the panel.
+  body scrolls. The header and the action bar are floating sticky bars: card chrome (rounded
+  `theme::CARD_RADIUS`, the 2px card border, and the card shadow) inset by `theme::PAGE_PADDING`
+  from every window edge, drawn outside the one scroll owner so scrolled cards pass behind them.
+  The body reserves the bar's full frame, so the bar's bottom margin survives. Narrow reflow is
+  outside this port. Profile and language menus overlay the stable page slot as panels anchored to
+  the top-right below the header — not centered modals — preserving scroll position, and profile
+  errors remain visible inside the panel.
 - Existing UiView launch/focus requests navigate to the top or bottom of that body. Pre-snapshot
   requests wait until it mounts; ordinary snapshots never reset its scroll offset.
 - The Key mappings card groups its title and subtitle tightly in a column beside the Restore button.

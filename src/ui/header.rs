@@ -86,6 +86,10 @@ const EMERALD_100: Color32 = Color32::from_rgb(0xd0, 0xfa, 0xe5);
 const INDIGO_500: Color32 = Color32::from_rgb(0x61, 0x5f, 0xff);
 
 /// Draws the header bar and returns the messages this frame produced.
+///
+/// The bar is the page's floating top edge (`ui.md` §Layout): card chrome
+/// inset by [`theme::PAGE_PADDING`], drawn outside the body's scroll owner so
+/// scrolled cards pass behind it.
 pub fn header(ui: &mut Ui, state: &State) -> Vec<Message> {
     let mut messages = Vec::new();
     let connected = state.connected;
