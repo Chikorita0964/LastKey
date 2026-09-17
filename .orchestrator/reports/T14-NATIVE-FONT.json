@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "execution_id": "c1aa3a14-05d0-445f-b464-9848d93ee0b7",
+  "task_id": "T14-NATIVE-FONT",
+  "status": "completed",
+  "summary": "F24's theme-side registration is implemented: theme::fonts() composes eframe's bundled default_fonts definitions with the native Windows Segoe UI face read from %WINDIR%\\Fonts, registers it at the head of the proportional family, and leaves the bundled set untouched when the file is missing. Cargo.toml documents default_fonts as the fallback behind the native face. The window's ctx.set_fonts call site lives in app.rs, outside this task's ownership (T13 this wave).",
+  "branch": "agent/worker-2",
+  "implementation_commit": "d7301a7ea61cd94989cfeac50a96570e1beab5a9",
+  "owned_files": ["Cargo.toml", "src/ui/theme.rs"],
+  "changed_files": ["Cargo.toml", "src/ui/theme.rs"],
+  "tests": [
+    {"command": "cargo test --no-default-features --features egui-ui --lib font_tests", "result": "pass"},
+    {"command": "cargo test --no-default-features --features egui-ui --lib theme", "result": "pass"},
+    {"command": "cargo fmt --all -- --check", "result": "pass"},
+    {"command": "cargo test --no-default-features --features egui-ui --lib --test ui_semantic", "result": "pass"},
+    {"command": "cargo test --locked --all-targets", "result": "pass"},
+    {"command": "cargo clippy --locked --all-targets -- -D warnings", "result": "pass"},
+    {"command": "cargo test --locked --no-default-features --features egui-ui --lib --bin lastkey-settings --test ui_semantic", "result": "pass"},
+    {"command": "cargo clippy --locked --no-default-features --features egui-ui --all-targets -- -D warnings", "result": "pass"},
+    {"command": "cargo check --locked --target x86_64-unknown-linux-gnu --all-targets", "result": "pass"},
+    {"command": "cargo tree --no-default-features -e normal", "result": "pass"},
+    {"command": "git diff --check", "result": "pass"},
+    {"command": ".github\\scripts\\Test-ReleaseFormDefault.ps1", "result": "pass"}
+  ],
+  "mandatory_acceptance": {
+    "THEME-NATIVE-SYSTEM-FONT": {
+      "status": "satisfied",
+      "evidence": "theme::fonts() starts from FontDefinitions::default() (eframe's bundled faces) and, when %WINDIR%\\Fonts\\segoeui.ttf is readable, registers its bytes as `segoe-ui` and inserts that name at the head of the proportional family, so epaint renders text with Segoe UI first and keeps the bundled faces as the per-glyph fallback; a missing or unreadable file returns the bundled set unchanged, which is the documented fallback. Re-executed evidence: font_tests (3) pin the fallback branch byte-for-byte against FontDefinitions::default(), the native-first branch with the bundled list still in order, and in live egui contexts that the installed family leads with the native face while glyph advances match a native-only context (the native face is what lays out text; a bundled first face would land on different metrics). The surrounding theme tests (20) stay green. The running window's own installation call is not part of this task's owned files (see risks)."
+    }
+  },
+  "risks": [
+    "The window is not wired yet: egui needs ctx.set_fonts(theme::fonts()) during SettingsApp setup, and src/ui/app.rs is owned by T13-FLOATING-BARS in this wave, outside this task's ownership. Until that call lands the window still renders the bundled faces even though the theme exposes the native-first definitions.",
+    "The bold face is deliberately not loaded: egui selects a face by FontFamily, not by weight, so a second weight has no selection path until call sites can name a weighted family; emphasis keeps theme::stamp_galley's double-stamp approximation, and F24's 'true bold weights' is therefore not fully covered by this theme-side change.",
+    "The branch's src/ui/theme.rs predates T12's integrated comment edits, so it differs from the assigned base. The three-way merge of this work with the base is clean (git merge-file reports 0 conflicts for both owned files), so integration of the F24 hunks should be conflict-free.",
+    "Native visual verification was not performed: no on-screen session confirmed the settings window's glyphs after the definitions would be installed, and the installation call is not wired (first risk)."
+  ],
+  "blockers": []
+}
