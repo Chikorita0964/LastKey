@@ -294,7 +294,7 @@ impl fmt::Display for SettingsError {
             Self::InvalidOverlapPreservationRate => {
                 write!(
                     formatter,
-                    "configured overlap preservation rate must be between 1 and 100"
+                    "configured overlap preservation rate must be between 1 and 99"
                 )
             }
             Self::InvalidPreservedOverlapDuration => {
@@ -448,7 +448,7 @@ impl Settings {
         {
             return Err(SettingsError::InvalidTimingMaximum);
         }
-        if !(1..=100).contains(&self.timing.overlap_preservation_rate) {
+        if !(1..=99).contains(&self.timing.overlap_preservation_rate) {
             return Err(SettingsError::InvalidOverlapPreservationRate);
         }
         if self.timing.preserved_overlap_min_micros < 100 {
