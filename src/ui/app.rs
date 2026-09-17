@@ -93,6 +93,10 @@ impl SettingsApp {
         // The window is light-only like the Iced shell: the port's style is
         // installed for every system theme so the references' pixels hold.
         cc.egui_ctx.all_styles_mut(|style| *style = theme::style());
+        // The text lays out on the theme's font set: the native Segoe UI face
+        // leads the proportional family where the system ships it, with the
+        // bundled faces behind it.
+        cc.egui_ctx.set_fonts(theme::fonts());
         let ctx = cc.egui_ctx.clone();
         // The reader thread wakes the window after every queued event; eframe
         // has no async runtime to drive an Iced-style stream.
@@ -1551,11 +1555,15 @@ mod tests {
     }
 
     /// A harness around the real page (`SettingsApp::page`) at the shipping
-    /// window size, so the floating bars are exercised exactly as they ship.
+    /// window size, with the window's startup style and font installation
+    /// applied, so the page runs in the context it ships with.
     fn page_harness(state: State) -> Harness<'static, SettingsApp> {
-        egui_kittest::Harness::builder()
+        let harness = egui_kittest::Harness::builder()
             .with_size(egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT))
-            .build_ui_state(|ui, app: &mut SettingsApp| app.page(ui), app(state))
+            .build_ui_state(|ui, app: &mut SettingsApp| app.page(ui), app(state));
+        harness.ctx.all_styles_mut(|style| *style = theme::style());
+        harness.ctx.set_fonts(theme::fonts());
+        harness
     }
 
     /// Every path this frame painted, flattened out of `Shape::Vec`.
@@ -2286,5 +2294,37 @@ mod tests {
             bar, bar_after,
             "the action bar stays pinned while the body scrolls (was {bar:?}, now {bar_after:?})"
         );
+    }
+
+    /// THEME-NATIVE-SYSTEM-FONT at the page level: the context the page runs
+    /// in leads its proportional family with the native Segoe UI face when
+    /// Windows ships it (`theme::fonts()`'s `segoe-ui` registration), and
+    /// keeps the bundled set untouched when the system file is absent.
+    #[test]
+    fn the_page_context_leads_the_proportional_family_with_the_native_face() {
+        let mut harness = page_harness(baseline_state());
+        harness.run();
+        let proportional = harness
+            .ctx
+            .fonts(|fonts| fonts.definitions().families[&egui::FontFamily::Proportional].clone());
+
+        let native_file = std::env::var_os("WINDIR")
+            .map(std::path::PathBuf::from)
+            .or_else(|| Some(std::path::PathBuf::from(r"C:\Windows")))
+            .map(|root| root.join("Fonts").join("segoeui.ttf"))
+            .is_some_and(|path| path.is_file());
+        if native_file {
+            assert_eq!(
+                proportional.first().map(String::as_str),
+                Some("segoe-ui"),
+                "the page context must lead with the native system face"
+            );
+        } else {
+            assert_ne!(
+                proportional.first().map(String::as_str),
+                Some("segoe-ui"),
+                "without the system file the bundled set is untouched"
+            );
+        }
     }
 }
