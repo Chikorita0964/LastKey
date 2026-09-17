@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "execution_id": "e8e4f58f-7990-447a-ae88-ec40b51c0d1b",
+  "task_id": "T14-NATIVE-FONT-AND-DOCS",
+  "status": "completed",
+  "summary": "theme::fonts() and font_tests were reverified unchanged (the font code is byte-identical to the integrated revision and its tests are green), and docs/architecture/ui.md now documents the native Segoe UI registration with the bundled per-glyph fallback and corrects the page-layout wording to the implemented vertical flow and viewport-edge clipping.",
+  "branch": "agent/worker-2",
+  "implementation_commit": "47d44178afc5dd148cb9eb63085cf2e8ff3f102d",
+  "owned_files": ["Cargo.toml", "src/ui/theme.rs", "docs/architecture/ui.md"],
+  "changed_files": ["docs/architecture/ui.md"],
+  "tests": [
+    {"command": "cargo test --no-default-features --features egui-ui --lib font_tests", "result": "pass"},
+    {"command": "cargo test --no-default-features --features egui-ui --lib theme", "result": "pass"},
+    {"command": "cargo fmt --all -- --check", "result": "pass"},
+    {"command": "cargo test --locked --all-targets", "result": "pass"},
+    {"command": "cargo clippy --locked --all-targets -- -D warnings", "result": "pass"},
+    {"command": "cargo test --locked --no-default-features --features egui-ui --lib --bin lastkey-settings --test ui_semantic", "result": "pass"},
+    {"command": "cargo clippy --locked --no-default-features --features egui-ui --all-targets -- -D warnings", "result": "pass"},
+    {"command": "cargo check --locked --target x86_64-unknown-linux-gnu --all-targets", "result": "pass"},
+    {"command": "cargo tree --no-default-features -e normal", "result": "pass"},
+    {"command": "git diff --check", "result": "pass"},
+    {"command": ".github\\scripts\\Test-ReleaseFormDefault.ps1", "result": "pass"}
+  ],
+  "mandatory_acceptance": {
+    "THEME-NATIVE-SYSTEM-FONT": {
+      "status": "satisfied",
+      "evidence": "Reverified unchanged in this execution: the font code (fonts, compose_fonts, native_ui_font_bytes, font_tests) has no differing hunks between this branch and agent/integration (the theme.rs delta there is T12's comments and retired slider tokens), and the re-run font_tests (3) plus theme tests (20) are green. The composition still starts from FontDefinitions::default(), registers the native Windows face as `segoe-ui` at the head of the proportional family when %WINDIR%\\Fonts\\segoeui.ttf is readable, keeps the bundled default_fonts list in order behind it as the per-glyph fallback, and returns the bundled set untouched when the file is missing; the live-context test shows glyph advances matching a native-only context, so the native face is what lays out text."
+    },
+    "DOCS-ARCHITECTURE-ALIGNMENT": {
+      "status": "satisfied",
+      "evidence": "docs/architecture/ui.md now states the implemented facts in both required places. Layout: the header and the action bar sit outside the one scroll owner in the page's vertical flow, separated from the body by theme::SECTION_GAP, both keep the card chrome inset by theme::PAGE_PADDING, the body reserves the action bar's full frame (theme::SECTION_GAP plus ACTION_BAR_HEIGHT), and the body clips its content at its own viewport edge (a scrolled card is clipped there rather than sliding behind the bars) - matching app.rs page()/body(), where header/body/actions_bar are siblings of one vertical ui with item_spacing.y = SECTION_GAP, the body's ScrollArea max_height is available_height minus (SECTION_GAP + ACTION_BAR_HEIGHT), and the ScrollArea owns the clipping. Typography: the paragraph documents that theme::fonts() registers the native Windows UI face (Segoe UI from %WINDIR%\\Fonts\\segoeui.ttf) at the head of FontFamily::Proportional with the bundled default_fonts faces behind it as per-glyph fallback, that call sites keep the generic families, and that bold emphasis remains theme::stamp_galley's approximation until a weighted family has call sites - matching theme.rs and font_tests. git diff agent/integration -- docs/architecture/ui.md is exactly those two corrected paragraphs."
+    }
+  },
+  "risks": [
+    "The window's ctx.set_fonts(theme::fonts()) wiring is T13's current-wave app.rs work and is outside this task's owned files; the typography contract documents the theme-side ownership, and the running-window acceptance belongs to that task.",
+    "This commit adopts the integrated ui.md (T13's page-layout edit) before applying the corrections because the branch's copy predated it; the diff against agent/integration is the corrections only, and the commit body records the adoption.",
+    "Bold emphasis remains the double-stamp approximation as documented; no weighted family exists yet, so F24's true-bold goal still needs call-site work.",
+    "Native visual validation was not performed: the acceptance evidence is the re-run tests plus the corrected contract text, not an on-screen session."
+  ],
+  "blockers": []
+}
