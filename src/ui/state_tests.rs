@@ -13,7 +13,7 @@ use super::{
     message::{KeyPress, Message, TimingField, timing_pair_invalid},
     state::{
         Effect, INVALID_TIMING_TEXT, State, TimingInputs, format_ms, format_rate, millis_to_micros,
-        parse_ms_text, parse_rate_text, requested_view_from, update,
+        parse_ms_text, parse_press_rate_text, parse_rate_text, requested_view_from, update,
     },
 };
 
@@ -92,9 +92,25 @@ fn typed_preservation_rates_clamp_to_whole_percent() {
     assert_eq!(parse_rate_text("50"), Some(50));
     assert_eq!(parse_rate_text("49.6"), Some(50));
     assert_eq!(parse_rate_text("0"), Some(1));
-    assert_eq!(parse_rate_text("101"), Some(100));
+    assert_eq!(parse_rate_text("1"), Some(1));
+    assert_eq!(parse_rate_text("99"), Some(99));
+    assert_eq!(parse_rate_text("100"), Some(99));
+    assert_eq!(parse_rate_text("101"), Some(99));
     assert_eq!(parse_rate_text(""), None);
     assert_eq!(format_rate(50), "50");
+}
+
+#[test]
+fn both_ratio_boxes_share_the_rate_band() {
+    // The press box edits the same 1..=99 band, so it shares the parser; the
+    // complement is applied by the commit.
+    for input in ["0", "1", "99", "100", "101", ""] {
+        assert_eq!(
+            parse_press_rate_text(input),
+            parse_rate_text(input),
+            "{input}"
+        );
+    }
 }
 
 #[test]
@@ -353,6 +369,18 @@ fn an_out_of_range_mix_ratio_clamps_without_leaving_the_mode() {
     assert_eq!(draft.timing.mode, SocdMode::RandomMix);
     assert_eq!(draft.timing.overlap_preservation_rate, 1);
     assert_eq!(state.inputs.preservation_rate, "1");
+    assert_eq!(state.inputs.press_rate, "99");
+
+    // The old ceiling is out of range now, the mirror of the zero case: 100
+    // clamps to the highest usable share and the press box takes the mirror.
+    state.inputs.preservation_rate = "100".into();
+    let _ = update(&mut state, Message::Apply);
+
+    let draft = state.draft.as_ref().expect("draft is kept");
+    assert_eq!(draft.timing.mode, SocdMode::RandomMix);
+    assert_eq!(draft.timing.overlap_preservation_rate, 99);
+    assert_eq!(state.inputs.preservation_rate, "99");
+    assert_eq!(state.inputs.press_rate, "1");
 }
 
 #[test]

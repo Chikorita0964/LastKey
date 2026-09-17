@@ -1033,23 +1033,22 @@ pub fn parse_ms_text(input: &str) -> Option<u32> {
     Some(millis_to_micros(value))
 }
 
+/// Parses a mix-ratio percentage box. The reference's `MIX_RATE_MIN` and
+/// `MIX_RATE_MAX` bound it to 1..=99, so neither half of the ratio can round
+/// to a 0% or 100% share.
 pub fn parse_rate_text(input: &str) -> Option<u8> {
     let value: f32 = input.trim().parse().ok()?;
     if !value.is_finite() {
         return None;
     }
-    Some(value.round().clamp(1.0, 100.0) as u8)
+    Some(value.round().clamp(1.0, 99.0) as u8)
 }
 
-/// Parses the press-side percentage box. The reference clamps this input to
-/// its `MIX_RATE_MIN..=MIX_RATE_MAX` (1..=99), so neither side of the ratio
-/// can round to a 0% or 100% share.
+/// Parses the press-side percentage box. The press share edits the same
+/// 1..=99 band as the release share, so it shares the rate parser; the
+/// complement is applied by the commit that consumes this value.
 pub fn parse_press_rate_text(input: &str) -> Option<u8> {
-    let value: f32 = input.trim().parse().ok()?;
-    if !value.is_finite() {
-        return None;
-    }
-    Some(value.round().clamp(1.0, 99.0) as u8)
+    parse_rate_text(input)
 }
 
 /// States the buffer commit policy once: parse, store, and normalize the
