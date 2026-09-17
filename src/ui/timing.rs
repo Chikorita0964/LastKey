@@ -16,7 +16,7 @@ use super::{
     language::Language,
     message::{Message, TimingField},
     preview::{self, Preview},
-    state::{TimingInputs, format_rate, parse_ms_text, parse_rate_text},
+    state::{TimingInputs, parse_ms_text, parse_press_rate_text, parse_rate_text},
     theme::{
         self, BODY_TEXT, CARD_PADDING, ERROR_TEXT, GROUP_PADDING, HEADING_SIZE, IMMEDIATE_ACCENT,
         INDIGO_600, INSET, MIX_TEXT, MUTED_TEXT, PRIMARY_TEXT, RELEASE_TEXT, SECTION_GAP,
@@ -65,6 +65,7 @@ pub fn value_box_id(field: TimingField) -> Id {
         TimingField::TransitionMinimum => "timing-transition-minimum",
         TimingField::TransitionMaximum => "timing-transition-maximum",
         TimingField::PreservationRate => "timing-preservation-rate",
+        TimingField::PressRate => "timing-press-rate",
         TimingField::PreservedMinimum => "timing-preserved-minimum",
         TimingField::PreservedMaximum => "timing-preserved-maximum",
     })
@@ -150,7 +151,11 @@ pub fn value_box(
     let field_name = match props.field {
         TimingField::TransitionMinimum => "Transition Minimum",
         TimingField::TransitionMaximum => "Transition Maximum",
-        TimingField::PreservationRate => "Delay Mix Ratio",
+        // The reference labels the two halves of the ratio pill separately
+        // (`t.pressDelayPercentage` / `t.releaseDelayPercentage`), so each box
+        // names its own side.
+        TimingField::PreservationRate => "Release Delay Percentage",
+        TimingField::PressRate => "Press Delay Percentage",
         TimingField::PreservedMinimum => "Preserved Minimum",
         TimingField::PreservedMaximum => "Preserved Maximum",
     };
@@ -526,7 +531,7 @@ pub fn duration_range(
     props: DurationRangeProps,
     timing: &TimingSettings,
     inputs: &TimingInputs,
-    editing: &[bool; 5],
+    editing: &[bool; 6],
     language: Language,
     messages: &mut Vec<Message>,
 ) {
@@ -622,13 +627,16 @@ pub fn rate_group(
     ui: &mut Ui,
     timing: &TimingSettings,
     inputs: &TimingInputs,
-    editing: &[bool; 5],
+    editing: &[bool; 6],
     language: Language,
     messages: &mut Vec<Message>,
 ) {
     let press_share = 100u8.saturating_sub(timing.overlap_preservation_rate);
     let rate_str = inputs.buffer(TimingField::PreservationRate);
-    let invalid = parse_rate_text(rate_str).is_none();
+    let press_str = inputs.buffer(TimingField::PressRate);
+    let rate_invalid = parse_rate_text(rate_str).is_none();
+    let press_invalid = parse_press_rate_text(press_str).is_none();
+    let invalid = rate_invalid || press_invalid;
 
     // The Iced ratio group is the one slot in this card padded with
     // `theme::GROUP_PADDING` rather than the 12 the duration ranges use
@@ -662,7 +670,7 @@ pub fn rate_group(
                             let rate_props = ValueBoxProps::new(
                                 TimingField::PreservationRate,
                                 editing[TimingField::PreservationRate.index()],
-                                invalid,
+                                rate_invalid,
                                 32.0,
                                 RELEASE_TEXT,
                             );
@@ -670,12 +678,17 @@ pub fn rate_group(
 
                             ui.colored_label(MIX_TEXT, ":");
 
-                            ui.colored_label(
-                                MIX_TEXT,
-                                egui::RichText::new(format_rate(press_share))
-                                    .font(FontId::new(12.0, egui::FontFamily::Proportional))
-                                    .strong(),
+                            // F10: the press share is the mirror box, so it takes the
+                            // mixer's left-rail ink (drawn `#4f46e5`) where the release
+                            // box takes its right-rail ink.
+                            let press_props = ValueBoxProps::new(
+                                TimingField::PressRate,
+                                editing[TimingField::PressRate.index()],
+                                press_invalid,
+                                32.0,
+                                PRIMARY_TEXT,
                             );
+                            value_box(ui, press_props, press_str, messages);
                         });
                 });
             });
@@ -838,7 +851,7 @@ pub fn timing_card(
     ui: &mut Ui,
     timing: &TimingSettings,
     inputs: &TimingInputs,
-    editing: &[bool; 5],
+    editing: &[bool; 6],
     language: Language,
     preview: Option<PreviewMount<'_>>,
     messages: &mut Vec<Message>,
@@ -1005,7 +1018,7 @@ mod tests {
             ..Default::default()
         };
         let inputs = TimingInputs::from_timing(&timing);
-        let editing = [false; 5];
+        let editing = [false; 6];
         let mut messages = Vec::new();
 
         let output = ctx.run_ui(egui::RawInput::default(), |ui| {
@@ -1030,7 +1043,7 @@ mod tests {
             ..Default::default()
         };
         let inputs = TimingInputs::from_timing(&timing);
-        let editing = [false; 5];
+        let editing = [false; 6];
         let mut messages = Vec::new();
 
         let output = ctx.run_ui(egui::RawInput::default(), |ui| {
@@ -1055,7 +1068,7 @@ mod tests {
             ..Default::default()
         };
         let inputs = TimingInputs::from_timing(&timing);
-        let editing = [false; 5];
+        let editing = [false; 6];
         let mut messages = Vec::new();
 
         let output = ctx.run_ui(egui::RawInput::default(), |ui| {
@@ -1080,7 +1093,7 @@ mod tests {
             ..Default::default()
         };
         let inputs = TimingInputs::from_timing(&timing);
-        let editing = [false; 5];
+        let editing = [false; 6];
         let mut messages = Vec::new();
 
         let output = ctx.run_ui(egui::RawInput::default(), |ui| {
@@ -1675,7 +1688,7 @@ mod tests {
             ..Default::default()
         };
         let inputs = TimingInputs::from_timing(&timing);
-        let editing = [false; 5];
+        let editing = [false; 6];
         let mut harness = Harness::builder()
             .with_size(egui::vec2(600.0, 400.0))
             .build_ui(move |ui| {
@@ -1872,6 +1885,251 @@ mod tests {
             painted_text_color(&harness, "Restore timing defaults"),
             timing_rest,
             "the timing control must return to its rest ink when the pointer leaves"
+        );
+    }
+
+    fn rate_of(harness: &egui_kittest::Harness<'_, FakeRuntime>) -> u8 {
+        harness
+            .state()
+            .state
+            .draft
+            .as_ref()
+            .unwrap()
+            .timing
+            .overlap_preservation_rate
+    }
+
+    fn release_delay_state() -> State {
+        let mut state = test_state();
+        state.draft.as_mut().unwrap().timing.mode = SocdMode::ReleaseDelay;
+        state
+    }
+
+    /// F10: both sides of the Random Mix ratio are editable boxes and either
+    /// side writes the reciprocal preservation rate, so the pill and the
+    /// mixer slider always show `press + release = 100`.
+    #[test]
+    fn test_mix_ratio_boxes_edit_both_sides_reciprocally() {
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        let mut state = test_state();
+        state.draft.as_mut().unwrap().timing.mode = SocdMode::RandomMix;
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1040.0, 800.0))
+            .build_ui_state(
+                |ui, runtime: &mut FakeRuntime| runtime.frame(ui),
+                FakeRuntime::new(state),
+            );
+
+        assert_eq!(
+            harness
+                .get_by_label("Press Delay Percentage")
+                .value()
+                .as_deref(),
+            Some("50"),
+            "the press side mirrors the default rate"
+        );
+        assert_eq!(
+            harness
+                .get_by_label("Release Delay Percentage")
+                .value()
+                .as_deref(),
+            Some("50")
+        );
+
+        // Typing into the press box stores the complement as the rate.
+        harness.get_by_label("Press Delay Percentage").click();
+        harness.run();
+        harness
+            .get_by_label("Press Delay Percentage")
+            .type_text("30");
+        harness.key_press(egui::Key::Enter);
+        harness.run();
+
+        assert_eq!(rate_of(&harness), 70, "press 30 must store a 70% rate");
+        assert_eq!(
+            harness
+                .get_by_label("Press Delay Percentage")
+                .value()
+                .as_deref(),
+            Some("30")
+        );
+        assert_eq!(
+            harness
+                .get_by_label("Release Delay Percentage")
+                .value()
+                .as_deref(),
+            Some("70"),
+            "the release box must follow the reciprocal"
+        );
+        // The mixer rail splits where the slider puts the press share: 30% in.
+        let slider_rect = harness
+            .get_by_role_and_label(egui::accesskit::Role::Slider, "Delay Mix Ratio")
+            .rect();
+        let spans: Vec<_> = painted_rects(&harness)
+            .into_iter()
+            .filter(|rect| {
+                rect.corner_radius == RAIL_RADIUS && slider_rect.contains_rect(rect.rect)
+            })
+            .collect();
+        let press_span = spans
+            .iter()
+            .find(|rect| rect.fill == PRIMARY_TEXT)
+            .expect("the mixer paints its press share span");
+        let release_span = spans
+            .iter()
+            .find(|rect| rect.fill == RELEASE_TEXT)
+            .expect("the mixer paints its release share span");
+        let share = (press_span.rect.max.x - press_span.rect.min.x)
+            / (release_span.rect.max.x - press_span.rect.min.x);
+        assert!(
+            (share - 0.30).abs() < 0.02,
+            "the rail split must sit at the 30% press share (measured {share})"
+        );
+
+        // The release box writes the rate directly.
+        harness.get_by_label("Release Delay Percentage").click();
+        harness.run();
+        harness
+            .get_by_label("Release Delay Percentage")
+            .type_text("80");
+        harness.key_press(egui::Key::Enter);
+        harness.run();
+
+        assert_eq!(rate_of(&harness), 80);
+        assert_eq!(
+            harness
+                .get_by_label("Press Delay Percentage")
+                .value()
+                .as_deref(),
+            Some("20")
+        );
+        assert_eq!(
+            harness
+                .get_by_label("Release Delay Percentage")
+                .value()
+                .as_deref(),
+            Some("80")
+        );
+    }
+
+    /// F25: the release-delay manual input holds the engine's 0.1 ms floor.
+    /// 0.0 ms is rejected by the validator with its message and never reaches
+    /// the runtime; 0.1 ms is accepted and applies.
+    #[test]
+    fn test_release_delay_manual_input_keeps_the_floor() {
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1040.0, 800.0))
+            .build_ui_state(
+                |ui, runtime: &mut FakeRuntime| runtime.frame(ui),
+                FakeRuntime::new(release_delay_state()),
+            );
+        harness.get_by_label("Preserved Minimum").click();
+        harness.run();
+        harness.get_by_label("Preserved Minimum").type_text("0.0");
+        harness.key_press(egui::Key::Enter);
+        harness.run();
+        assert_eq!(
+            harness
+                .state()
+                .state
+                .draft
+                .as_ref()
+                .unwrap()
+                .timing
+                .preserved_overlap_min_micros,
+            0,
+            "the typed 0.0 ms is what the validator must reject"
+        );
+        let effects = super::super::state::update(&mut harness.state_mut().state, Message::Apply);
+        assert!(
+            !effects
+                .iter()
+                .any(|effect| matches!(effect, super::super::state::Effect::Send(_))),
+            "a below-floor release delay must not reach the runtime"
+        );
+        assert_eq!(
+            harness.state().state.error.as_deref(),
+            Some("preserved overlap duration must be at least 0.1 ms"),
+            "Apply must name the 0.1 ms floor"
+        );
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1040.0, 800.0))
+            .build_ui_state(
+                |ui, runtime: &mut FakeRuntime| runtime.frame(ui),
+                FakeRuntime::new(release_delay_state()),
+            );
+        harness.get_by_label("Preserved Minimum").click();
+        harness.run();
+        harness.get_by_label("Preserved Minimum").type_text("0.1");
+        harness.key_press(egui::Key::Enter);
+        harness.run();
+        assert_eq!(
+            harness
+                .state()
+                .state
+                .draft
+                .as_ref()
+                .unwrap()
+                .timing
+                .preserved_overlap_min_micros,
+            100
+        );
+        let effects = super::super::state::update(&mut harness.state_mut().state, Message::Apply);
+        assert_eq!(
+            harness.state().state.error,
+            None,
+            "0.1 ms is the floor and must pass validation"
+        );
+        assert!(
+            effects
+                .iter()
+                .any(|effect| matches!(effect, super::super::state::Effect::Send(_))),
+            "a valid draft must reach the runtime"
+        );
+    }
+
+    /// F25: the release-delay rail clamps a drag to the left edge at 0.1 ms.
+    #[test]
+    fn test_release_delay_slider_keeps_the_floor() {
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1040.0, 800.0))
+            .build_ui_state(
+                |ui, runtime: &mut FakeRuntime| runtime.frame(ui),
+                FakeRuntime::new(release_delay_state()),
+            );
+
+        let rail = harness.get_by_role_and_label(
+            egui::accesskit::Role::Slider,
+            "Previous Key Release Delay duration range",
+        );
+        let rect = rail.rect();
+        let edge = egui::pos2(rect.left() + 1.0, rect.center().y);
+        harness.drag_at(rect.center());
+        harness.run();
+        harness.hover_at(edge);
+        harness.run();
+        harness.hover_at(edge);
+        harness.run();
+        harness.drop_at(edge);
+        harness.run();
+
+        assert_eq!(
+            harness
+                .state()
+                .state
+                .draft
+                .as_ref()
+                .unwrap()
+                .timing
+                .preserved_overlap_min_micros,
+            100,
+            "the rail must floor the release delay at 0.1 ms"
         );
     }
 }
