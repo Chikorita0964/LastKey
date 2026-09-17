@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "execution_id": "18f1c556-712a-4c01-8d82-5b7bded1f373",
+  "task_id": "T11-DELAY-MIX-BOUNDS",
+  "status": "completed",
+  "summary": "F09 is implemented across src/ui/state.rs, src/settings.rs, tests/settings.rs, src/ui/state_tests.rs, and docs/architecture/engine.md: the mix ratio is bounded to 1..=99, typed 0 and 100 clamp to 1 and 99, Settings::validate rejects anything outside the band, and the engine contract records the band and the stored-file consequence.",
+  "branch": "agent/worker-2",
+  "implementation_commit": "8a67e9191482d28613a8260aaa799ee9b3b87703",
+  "owned_files": ["src/ui/state.rs", "src/ui/state_tests.rs", "src/settings.rs", "tests/settings.rs", "docs/architecture/engine.md"],
+  "changed_files": ["docs/architecture/engine.md", "src/settings.rs", "src/ui/state.rs", "src/ui/state_tests.rs", "tests/settings.rs"],
+  "tests": [
+    {"command": "cargo test --no-default-features --features egui-ui --lib state_tests", "result": "pass"},
+    {"command": "cargo test --test settings", "result": "pass"},
+    {"command": "cargo fmt --all -- --check", "result": "pass"},
+    {"command": "cargo test --no-default-features --features egui-ui --lib --test ui_semantic", "result": "pass"},
+    {"command": "cargo test --locked --all-targets", "result": "pass"},
+    {"command": "cargo clippy --locked --all-targets -- -D warnings", "result": "pass"},
+    {"command": "cargo test --locked --no-default-features --features egui-ui --lib --bin lastkey-settings --test ui_semantic", "result": "pass"},
+    {"command": "cargo clippy --locked --no-default-features --features egui-ui --all-targets -- -D warnings", "result": "pass"},
+    {"command": "cargo check --locked --target x86_64-unknown-linux-gnu --all-targets", "result": "pass"},
+    {"command": "cargo tree --no-default-features -e normal", "result": "pass"},
+    {"command": "git diff --check", "result": "pass"},
+    {"command": ".github\\scripts\\Test-ReleaseFormDefault.ps1", "result": "pass"}
+  ],
+  "mandatory_acceptance": {
+    "TIMING-MIX-RATE-BOUNDS-CLAMP": {
+      "status": "satisfied",
+      "evidence": "parse_rate_text rounds and clamps to 1..=99 (the reference's MIX_RATE_MIN/MIX_RATE_MAX) and parse_press_rate_text delegates to it, so both percentage boxes clamp typed input; Settings::validate requires 1..=99 with the message updated to 'between 1 and 99'; the mixer slider already clamped to 1..=99. Re-executed evidence: typed_preservation_rates_clamp_to_whole_percent covers 0->1, 1->1, 99->99, 100->99, 101->99, empty->None; both_ratio_boxes_share_the_rate_band proves the two boxes share the parser; an_out_of_range_mix_ratio_clamps_without_leaving_the_mode drives 0 and 100 through Apply and asserts rates 1 and 99 with the mirrored press buffers 99 and 1; invalid_timing_settings_are_rejected covers rejection at 0/100/101 and acceptance at 1/50/99. The contract bullet in docs/architecture/engine.md records the band and that a stored file still holding the old 100 fails validate() whole, per the documented storage policy."
+    }
+  },
+  "risks": [
+    "Stored settings written under the released 1..=100 band can hold overlap_preservation_rate = 100; that file now fails Settings::validate and load_from rejects it whole (the documented no-per-field-clamping policy), so the user sees the load error and falls back to defaults until the value is cleared. The contract bullet records this, and a load-path migration would change the documented storage policy, so it needs explicit direction beyond F09.",
+    "The runtime shares Settings::validate, so an older UI binary that still sends rate 100 over IPC would now be rejected by the runtime as an invalid draft.",
+    "Native on-screen validation was not performed: the acceptance evidence is unit and state-update tests plus the contract document, not a desktop session."
+  ],
+  "blockers": []
+}
