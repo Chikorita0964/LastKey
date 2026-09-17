@@ -71,8 +71,9 @@ reported together. The UI never reports Apply success before the runtime confirm
   reference's `MIX_RATE_MIN`/`MIX_RATE_MAX`: the typed percentage boxes and the mixer slider clamp
   input into that band, and `Settings::validate` rejects anything else, so neither delay can be
   configured out of the mix entirely. The band narrowed from 1..=100, so a stored file that still
-  holds 100 fails `validate()` like any other invalid value; the settings storage policy rejects such
-  a file whole rather than clamping a field.
+  holds 100 migrates to 99 when it is read and upgrades itself on the next save, the way the pre-mode
+  switches do; a value that was never inside 1..=100 still fails `validate()` and rejects the whole
+  file.
 - Each mode reads only the values it acts on. The settings card unmounts the groups a mode does not
   use while the draft keeps their values, so switching modes never loses a configured range.
 - The UI works in 0.1 ms units; internally everything is integer microseconds, so scheduling never
