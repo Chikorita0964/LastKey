@@ -57,6 +57,11 @@ const DPAD_TILE_SIZE: f32 = 80.0;
 /// produced. The card needs a snapshot to draw: with no connection the page
 /// shows the waiting body instead, so this yields no messages and paints
 /// nothing.
+///
+/// [`super::app::stretch_card`] grows the frame to the row's shared height
+/// (the reference's `h-full` inside its grid); this card's leftover collects
+/// below its footer, and the height it reports back is measured before the
+/// stretch.
 pub fn key_mappings_card(ui: &mut Ui, state: &State) -> Vec<Message> {
     let Some(snapshot) = &state.snapshot else {
         return Vec::new();
@@ -78,6 +83,7 @@ pub fn key_mappings_card(ui: &mut Ui, state: &State) -> Vec<Message> {
             }
             mapping_pad(ui, state, snapshot, &mut messages);
             footer(ui, state, snapshot);
+            super::app::stretch_card(ui, "mapping");
         });
 
     messages
