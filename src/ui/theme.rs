@@ -372,10 +372,10 @@ pub const CHIP_PADDING: MarginF32 = MarginF32 {
 };
 /// The chip's floor applies to its *content*: this is the square minus both
 /// horizontal insets, and it is what makes a single-glyph chip exactly
-/// [`CHIP_SIZE`] wide while a longer label -- the computed `SC:xx` fallback for
-/// a key the wire does not name -- grows its own chip sideways. The height
-/// stays [`CHIP_SIZE`] for every chip, so one long label cannot make the row
-/// taller.
+/// [`CHIP_SIZE`] wide while a longer label -- the `Scan code 0x{:02X}` fallback
+/// from `physical_key_name` for a key the wire does not name -- grows its own
+/// chip sideways. The height stays [`CHIP_SIZE`] for every chip, so one long
+/// label cannot make the row taller.
 pub const CHIP_CONTENT_MIN: f32 = CHIP_SIZE - CHIP_PADDING.left - CHIP_PADDING.right;
 
 /// Corner radii, named after the controls that take them. The Iced file

@@ -658,7 +658,7 @@ fn chips_row(
 /// when the wire names it; every other key resolves through
 /// [`physical_key_name`], the resolver the runtime builds the wire names with,
 /// so a key held only by an inactive profile still reads as a key name rather
-/// than its `SC:xx` scan code.
+/// than the resolver's `Scan code 0x{:02X}` fallback.
 fn chip(ui: &mut Ui, physical: PhysicalKey, snapshot: &UiSnapshot, ink: theme::SlotInk) {
     let name = snapshot
         .keys
