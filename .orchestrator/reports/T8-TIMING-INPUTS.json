@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "execution_id": "ce110559-c0d6-414a-8236-0436e01c0856",
+  "execution_id": "4e64e636-81e0-466c-bd8b-c707b480e690",
   "task_id": "T8-TIMING-INPUTS",
   "status": "completed",
-  "summary": "F10 is implemented across src/ui/timing.rs, src/ui/message.rs, and src/ui/state.rs: the press share of the Random Mix ratio is an editable value box now (new TimingField::PressRate with its own buffer and editing flag), and editing either half writes the preservation rate and refreshes the other, so press + release = 100 stays true and the mixer rail follows. F25 is verified by new regression tests: the release-delay manual input is rejected by the validator with its 0.1 ms message, and the rail clamps a left-edge drag to 0.1 ms.",
+  "summary": "Reverified the reviewed implementation daa784ab for this execution: F10 dual-sided mix ratio input and F25 release-delay floor still pass the acceptance tests, the UI scoped loop, and the full gate, with no source changes (the three owned files are byte-identical to the pinned implementation commit).",
   "branch": "agent/worker-2",
   "implementation_commit": "daa784ab88e0cb2c89ac5ca9479c36c7e172a8df",
   "owned_files": ["src/ui/timing.rs", "src/ui/message.rs", "src/ui/state.rs"],
@@ -24,18 +24,17 @@
   "mandatory_acceptance": {
     "TIMING-DUAL-SIDED-MIX-INPUT": {
       "status": "satisfied",
-      "evidence": "TimingField::PressRate joins TimingField::ALL (index 5, editable only in Random Mix) with its own TimingInputs::press_rate buffer, a stable value-box id, and an editing flag (state.editing is now [bool; 6]); rate_group mounts a second value box on the press side of the pill with the mixer's press indigo, and commit_field writes the preservation rate from whichever half commits (the press half clamped to the reference's 1..=99) while refreshing the other buffer. The new test test_mix_ratio_boxes_edit_both_sides_reciprocally proves press 30 -> rate 70 with the release box reading 70 and the painted mixer rail split at 0.30, then release 80 -> rate 80 with the press box reading 20."
+      "evidence": "Re-executed in this execution: test_mix_ratio_boxes_edit_both_sides_reciprocally proves press 30 -> rate 70 with the release box reading 70 and the painted mixer rail split at 0.30, then release 80 -> rate 80 with the press box reading 20, all through the real timing card and state update. The implementation still mounts TimingField::PressRate as its own value box with a dedicated buffer and editing flag, and commit_field writes the preservation rate from whichever half commits while refreshing the other."
     },
     "TIMING-RELEASE-DELAY-MIN-FLOOR": {
       "status": "satisfied",
-      "evidence": "The floor was already enforced on both paths and the new tests pin it: test_release_delay_manual_input_keeps_the_floor drives the Preserved Minimum box to 0.0 ms and asserts Apply emits no Send effects and reports 'preserved overlap duration must be at least 0.1 ms', then drives 0.1 ms on a fresh harness and asserts the draft holds 100 micros with Apply sending; test_release_delay_slider_keeps_the_floor drags the 'Previous Key Release Delay duration range' rail to its left edge and asserts the stored minimum is 100 micros. No production change was required for the floor itself."
+      "evidence": "Re-executed in this execution: test_release_delay_manual_input_keeps_the_floor drives the Preserved Minimum box to 0.0 ms and asserts Apply emits no Send effects and reports 'preserved overlap duration must be at least 0.1 ms', then drives 0.1 ms on a fresh harness and asserts the draft holds 100 micros with Apply sending; test_release_delay_slider_keeps_the_floor drags the 'Previous Key Release Delay duration range' rail to its left edge and asserts the stored minimum is 100 micros."
     }
   },
   "risks": [
-    "The assigned base_commit 5c81c73 is not an ancestor of this branch (the integration line and this worker branch diverge, as the other worker branches do). All three owned files were byte-identical between the branch tip and 5c81c73 before this change, and the commit's diff against 5c81c73 is exactly the commit's change (386 insertions, 35 deletions across the three files), so the owned-file changes apply cleanly to the assigned base.",
     "The release box still clamps typed input to 1..=100 while the press box follows the reference's 1..=99; that asymmetry is F09's scope (it owns tightening the rate clamp, and its tests live in the unowned state_tests.rs) and disappears once F09 lands.",
     "The two halves keep the reference's single-draft behaviour: activating one box resets the other's uncommitted text to the committed value, and if both were left dirty the Apply commit order (PressRate last in TimingField::ALL) lets the press buffer win. The widget tests cover the normal single-edit flows.",
-    "Native on-screen validation was not performed: the acceptance evidence is widget-level interaction, state, and painted-shape assertions, not a desktop screenshot."
+    "Native on-screen validation was not performed in either execution: the acceptance evidence is widget-level interaction, state, and painted-shape assertions, not a desktop screenshot."
   ],
   "blockers": []
 }
