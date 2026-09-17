@@ -1,17 +1,18 @@
 {
   "schema_version": 1,
-  "execution_id": "4e64e636-81e0-466c-bd8b-c707b480e690",
+  "execution_id": "9f1d4a2f-d556-4d38-9b6c-ec8016962c42",
   "task_id": "T9-APP-RECOMMENDATIONS",
   "status": "completed",
-  "summary": "Re-verification of the reviewed F13 implementation d547ade4 for this execution: the two Suggested delays tiles share one top line and one height in every value combination. The worktree still matches the reviewed commit, the F13 widget test passes, and the scoped loop and full gate pass again.",
+  "summary": "Re-verification of the reviewed F13 implementation d547ade4 for this execution: the two Suggested delays tiles share one top line and one height in every value combination. The worktree still matches the reviewed commit, the F13 widget test re-ran green, and the scoped loop and full gate pass again.",
   "branch": "agent/worker-3",
   "implementation_commit": "d547ade40a4749000f9366d3467fea5939c6d84f",
   "owned_files": ["src/ui/app.rs"],
   "changed_files": ["src/ui/app.rs"],
   "tests": [
     { "command": "git diff --exit-code d547ade40a4749000f9366d3467fea5939c6d84f -- src/ui/app.rs", "result": "pass" },
-    { "command": "cargo test --locked --no-default-features --features egui-ui --lib --test ui_semantic", "result": "pass" },
+    { "command": "cargo test --locked --no-default-features --features egui-ui --lib -- ui::app::tests::the_recommendation_tiles_share_one_top_and_height", "result": "pass" },
     { "command": "cargo fmt --all -- --check", "result": "pass" },
+    { "command": "cargo test --locked --no-default-features --features egui-ui --lib --test ui_semantic", "result": "pass" },
     { "command": "cargo test --locked --all-targets", "result": "pass" },
     { "command": "cargo clippy --locked --all-targets -- -D warnings", "result": "pass" },
     { "command": "cargo test --locked --no-default-features --features egui-ui --lib --bin lastkey-settings --test ui_semantic", "result": "pass" },
@@ -24,7 +25,7 @@
   "mandatory_acceptance": {
     "APP-RECOMMENDATIONS-ALIGNMENT": {
       "status": "satisfied",
-      "evidence": "Implementation d547ade4 top-aligns the tile row (horizontal_top) and measures the taller of the two value galleys (the 17px single-line range against the 13px two-line collect prompt) into one suggestion_value_height; suggestion_tile renders its value through value_box, which claims that shared height, so both tiles end on one top line and one height in every availability combination. Widget test ui::app::tests::the_recommendation_tiles_share_one_top_and_height renders the card in isolation for range+prompt, prompt+range, and range+range and asserts the two tile frames share min.y within 0.5px and height within 0.5px; before the fix the mixed case placed the second tile 25px lower (frames y 91 vs 116) and the test failed. Re-verified for execution 4e64e636-81e0-466c-bd8b-c707b480e690: src/ui/app.rs still matches the reviewed commit and the scoped loop and full gate pass again."
+      "evidence": "Re-executed in this execution: test_the_recommendation_tiles_share_one_top_and_height renders the card in isolation for range+prompt, prompt+range, and range+range, and asserts the two tile frames share min.y within 0.5px and height within 0.5px. The implementation d547ade4 top-aligns the tile row (horizontal_top) and measures the taller of the two value galleys (the 17px single-line range against the 13px two-line collect prompt) into one suggestion_value_height, which suggestion_tile claims through value_box; before the fix the mixed case placed the second tile 25px lower (frames y 91 vs 116) and the test failed. src/ui/app.rs still matches the reviewed commit (git diff --exit-code green), and the scoped loop and full gate pass for execution 9f1d4a2f-d556-4d38-9b6c-ec8016962c42."
     }
   },
   "risks": [
