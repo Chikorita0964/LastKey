@@ -13,9 +13,10 @@
 //! replace.
 
 use std::f32::consts::PI;
+use std::time::Duration;
 
 use egui::{
-    Align, Color32, CornerRadius, FontId, Layout, Margin, Painter, Pos2, Rect, Response, Sense,
+    Align, Color32, CornerRadius, FontId, Id, Layout, Margin, Painter, Pos2, Rect, Response, Sense,
     Shape, Stroke, StrokeKind, Ui, Vec2, WidgetInfo, WidgetType,
 };
 
@@ -52,6 +53,15 @@ const BANNER_RADIUS: u8 = 12;
 /// The D-pad stage's `p-5` and the tile's square (`icons::DpadTile`).
 const STAGE_PADDING: f32 = 20.0;
 const DPAD_TILE_SIZE: f32 = 80.0;
+/// The middle row's own box: three keycap squares plus two section gaps. The
+/// row has to declare its size because a centered vertical layout can only
+/// center a child whose size it can measure before layout; a bare
+/// `ui.horizontal` scope takes the whole stage width and lays its children
+/// from the left edge, which is the F01 misalignment.
+const DPAD_ROW_SIZE: Vec2 = Vec2::new(
+    3.0 * keycap::KEYCAP_SIZE + 2.0 * theme::SECTION_GAP,
+    DPAD_TILE_SIZE,
+);
 
 /// Draws the whole Key mappings card and returns the messages the frame
 /// produced. The card needs a snapshot to draw: with no connection the page
@@ -174,22 +184,34 @@ fn mapping_pad(ui: &mut Ui, state: &State, snapshot: &UiSnapshot, messages: &mut
                     );
                 });
                 directional_keycap(ui, state, snapshot, &duplicates, &UP, timeline, messages);
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = theme::SECTION_GAP;
-                    directional_keycap(ui, state, snapshot, &duplicates, &LEFT, timeline, messages);
-                    let (shift_x, shift_y, active) =
-                        resolve_dpad(&state.pressed_keys, &state.press_timestamps, timeline);
-                    dpad_center_tile(ui, shift_x, shift_y, active);
-                    directional_keycap(
-                        ui,
-                        state,
-                        snapshot,
-                        &duplicates,
-                        &RIGHT,
-                        timeline,
-                        messages,
-                    );
-                });
+                ui.allocate_ui_with_layout(
+                    DPAD_ROW_SIZE,
+                    Layout::left_to_right(Align::Center),
+                    |ui| {
+                        ui.spacing_mut().item_spacing.x = theme::SECTION_GAP;
+                        directional_keycap(
+                            ui,
+                            state,
+                            snapshot,
+                            &duplicates,
+                            &LEFT,
+                            timeline,
+                            messages,
+                        );
+                        let (shift_x, shift_y, active) =
+                            resolve_dpad(&state.pressed_keys, &state.press_timestamps, timeline);
+                        dpad_center_tile(ui, shift_x, shift_y, active);
+                        directional_keycap(
+                            ui,
+                            state,
+                            snapshot,
+                            &duplicates,
+                            &RIGHT,
+                            timeline,
+                            messages,
+                        );
+                    },
+                );
                 directional_keycap(ui, state, snapshot, &duplicates, &DOWN, timeline, messages);
             });
         });
@@ -227,13 +249,26 @@ fn directional_keycap(
     }
 }
 
-/// The unique/duplicate assignment status, right-aligned below the stage.
+/// The footer row below the stage: the direction count on the left, the
+/// unique/duplicate assignment status on the right.
 fn footer(ui: &mut Ui, state: &State, snapshot: &UiSnapshot) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
     ui.painter().rect_filled(rect, 0, theme::BORDER);
-    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
-        assignment_status(ui, &duplicate_slots(&snapshot.draft.bindings), state);
+    ui.horizontal(|ui| {
+        // `text-slate-400`: [`theme::ICON_MUTED`] owns that exact byte
+        // (`#94a3b8`); [`theme::MUTED_TEXT`] would darken the caption to
+        // slate-500.
+        text(
+            ui,
+            state.language.text("4 directions mapped"),
+            11.0,
+            theme::ICON_MUTED,
+            false,
+        );
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            assignment_status(ui, &duplicate_slots(&snapshot.draft.bindings), state);
+        });
     });
 }
 
@@ -346,6 +381,10 @@ fn duplicate_slots(bindings: &[PhysicalKey; 4]) -> [bool; 4] {
 /// The 80x80 joystick tile from `icons::DpadTile`: slate inset, a dashed
 /// guide ring, the resting centre dot, and the moving dot that lights up with
 /// the Immediate accent while a direction wins.
+///
+/// The dot travels to its target offset with the reference's 75 ms ease-out
+/// segment instead of teleporting (F05). The accent state still switches on
+/// the frame it changes; only the displacement is interpolated.
 fn dpad_center_tile(ui: &mut Ui, shift_x: f32, shift_y: f32, active: bool) {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(DPAD_TILE_SIZE), Sense::hover());
     response.widget_info(|| {
@@ -355,6 +394,23 @@ fn dpad_center_tile(ui: &mut Ui, shift_x: f32, shift_y: f32, active: bool) {
             "D-pad direction preview",
         )
     });
+
+    // egui is immediate-mode, so the in-flight segment lives in the frame's
+    // temp memory keyed by the tile, the way `preview.rs` keeps its clock. The
+    // tile drives its own repaints while the dot travels and asks for none
+    // once it settles.
+    let target = Vec2::new(shift_x, shift_y);
+    let now = ui.input(|input| input.time);
+    let motion_id = Id::new("ui-mapping-dpad-dot");
+    let (offset, repaint_in) = ui.data_mut(|data| {
+        let motion = data.get_temp_mut_or_default::<DotMotion>(motion_id);
+        (motion.poll(now, target), motion.remaining(now))
+    });
+    if let Some(repaint_in) = repaint_in {
+        ui.ctx()
+            .request_repaint_after(Duration::from_secs_f64(repaint_in));
+    }
+
     let painter = ui.painter_at(rect);
     let radius = CornerRadius::same(16);
     painter.rect_filled(rect, radius, theme::SLATE_100);
@@ -380,7 +436,7 @@ fn dpad_center_tile(ui: &mut Ui, shift_x: f32, shift_y: f32, active: bool) {
     ));
     painter.circle_filled(center, 4.0, theme::DPAD_GUIDE_DOT);
 
-    let dot = Pos2::new(center.x + shift_x, center.y + shift_y);
+    let dot = Pos2::new(center.x + offset.x, center.y + offset.y);
     if active {
         painter.circle_filled(dot, 12.0, theme::DPAD_ACTIVE_GLOW);
         painter.circle_filled(
@@ -397,6 +453,107 @@ fn dpad_center_tile(ui: &mut Ui, shift_x: f32, shift_y: f32, active: bool) {
         );
         painter.circle_filled(dot, 9.0, theme::DPAD_IDLE_DOT);
     }
+}
+
+/// The reference's `duration-75`: one dot travel takes 75 ms.
+const DOT_TRAVEL_SECS: f64 = 0.075;
+/// The cadence of the intermediate frames the tile asks for while the dot
+/// travels, the same 16 ms the timeline playhead uses; the final request of a
+/// segment is shortened to its remaining time.
+const DOT_FRAME_STEP_SECS: f64 = 0.016;
+
+/// The centre dot's travel state. egui is immediate-mode, so the card keeps
+/// the in-flight segment in the frame's temp memory instead of a widget tree;
+/// the reference's CSS `transition-all duration-75 ease-out` is the
+/// counterpart.
+#[derive(Clone, Copy, Default)]
+struct DotMotion {
+    /// Whether a target has been observed before. The first observation
+    /// adopts its target without a segment, the way a CSS transition does not
+    /// run on mount.
+    seen: bool,
+    in_flight: bool,
+    /// The offsets the segment interpolates between. On the frame a segment
+    /// starts the dot still shows `from`.
+    from: Vec2,
+    to: Vec2,
+    start: f64,
+}
+
+impl DotMotion {
+    /// Advances to `now` (egui's monotonic input time, seconds) and returns
+    /// the offset to draw for `target`. A target change starts a 75 ms
+    /// ease-out segment; a change mid-flight restarts from the displayed
+    /// offset, which is what a CSS transition does. Pure by design: tests
+    /// drive it with explicit times, never a sleep.
+    fn poll(&mut self, now: f64, target: Vec2) -> Vec2 {
+        if !self.seen {
+            self.seen = true;
+            self.to = target;
+            return target;
+        }
+        if !self.in_flight {
+            if target == self.to {
+                return self.to;
+            }
+            self.start_segment(now, self.to, target);
+            return self.from;
+        }
+        let progress = (now - self.start) / DOT_TRAVEL_SECS;
+        if progress >= 1.0 {
+            self.in_flight = false;
+            self.from = self.to;
+            return self.to;
+        }
+        let displayed = self.from + (self.to - self.from) * ease_out(progress as f32);
+        if target != self.to {
+            self.start_segment(now, displayed, target);
+            return displayed;
+        }
+        displayed
+    }
+
+    fn start_segment(&mut self, now: f64, from: Vec2, to: Vec2) {
+        self.from = from;
+        self.to = to;
+        self.start = now;
+        self.in_flight = true;
+    }
+
+    /// Seconds until the next repaint is useful, or `None` once settled.
+    fn remaining(&self, now: f64) -> Option<f64> {
+        if !self.in_flight {
+            return None;
+        }
+        let left = (DOT_TRAVEL_SECS - (now - self.start)).max(0.0);
+        Some(left.min(DOT_FRAME_STEP_SECS))
+    }
+}
+
+/// CSS `ease-out` (`cubic-bezier(0, 0, 0.58, 1)`), the curve the reference's
+/// `duration-75 ease-out` names, evaluated for a linear progress in `0..=1`.
+/// The curve's x is monotonic, so bisecting the bezier parameter converges to
+/// its inverse; 24 halvings resolve it well past display precision.
+fn ease_out(progress: f32) -> f32 {
+    let x = progress.clamp(0.0, 1.0);
+    if x <= 0.0 || x >= 1.0 {
+        return x;
+    }
+    // x(s) = s^2 * (3 * (1 - s) * 0.58 + s), y(s) = s^2 * (3 * (1 - s) + s)
+    // for control points (0, 0) and (0.58, 1).
+    let curve = |s: f32| s * s * (3.0 * (1.0 - s) * 0.58 + s);
+    let mut low = 0.0_f32;
+    let mut high = 1.0_f32;
+    for _ in 0..24 {
+        let mid = (low + high) / 2.0;
+        if curve(mid) < x {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    let s = (low + high) / 2.0;
+    s * s * (3.0 - 2.0 * s)
 }
 
 /// Section title: the icon plus a 15px heavy label, the pair the timing and
@@ -1027,6 +1184,270 @@ mod tests {
                 .unwrap()
                 .capture_slot,
             None
+        );
+    }
+
+    /// A card harness. `step_dt` is the frame clock the animation tests
+    /// control; the harness default is 250 ms, which would overrun a 75 ms
+    /// transition in a single step.
+    fn harness_with(state: State, step_dt: f32) -> egui_kittest::Harness<'static, FakeRuntime> {
+        egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1040.0, 800.0))
+            .with_step_dt(step_dt)
+            .build_ui_state(
+                |ui, runtime: &mut FakeRuntime| runtime.frame(ui),
+                FakeRuntime {
+                    state,
+                    sent: Vec::new(),
+                },
+            )
+    }
+
+    /// The mapping card at the 16 ms frame clock the animation contract
+    /// assumes.
+    fn card_harness() -> egui_kittest::Harness<'static, FakeRuntime> {
+        harness_with(baseline_state(), 1.0 / 60.0)
+    }
+
+    /// The shortest repaint request this frame made; `Duration::MAX` when the
+    /// frame requested none.
+    fn repaint_delay(harness: &egui_kittest::Harness<'_, FakeRuntime>) -> std::time::Duration {
+        harness
+            .output()
+            .viewport_output
+            .values()
+            .map(|output| output.repaint_delay)
+            .min()
+            .unwrap_or(std::time::Duration::MAX)
+    }
+
+    /// F01: UP, the centre tile, and DOWN share one vertical centre axis, and
+    /// the middle row is symmetric about that axis. The middle row declares
+    /// its size so the centered stage can center it; a bare `ui.horizontal`
+    /// scope took the full stage width and started at its left edge, leaving
+    /// the tile about 70 px left of the UP/DOWN axis.
+    #[test]
+    fn the_dpad_cluster_rows_share_one_center_axis() {
+        use egui_kittest::kittest::Queryable;
+
+        let harness = card_harness();
+
+        let up = harness.get_by_label("UP keycap: W").rect().center();
+        let down = harness.get_by_label("DOWN keycap: S").rect().center();
+        let left = harness.get_by_label("LEFT keycap: A").rect().center();
+        let right = harness.get_by_label("RIGHT keycap: D").rect().center();
+        let tile = harness
+            .get_by_label("D-pad direction preview")
+            .rect()
+            .center();
+
+        for (name, point) in [("UP", up), ("DOWN", down)] {
+            assert!(
+                (point.x - tile.x).abs() <= 1.0,
+                "{name} and the centre tile must share the vertical axis: {point:?} vs {tile:?}"
+            );
+        }
+        for (name, point) in [("LEFT", left), ("RIGHT", right)] {
+            assert!(
+                (point.y - tile.y).abs() <= 1.0,
+                "{name} and the centre tile must share the horizontal axis: {point:?} vs {tile:?}"
+            );
+        }
+        assert!(
+            ((tile.x - left.x) - (right.x - tile.x)).abs() <= 1.0,
+            "the middle row must be symmetric about the tile: {left:?} {tile:?} {right:?}"
+        );
+    }
+
+    /// F03: the footer carries the direction count on the left and the
+    /// assignment status on the right, on one row below the divider.
+    #[test]
+    fn the_footer_pairs_the_direction_count_with_the_status() {
+        use egui_kittest::kittest::Queryable;
+
+        let harness = card_harness();
+
+        let count = harness.get_by_label("4 directions mapped").rect();
+        let status = harness.get_by_label("All keys uniquely assigned.").rect();
+        assert!(
+            (count.center().y - status.center().y).abs() <= 1.0,
+            "the count and the status must share the footer row: {count:?} vs {status:?}"
+        );
+        assert!(
+            count.right() <= status.left(),
+            "the count is the left label and the status the right one: {count:?} vs {status:?}"
+        );
+    }
+
+    /// F03's caption is registered in every language file, so the footer
+    /// renders a translation rather than the English-source fallback.
+    #[test]
+    fn the_direction_count_caption_is_registered_in_every_language() {
+        use crate::ui::language::Language;
+
+        assert_eq!(
+            Language::English.text("4 directions mapped"),
+            "4 directions mapped",
+            "the English file keeps the identity mapping"
+        );
+        for language in [Language::Chinese, Language::Spanish] {
+            assert_ne!(
+                language.text("4 directions mapped"),
+                "4 directions mapped",
+                "{language:?} must register its own entry, not fall back to English"
+            );
+        }
+    }
+
+    /// The moving dot's centre from the tile's own painted circles: the
+    /// topmost circle of the moving set (`9..=12` px: dot, its shadow, its
+    /// glow). The 4 px resting guide dot cannot join that set.
+    fn painted_dot_center(harness: &egui_kittest::Harness<'_, FakeRuntime>, tile: Rect) -> Pos2 {
+        harness
+            .output()
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Circle(circle)
+                    if (9.0..=12.0).contains(&circle.radius) && tile.contains(circle.center) =>
+                {
+                    Some(circle.center)
+                }
+                _ => None,
+            })
+            .min_by(|a, b| a.y.partial_cmp(&b.y).expect("finite dot centre"))
+            .expect("the tile paints its moving dot")
+    }
+
+    /// F05: a target change travels with a 75 ms ease-out segment instead of
+    /// teleporting. The toggle frame keeps the previous position, the next
+    /// frame is partway, and the dot settles on the target within 75 ms while
+    /// the tile drives its own repaints only during the travel.
+    #[test]
+    fn the_dpad_dot_glides_to_its_target() {
+        use egui_kittest::kittest::Queryable;
+
+        let mut harness = card_harness();
+        let tile = harness.get_by_label("D-pad direction preview").rect();
+        let center = tile.center();
+        assert!(
+            (painted_dot_center(&harness, tile) - center).length() <= 0.5,
+            "the dot rests at the tile centre"
+        );
+
+        // A held UP key is a target change. The toggle frame still shows the
+        // pre-change position, and the tile starts requesting frames.
+        harness.state_mut().state.pressed_keys[0] = true;
+        harness.step();
+        assert!(
+            (painted_dot_center(&harness, tile) - center).length() <= 0.5,
+            "the toggle frame must keep the previous position"
+        );
+        assert!(
+            repaint_delay(&harness) <= std::time::Duration::from_millis(17),
+            "the travelling dot must request its intermediate frame"
+        );
+
+        harness.step();
+        let moving = painted_dot_center(&harness, tile);
+        assert!(
+            moving.y < center.y && moving.y > center.y - 18.0,
+            "one 16 ms frame must be strictly inside the travel: {moving:?} vs {center:?}"
+        );
+
+        // 75 ms at 16 ms per frame: the sixth frame after the toggle settles.
+        harness.run_steps(6);
+        let settled = painted_dot_center(&harness, tile);
+        assert!(
+            (settled.y - (center.y - 18.0)).abs() <= 0.5,
+            "the dot must come to rest at the 18 px cardinal target: {settled:?}"
+        );
+        assert_eq!(
+            repaint_delay(&harness),
+            std::time::Duration::MAX,
+            "a settled dot must stop requesting frames"
+        );
+    }
+
+    #[test]
+    fn ease_out_matches_the_css_curve_shape() {
+        assert_eq!(ease_out(0.0), 0.0);
+        assert_eq!(ease_out(1.0), 1.0);
+        // CSS ease-out front-loads the travel: past halfway by half time.
+        assert!(ease_out(0.5) > 0.6, "got {}", ease_out(0.5));
+        let mut previous = 0.0;
+        for step in 0..=20 {
+            let value = ease_out(step as f32 / 20.0);
+            assert!(value >= previous, "the curve must not go backwards");
+            previous = value;
+        }
+    }
+
+    #[test]
+    fn the_dot_motion_settles_without_a_segment_on_first_sight() {
+        let mut motion = DotMotion::default();
+        assert_eq!(
+            motion.poll(0.0, Vec2::new(0.0, -18.0)),
+            Vec2::new(0.0, -18.0)
+        );
+        assert_eq!(motion.remaining(0.0), None);
+    }
+
+    #[test]
+    fn the_dot_motion_glides_over_the_reference_duration() {
+        let mut motion = DotMotion::default();
+        motion.poll(0.0, Vec2::ZERO);
+
+        // The toggle frame keeps the old position and schedules the segment.
+        assert_eq!(motion.poll(1.0, Vec2::new(18.0, 0.0)), Vec2::ZERO);
+        assert!(
+            motion
+                .remaining(1.0)
+                .is_some_and(|left| left <= DOT_FRAME_STEP_SECS)
+        );
+
+        // Strictly between the ends until the 75 ms elapse, monotone, and
+        // front-loaded by the ease-out curve.
+        let quarter = motion.poll(1.0 + DOT_TRAVEL_SECS / 4.0, Vec2::new(18.0, 0.0));
+        let half = motion.poll(1.0 + DOT_TRAVEL_SECS / 2.0, Vec2::new(18.0, 0.0));
+        assert!(quarter.x > 0.0 && quarter.x < 18.0);
+        assert!(half.x > quarter.x && half.x < 18.0);
+        assert!(
+            half.x > 10.0,
+            "ease-out must be past halfway at half time: {half:?}"
+        );
+
+        // The nominal deadline is a float, so it can land a hair short: the
+        // dot shows the target with one last (effectively immediate) repaint
+        // request, and the next frame settles and stops requesting frames.
+        let at_deadline = motion.poll(1.0 + DOT_TRAVEL_SECS, Vec2::new(18.0, 0.0));
+        assert!((at_deadline.x - 18.0).abs() < 1e-3, "got {at_deadline:?}");
+        assert_eq!(
+            motion.poll(1.0 + 2.0 * DOT_TRAVEL_SECS, Vec2::new(18.0, 0.0)),
+            Vec2::new(18.0, 0.0)
+        );
+        assert_eq!(motion.remaining(1.0 + 2.0 * DOT_TRAVEL_SECS), None);
+    }
+
+    #[test]
+    fn a_mid_flight_retarget_continues_from_the_displayed_offset() {
+        let mut motion = DotMotion::default();
+        motion.poll(0.0, Vec2::ZERO);
+        motion.poll(0.0, Vec2::new(18.0, 0.0));
+
+        let halfway = motion.poll(DOT_TRAVEL_SECS / 2.0, Vec2::new(18.0, 0.0));
+        assert!(halfway.x > 0.0 && halfway.x < 18.0);
+
+        // The retarget keeps the displayed offset on its frame and travels
+        // from there to the new target.
+        let retargeted = motion.poll(DOT_TRAVEL_SECS / 2.0, Vec2::new(-18.0, 0.0));
+        assert_eq!(retargeted, halfway);
+        assert_eq!(
+            motion.poll(
+                DOT_TRAVEL_SECS / 2.0 + DOT_TRAVEL_SECS,
+                Vec2::new(-18.0, 0.0)
+            ),
+            Vec2::new(-18.0, 0.0)
         );
     }
 }
