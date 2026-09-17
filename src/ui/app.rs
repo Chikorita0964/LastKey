@@ -40,10 +40,10 @@ const ACTION_BAR_PADDING: f32 = 16.0;
 const ACTION_BAR_HEIGHT: f32 = 2.0 * ACTION_BAR_PADDING + theme::BUTTON_HEIGHT;
 /// The body never collapses below this; a tiny window scrolls instead.
 const BODY_MIN_HEIGHT: f32 = 160.0;
-/// Table geometry from the reference: fixed pattern and samples columns, the
-/// five figures share the rest.
-const PATTERN_COLUMN: f32 = 150.0;
-const SAMPLES_COLUMN: f32 = 70.0;
+/// Table geometry from the reference (`#card-axis-latencies`): fixed pattern
+/// and samples columns, the five figures share the rest.
+const PATTERN_COLUMN: f32 = 240.0;
+const SAMPLES_COLUMN: f32 = 130.0;
 const TABLE_GAP: f32 = 6.0;
 
 pub fn run() -> eframe::Result {
@@ -484,7 +484,6 @@ fn feedback(ui: &mut Ui, state: &State, dirty: bool) {
                     egui::Label::new(
                         RichText::new(state.language.text("Click Apply to commit draft edits."))
                             .size(12.0)
-                            .italics()
                             .color(theme::ICON_MUTED),
                     )
                     .truncate(),
@@ -570,18 +569,18 @@ fn measurement_section(ui: &mut Ui, state: &State, messages: &mut Vec<Message>) 
                     let stats = [
                         (
                             language.text("Physical key edges"),
-                            measurement.observed_event_count.to_string(),
+                            grouped(measurement.observed_event_count),
                             theme::BODY_TEXT,
                         ),
                         (
                             language.text("Valid paired samples"),
-                            measurement.sample_count.to_string(),
+                            grouped(measurement.sample_count),
                             theme::INDIGO_600,
                         ),
                         (
                             language.text("Physical overlap share"),
                             percentage_value(measurement.overlap_count, measurement.sample_count),
-                            theme::WARN_TEXT,
+                            theme::AMBER_500,
                         ),
                         (
                             language.text("Indistinguishable share"),
@@ -719,9 +718,8 @@ fn latencies_card(ui: &mut Ui, measurement: &MeasurementSnapshot, language: Lang
                         cell(ui, SAMPLES_COLUMN, true, |ui| {
                             figure(
                                 ui,
-                                &measurement.near_simultaneous_count.to_string(),
+                                &grouped(measurement.near_simultaneous_count),
                                 theme::BODY_TEXT,
-                                false,
                             );
                         });
                         ui.allocate_ui_with_layout(
@@ -837,7 +835,7 @@ fn suggestion_tile(
                         ui.add_space(4.0);
                         let size = if available { 17.0 } else { 13.0 };
                         let color = if available {
-                            theme::PRIMARY_TEXT
+                            theme::INDIGO_600
                         } else {
                             theme::ICON_MUTED
                         };
@@ -853,16 +851,15 @@ fn suggestion_tile(
 fn table_row(ui: &mut Ui, cells: [&dyn Fn(&mut Ui); 7]) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = TABLE_GAP;
-        let fill = fill_width(ui.available_width());
-        let widths = [PATTERN_COLUMN, SAMPLES_COLUMN, fill, fill, fill, fill, fill];
+        let widths = column_widths(ui.available_width());
         for (index, cell_content) in cells.into_iter().enumerate() {
             cell(ui, widths[index], index > 0, cell_content);
         }
     });
 }
 
-/// Pattern label plus sample count plus the five duration figures; P50 is the
-/// highlighted column.
+/// Pattern label plus sample count plus the five duration figures. Every figure
+/// cell shares one ink and one face: F14 removed the P50 highlight.
 fn pattern_row(
     ui: &mut Ui,
     label_text: &str,
@@ -870,11 +867,10 @@ fn pattern_row(
     count: u32,
     figures: [(String, bool); 5],
 ) {
-    let base_color = theme::BODY_TEXT;
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = TABLE_GAP;
-        let fill = fill_width(ui.available_width());
-        cell(ui, PATTERN_COLUMN, false, |ui| {
+        let widths = column_widths(ui.available_width());
+        cell(ui, widths[0], false, |ui| {
             ui.spacing_mut().item_spacing.x = TABLE_GAP;
             dot(ui, color);
             label(
@@ -885,39 +881,40 @@ fn pattern_row(
                 true,
             );
         });
-        cell(ui, SAMPLES_COLUMN, true, |ui| {
-            figure(ui, &count.to_string(), base_color, false);
+        cell(ui, widths[1], true, |ui| {
+            figure(ui, &grouped(count), theme::BODY_TEXT);
         });
-        for (index, (value, present)) in figures.into_iter().enumerate() {
-            let (ink, bold) = match index {
-                1 => (if present { color } else { theme::MUTED_TEXT }, present),
-                _ => (
-                    if present {
-                        base_color
-                    } else {
-                        theme::MUTED_TEXT
-                    },
-                    false,
-                ),
+        for ((value, present), width) in figures.into_iter().zip(&widths[2..]) {
+            let ink = if present {
+                theme::BODY_TEXT
+            } else {
+                theme::MUTED_TEXT
             };
-            cell(ui, fill, true, |ui| figure(ui, &value, ink, bold));
+            cell(ui, *width, true, |ui| figure(ui, &value, ink));
         }
     });
 }
 
-/// One fixed-width table cell; `right` right-aligns its content.
+/// One fixed-width table cell; `right` right-aligns its content. The cell
+/// claims its full width (`set_min_width`), otherwise the row advances by the
+/// content's own width and the columns drift apart from row to row.
 fn cell(ui: &mut Ui, width: f32, right: bool, content: impl FnOnce(&mut Ui)) {
     let layout = if right {
         Layout::right_to_left(Align::Center)
     } else {
         Layout::left_to_right(Align::Center)
     };
-    ui.allocate_ui_with_layout(Vec2::new(width, 0.0), layout, |ui| content(ui));
+    ui.allocate_ui_with_layout(Vec2::new(width, 0.0), layout, |ui| {
+        ui.set_min_width(width);
+        content(ui);
+    });
 }
 
-/// The five figures share the rest of the row after the two fixed columns.
-fn fill_width(available: f32) -> f32 {
-    ((available - PATTERN_COLUMN - SAMPLES_COLUMN - 6.0 * TABLE_GAP) / 5.0).max(0.0)
+/// The seven column widths for one table row: the reference's fixed pattern and
+/// samples columns, then the five figures sharing the rest.
+fn column_widths(available: f32) -> [f32; 7] {
+    let fill = ((available - PATTERN_COLUMN - SAMPLES_COLUMN - 6.0 * TABLE_GAP) / 5.0).max(0.0);
+    [PATTERN_COLUMN, SAMPLES_COLUMN, fill, fill, fill, fill, fill]
 }
 
 /// Table header cell: the card title color, 11px heavy.
@@ -925,26 +922,17 @@ fn heading(ui: &mut Ui, text: &str) {
     label(ui, text, 11.0, theme::BODY_TEXT, true);
 }
 
-/// Numeric table cell: right-aligned so decimal places line up; monospace
-/// unless the cell is the highlighted (bold) one.
-fn figure(ui: &mut Ui, value: &str, color: Color32, bold: bool) {
-    let family = if bold {
-        theme::UI_FONT
-    } else {
-        theme::MONO_FONT
-    };
+/// Numeric table cell: right-aligned in the monospace face so decimal places
+/// line up.
+fn figure(ui: &mut Ui, value: &str, color: Color32) {
     let galley = ui.painter().layout_no_wrap(
         value.to_owned(),
-        FontId::new(12.0, family),
+        FontId::new(12.0, theme::MONO_FONT),
         Color32::PLACEHOLDER,
     );
     let (rect, response) = ui.allocate_exact_size(galley.size(), Sense::hover());
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, ui.is_enabled(), value));
-    if bold {
-        theme::stamp_galley(ui.painter(), rect.min, &galley, color, 12.0);
-    } else {
-        ui.painter().galley(rect.min, galley, color);
-    }
+    ui.painter().galley(rect.min, galley, color);
 }
 
 fn hrule(ui: &mut Ui) {
@@ -987,6 +975,20 @@ fn percentage_value(count: u32, total: u32) -> String {
     } else {
         format!("{:.1}%", f64::from(count) * 100.0 / f64::from(total))
     }
+}
+
+/// Groups an integer count with thousands separators (`1072` -> `1,072`), the
+/// reference's `toLocaleString` for every language this window ships.
+fn grouped(value: u32) -> String {
+    let digits = value.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
 }
 
 /// A section title: the 16px glyph plus the heavy heading.
@@ -1619,5 +1621,221 @@ mod tests {
         // The toggle also opens the session details, which is what keeps the
         // table and the tiles mounted until the runtime reports the stop.
         assert!(harness.state().state.session_details_open);
+    }
+
+    /// Distinct durations and counts for the table tests: every figure text is
+    /// unique, so a painted text identifies exactly one cell.
+    fn table_measurement() -> MeasurementSnapshot {
+        MeasurementSnapshot {
+            observed_event_count: 1_072,
+            sample_count: 1_240,
+            transition_count: 1_040,
+            transition_p10_micros: Some(2_000),
+            transition_median_micros: Some(3_100),
+            transition_p90_micros: Some(4_000),
+            transition_min_micros: Some(1_500),
+            transition_max_micros: Some(4_500),
+            transition_latest_micros: Some(3_200),
+            overlap_count: 310,
+            overlap_p10_micros: Some(900),
+            overlap_median_micros: Some(1_800),
+            overlap_p90_micros: Some(2_600),
+            overlap_min_micros: Some(700),
+            overlap_max_micros: Some(3_400),
+            overlap_latest_micros: Some(2_500),
+            near_simultaneous_count: 62,
+            recommended_transition: Some(TimingRange {
+                min_micros: 2_400,
+                max_micros: 3_700,
+            }),
+            recommended_overlap: Some(TimingRange {
+                min_micros: 1_100,
+                max_micros: 2_200,
+            }),
+        }
+    }
+
+    fn open_measurement(state: &mut State) {
+        state.session_details_open = true;
+        state.snapshot.as_mut().unwrap().measurement = Some(table_measurement());
+    }
+
+    /// Every text drawn this frame with the shape that carries its ink and
+    /// format.
+    fn painted_text_shapes<State>(harness: &Harness<'_, State>) -> Vec<egui::epaint::TextShape> {
+        fn collect(shape: &egui::Shape, out: &mut Vec<egui::epaint::TextShape>) {
+            match shape {
+                egui::Shape::Text(text) => out.push(text.clone()),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for clipped in &harness.output().shapes {
+            collect(&clipped.shape, &mut out);
+        }
+        out
+    }
+
+    fn shapes_with_text<State>(
+        harness: &Harness<'_, State>,
+        text: &str,
+    ) -> Vec<egui::epaint::TextShape> {
+        painted_text_shapes(harness)
+            .into_iter()
+            .filter(|shape| shape.galley.text() == text)
+            .collect()
+    }
+
+    /// F14 + F22 (APP-TABLE-STYLING-AND-PROPORTIONS): the fixed columns hold the
+    /// reference's own widths, the five metric columns share one positive fill,
+    /// and every duration figure paints the body ink in the single non-bold
+    /// monospace pass -- the P50 highlight is gone.
+    #[test]
+    fn the_latency_table_uses_the_reference_proportions_and_uniform_figure_ink() {
+        let mut state = baseline_state();
+        open_measurement(&mut state);
+        let mut harness = harness(state);
+        harness.run();
+
+        assert_eq!(PATTERN_COLUMN, 240.0, "the reference pattern column width");
+        assert_eq!(SAMPLES_COLUMN, 130.0, "the reference samples column width");
+        let shapes = painted_text_shapes(&harness);
+        let left_edge = |text: &str| {
+            shapes
+                .iter()
+                .find(|shape| shape.galley.text() == text)
+                .unwrap_or_else(|| panic!("missing {text}"))
+                .pos
+                .x
+        };
+        let right_edge = |text: &str| {
+            let shape = shapes
+                .iter()
+                .find(|shape| shape.galley.text() == text)
+                .unwrap_or_else(|| panic!("missing {text}"));
+            shape.pos.x + shape.galley.size().x
+        };
+        let published = right_edge("SAMPLES") - left_edge("INPUT PATTERN");
+        assert!(
+            (published - (PATTERN_COLUMN + TABLE_GAP + SAMPLES_COLUMN)).abs() <= 1.0,
+            "the row lays the fixed columns out with the shared gap: {published}"
+        );
+        // Each cell claims its width, so every row's figure shares the right
+        // edge of its header instead of drifting with the row's own content.
+        for (header, figure) in [
+            ("SAMPLES", "1,040"),
+            ("P10", "2.0 ms"),
+            ("P50", "3.1 ms"),
+            ("P90", "4.0 ms"),
+            ("MIN", "1.5 ms"),
+            ("MAX", "4.5 ms"),
+        ] {
+            let drift = (right_edge(header) - right_edge(figure)).abs();
+            assert!(
+                drift <= 0.5,
+                "{figure} must line up under {header}: {drift}"
+            );
+        }
+        let metrics = ["P10", "P50", "P90", "MIN", "MAX"];
+        let steps: Vec<f32> = metrics
+            .windows(2)
+            .map(|pair| right_edge(pair[1]) - right_edge(pair[0]))
+            .collect();
+        assert!(
+            steps[0] - TABLE_GAP > 0.0,
+            "the five metric columns keep a positive fill: {steps:?}"
+        );
+        for step in &steps {
+            assert!(
+                (step - steps[0]).abs() <= 0.5,
+                "the metric columns share one width: {steps:?}"
+            );
+        }
+
+        for value in ["3.1 ms", "1.8 ms", "2.0 ms", "0.9 ms"] {
+            let drawn = shapes_with_text(&harness, value);
+            assert_eq!(
+                drawn.len(),
+                1,
+                "{value} is painted once, without a bold stamp: {drawn:?}"
+            );
+            assert_eq!(drawn[0].fallback_color, theme::BODY_TEXT, "{value}");
+        }
+    }
+
+    /// F15 + F21 + F23 (APP-MEASUREMENT-FORMAT-AND-ACCENTS): the integer metrics
+    /// group their thousands, the overlap share takes the amber its table dot
+    /// uses, and an available suggestion reads in the indigo accent.
+    #[test]
+    fn the_measurement_card_groups_counts_and_keeps_the_reference_accents() {
+        let mut state = baseline_state();
+        open_measurement(&mut state);
+        let mut harness = harness(state);
+        harness.run();
+
+        let texts = painted_texts(&harness);
+        for shown in ["1,072", "1,240", "1,040"] {
+            assert!(texts.iter().any(|text| text == shown), "{shown}");
+        }
+        for raw in ["1072", "1240", "1040"] {
+            assert!(
+                !texts.iter().any(|text| text == raw),
+                "{raw} must not paint ungrouped"
+            );
+        }
+
+        let share = shapes_with_text(&harness, "25.0%");
+        assert!(!share.is_empty(), "the overlap share is painted");
+        assert!(
+            share
+                .iter()
+                .all(|shape| shape.fallback_color == theme::AMBER_500),
+            "the overlap share keeps the amber of its table dot"
+        );
+
+        let suggestion = shapes_with_text(&harness, "2.4 - 3.7 ms");
+        assert!(
+            !suggestion.is_empty(),
+            "the transition suggestion is painted"
+        );
+        assert!(
+            suggestion
+                .iter()
+                .all(|shape| shape.fallback_color == theme::INDIGO_600),
+            "an available suggestion takes the indigo accent"
+        );
+    }
+
+    /// F20 (APP-ACTION-BAR-NON-ITALIC): the dirty-draft hint stays upright.
+    #[test]
+    fn the_dirty_draft_hint_is_not_italic() {
+        let mut harness = harness(baseline_state());
+        harness.run();
+        harness
+            .state_mut()
+            .state
+            .draft
+            .as_mut()
+            .unwrap()
+            .timing
+            .socd_transition_min_micros += 100;
+        harness.run();
+
+        let hint = shapes_with_text(&harness, "Click Apply to commit draft edits.");
+        assert!(!hint.is_empty(), "the dirty hint is painted");
+        for shape in &hint {
+            let italic = shape
+                .galley
+                .job
+                .sections
+                .iter()
+                .any(|section| section.format.italics);
+            assert!(!italic, "the dirty-draft hint is not italic");
+        }
     }
 }
