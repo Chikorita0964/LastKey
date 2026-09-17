@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "execution_id": "ef602f98-e1a4-45e3-896a-3d1a38d6812b",
+  "task_id": "T4-PREVIEW",
+  "status": "completed",
+  "summary": "F11 and F12 preview fidelity: the Release Delay overlap phase caption now describes the physical overlap instead of claiming both keys reach the game, every phase caption names the resolved output in all three languages, and the neutral gap dot takes the reference's 10px styling with its indigo Press Delay-gap highlight.",
+  "branch": "agent/worker-1",
+  "implementation_commit": "8b94a854f4b6e6e47f010c205f31b2fbb1560340",
+  "owned_files": ["src/ui/preview.rs", "src/ui/language/en.rs", "src/ui/language/es.rs", "src/ui/language/zh.rs"],
+  "changed_files": ["src/ui/preview.rs", "src/ui/language/en.rs", "src/ui/language/es.rs", "src/ui/language/zh.rs"],
+  "tests": [
+    {"command": "cargo test --no-default-features --features egui-ui --lib --test ui_semantic", "result": "pass"},
+    {"command": "cargo fmt --all -- --check", "result": "pass"},
+    {"command": "cargo test --locked --all-targets", "result": "pass"},
+    {"command": "cargo clippy --locked --all-targets -- -D warnings", "result": "pass"},
+    {"command": "cargo test --locked --no-default-features --features egui-ui --lib --bin lastkey-settings --test ui_semantic", "result": "pass"},
+    {"command": "cargo clippy --locked --no-default-features --features egui-ui --all-targets -- -D warnings", "result": "pass"},
+    {"command": "cargo check --locked --target x86_64-unknown-linux-gnu --all-targets", "result": "pass"},
+    {"command": "cargo tree --no-default-features -e normal", "result": "pass"},
+    {"command": "git diff --check", "result": "pass"},
+    {"command": ".github\\scripts\\Test-ReleaseFormDefault.ps1", "result": "pass"}
+  ],
+  "mandatory_acceptance": {
+    "PREVIEW-OVERLAP-CAPTION": {"status": "satisfied", "evidence": "The (true, true) held state, reachable only in Release Delay phase 1, now selects the translation key \"Opposite-direction overlap\" instead of \"Game receives A + D\", and the source string is registered in en/es/zh. Pinned by the widget-level test the_caption_names_every_resolved_state, which queries the painted caption label for (example 2, phase 1) and passes in the egui-ui run."},
+    "PREVIEW-ANIMATION-CAPTIONS-AND-DOT": {"status": "satisfied", "evidence": "Captions now read \"A output active\", \"D output active\", \"Neutral gap (neither key active)\", and \"Opposite-direction overlap\", all registered in en/es/zh and queried by label in the_caption_names_every_resolved_state. The neutral dot renders at the reference's 10px slate-300 rest style with the Press Delay-gap highlight at scale-110 in indigo-500 (#615fff, derived from the reference's Tailwind oklch and cross-checked against the theme's verified indigo-400/600/700 and slate-300 values) plus the shadow-2xs lift; pinned by the_neutral_gap_dot_keeps_the_reference_styling and the_neutral_dot_rests_on_slate_without_the_gap_highlight."}
+  },
+  "risks": [
+    "Copy divergence: the investigation's expected strings for the overlap and neutral captions (\"Opposite-direction overlap\", \"Neutral gap (neither key active)\") differ from the reference snapshot's own i18n values (\"A + D output overlap\", \"No output · press pending\"); the investigation's wording was implemented as the task's stated expectation, and the active-key strings match both sources.",
+    "The indigo-500 highlight is a derivation: the oklch-to-sRGB conversion reproduces the theme's verified palette read-backs exactly, but it is not a screen read-back of the reference dot.",
+    "Native visual confirmation is outside this execution; the captions and dot are pinned by egui_kittest widget tests only.",
+    "The Spanish and Chinese captions are newly authored here, because the reference's own locales reuse English placeholders; they need native-speaker review like the rest of the inventory."
+  ],
+  "blockers": []
+}
