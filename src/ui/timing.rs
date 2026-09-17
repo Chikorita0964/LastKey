@@ -847,6 +847,10 @@ pub struct PreviewMount<'a> {
 /// carries the procedural transport glyphs, the 850 ms phase clock, and the
 /// viewport/dialog gates. The card itself stays state-free; the mount carries
 /// the gates in.
+///
+/// [`super::app::stretch_card`] grows the frame to the row's shared height
+/// (the reference's `h-full` inside its grid) while keeping this card's
+/// content top-aligned, so the leftover collects below it.
 pub fn timing_card(
     ui: &mut Ui,
     timing: &TimingSettings,
@@ -950,6 +954,11 @@ pub fn timing_card(
                         mechanism_steps(ui, timing.mode, timing, language);
                     }
                 });
+            // The reference keeps the stretched card's content top-aligned
+            // (`flex flex-col h-full`), so the row's leftover height collects
+            // below the content; the row's helper measures the natural height
+            // before growing the frame.
+            super::app::stretch_card(ui, "timing");
         })
         .response
 }

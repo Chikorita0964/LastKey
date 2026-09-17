@@ -319,35 +319,101 @@ fn key_press(key: egui::Key, physical_key: Option<egui::Key>) -> KeyPress {
     }
 }
 
+/// The context-memory key where the row publishes the shared content height
+/// both cards stretch to, and where each card publishes the natural height it
+/// measured first. The memory is the channel so the card entry points keep
+/// their signatures: the semantic tests compose the cards directly.
+fn card_height_id() -> egui::Id {
+    egui::Id::new("settings-cards-height")
+}
+
+fn card_natural_id(card: &'static str) -> egui::Id {
+    egui::Id::new(("settings-card-natural-height", card))
+}
+
+/// How far the row's measured height may drift before the sizing pass is
+/// re-run; the frames round to whole pixels, so an exact comparison would
+/// discard on every frame.
+const CARD_HEIGHT_TOLERANCE: f32 = 0.5;
+
+/// Grows one card's frame to the row's shared height and publishes the
+/// natural content height it measured first. The reference stretches both
+/// cards to the taller one (`h-full` inside its grid); `expand_to_include_rect`
+/// grows the frame's region without the item spacing a trailing
+/// `set_min_height` or `add_space` would add, and measuring before the
+/// expansion keeps the row from reading its own minimum back.
+pub(crate) fn stretch_card(ui: &mut Ui, card: &'static str) {
+    let target = ui
+        .data(|data| data.get_temp::<f32>(card_height_id()))
+        .unwrap_or(0.0);
+    let natural = ui.min_rect();
+    ui.expand_to_include_rect(Rect::from_min_max(
+        natural.min,
+        Pos2::new(natural.max.x, natural.top() + target.max(natural.height())),
+    ));
+    ui.data_mut(|data| data.insert_temp(card_natural_id(card), natural.height()));
+}
+
 /// The two settings cards, side by side, each in its own fixed-width column
 /// (the Iced `row![mappings, timing_card]`). Shared by the page and its tests
-/// so the composition is exercised exactly as it ships.
-fn settings_cards(ui: &mut Ui, state: &State, messages: &mut Vec<Message>) {
+/// so the composition is exercised exactly as it ships. Returns each column's
+/// rect so the height contract can be asserted directly.
+///
+/// The reference stretches both cards to the taller one (`h-full` inside its
+/// grid), and egui measures bottom-up, so the row records the taller natural
+/// height and re-renders both cards at it. The sizing pass is hidden with a
+/// discard, the way `Grid` covers its own first pass; once the height is
+/// stable the row runs one pass per frame.
+fn settings_cards(ui: &mut Ui, state: &State, messages: &mut Vec<Message>) -> (Rect, Rect) {
     let gap = theme::SECTION_GAP;
     let width = ((ui.available_width() - gap) / 2.0).max(0.0);
+    let target = ui
+        .data(|data| data.get_temp::<f32>(card_height_id()))
+        .unwrap_or(0.0);
+    let mut cards = (Rect::NOTHING, Rect::NOTHING);
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = gap;
-        ui.allocate_ui_with_layout(Vec2::new(width, 0.0), Layout::top_down(Align::Min), |ui| {
-            messages.extend(mapping::key_mappings_card(ui, state));
-        });
-        ui.allocate_ui_with_layout(Vec2::new(width, 0.0), Layout::top_down(Align::Min), |ui| {
-            if let Some(draft) = &state.draft {
-                let _ = timing::timing_card(
-                    ui,
-                    &draft.timing,
-                    &state.inputs,
-                    &state.editing,
-                    state.language,
-                    Some(timing::PreviewMount {
-                        preview: &state.preview,
-                        awake: state.focused,
-                        clock_mounted: matches!(state.profiles, ProfileDialog::Closed),
-                    }),
-                    messages,
-                );
-            }
-        });
+        cards.0 = ui
+            .allocate_ui_with_layout(Vec2::new(width, 0.0), Layout::top_down(Align::Min), |ui| {
+                messages.extend(mapping::key_mappings_card(ui, state));
+            })
+            .response
+            .rect;
+        cards.1 = ui
+            .allocate_ui_with_layout(Vec2::new(width, 0.0), Layout::top_down(Align::Min), |ui| {
+                if let Some(draft) = &state.draft {
+                    let _ = timing::timing_card(
+                        ui,
+                        &draft.timing,
+                        &state.inputs,
+                        &state.editing,
+                        state.language,
+                        Some(timing::PreviewMount {
+                            preview: &state.preview,
+                            awake: state.focused,
+                            clock_mounted: matches!(state.profiles, ProfileDialog::Closed),
+                        }),
+                        messages,
+                    );
+                }
+            })
+            .response
+            .rect;
     });
+
+    let mapping_height = ui
+        .data(|data| data.get_temp::<f32>(card_natural_id("mapping")))
+        .unwrap_or(0.0);
+    let timing_height = ui
+        .data(|data| data.get_temp::<f32>(card_natural_id("timing")))
+        .unwrap_or(0.0);
+    let measured = mapping_height.max(timing_height);
+    let changed = (target - measured).abs() > CARD_HEIGHT_TOLERANCE;
+    ui.data_mut(|data| data.insert_temp(card_height_id(), measured));
+    if changed {
+        ui.ctx().request_discard("settings cards: matching heights");
+    }
+    cards
 }
 
 /// The action bar: restore, dirty badge, feedback, revert, apply. It is the
@@ -1371,7 +1437,7 @@ mod tests {
     use crate::{
         core::PhysicalKey,
         protocol::{DisplayKey, UiSnapshot},
-        settings::Settings,
+        settings::{Settings, SocdMode},
         ui::state::TimingInputs,
     };
     use egui_kittest::{Harness, kittest::Queryable};
@@ -1408,6 +1474,7 @@ mod tests {
     struct FakeShell {
         state: State,
         sent: Vec<UiCommand>,
+        cards: (Rect, Rect),
     }
 
     impl FakeShell {
@@ -1421,7 +1488,7 @@ mod tests {
                     snapshot.keys[2].name.as_str(),
                     snapshot.keys[3].name.as_str(),
                 ];
-                settings_cards(ui, &self.state, &mut messages);
+                self.cards = settings_cards(ui, &self.state, &mut messages);
                 let _ = timeline::timeline_section(
                     ui,
                     &self.state.monitor,
@@ -1454,6 +1521,7 @@ mod tests {
                 FakeShell {
                     state,
                     sent: Vec::new(),
+                    cards: (Rect::NOTHING, Rect::NOTHING),
                 },
             )
     }
@@ -1972,5 +2040,75 @@ mod tests {
                 .any(|section| section.format.italics);
             assert!(!italic, "the dirty-draft hint is not italic");
         }
+    }
+
+    /// F06: the reference stretches both top-row cards to the taller one
+    /// (`h-full` inside its grid), so their bottom edges must agree in every
+    /// SOCD mode.
+    #[test]
+    fn the_two_settings_cards_match_height_in_every_mode() {
+        for mode in SocdMode::ALL {
+            let mut state = baseline_state();
+            state.draft.as_mut().unwrap().timing.mode = mode;
+            let mut harness = harness(state);
+            harness.run();
+            let (mapping, timing) = harness.state().cards;
+            println!(
+                "{mode:?}: mapping={} timing={}",
+                mapping.height(),
+                timing.height()
+            );
+            assert!(
+                (mapping.height() - timing.height()).abs() < 0.5,
+                "{mode:?}: the cards must share one height, got mappings {} and timing {}",
+                mapping.height(),
+                timing.height()
+            );
+        }
+    }
+
+    /// The row re-measures instead of keeping a stale height: the taller card
+    /// changes with the mode, and switching back restores the first height.
+    #[test]
+    fn the_card_row_re_measures_when_the_mode_changes() {
+        let mut harness = harness(baseline_state());
+        harness.run();
+        let (immediate_mapping, immediate_timing) = harness.state().cards;
+        assert_eq!(immediate_mapping.height(), immediate_timing.height());
+
+        harness
+            .state_mut()
+            .state
+            .draft
+            .as_mut()
+            .unwrap()
+            .timing
+            .mode = SocdMode::PressDelay;
+        harness.run();
+        let (press_mapping, press_timing) = harness.state().cards;
+        assert_eq!(press_mapping.height(), press_timing.height());
+        assert!(
+            press_mapping.height() < immediate_mapping.height(),
+            "the row must shrink to the shorter mode, got {} then {}",
+            immediate_mapping.height(),
+            press_mapping.height()
+        );
+
+        harness
+            .state_mut()
+            .state
+            .draft
+            .as_mut()
+            .unwrap()
+            .timing
+            .mode = SocdMode::Immediate;
+        harness.run();
+        let (back_mapping, back_timing) = harness.state().cards;
+        assert_eq!(back_mapping.height(), back_timing.height());
+        assert_eq!(
+            back_mapping.height(),
+            immediate_mapping.height(),
+            "returning to a mode restores its shared height"
+        );
     }
 }
