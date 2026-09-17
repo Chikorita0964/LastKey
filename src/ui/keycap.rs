@@ -7,8 +7,12 @@
 //! invisible to AccessKit, so `ui.interact` plus a labelled [`WidgetInfo`] is
 //! what lets `egui_kittest` and the inspection tools find the keycap by name.
 //!
-//! Every colour and shadow comes from [`super::theme`]; this module keeps only
-//! metrics that no theme owner defines.
+//! Colours and shadows come from [`super::theme`] wherever the theme owns the
+//! token. The reference draws its keycap glyphs with hex literals
+//! (`CanvasIcon color=...`) that sit on a different palette lineage than the
+//! theme's class-based tokens, so the per-direction arrow inks and ring steps
+//! stay beside the direction table they belong to; everything else is
+//! theme-owned.
 
 use std::sync::Arc;
 
@@ -40,17 +44,44 @@ const ARROW_SIZE: f32 = 12.0;
 /// widest `Shadow::blur` here is [`theme::KEYCAP_REBIND_GLOW_BLUR`], and
 /// epaint's penumbra extends half the blur in each direction.
 const SHADOW_REACH: f32 = 12.0;
+/// The pressed keycap's tactile compression: the reference's `scale-95`. This
+/// is a paint-time shrink about the box centre; the allocated [`KEYCAP_SIZE`]
+/// square is untouched, which is what a CSS transform does to its layout box.
+const PRESS_SCALE: f32 = 0.95;
+/// The hover edit badge: the reference's `w-5 h-5` circle sitting 4px past the
+/// box's top-right corner (`-top-1 -right-1`).
+const BADGE_SIZE: f32 = 20.0;
+const BADGE_OFFSET: f32 = 4.0;
+/// The badge's pencil, `CanvasIcon name="edit" size={12}`.
+const BADGE_ICON: f32 = 12.0;
+/// Drawn indigo-700 (reference literal `#4338ca`), the badge pencil's ink.
+/// Not [`theme::INDIGO_700`]: that token is the rendered `bg-indigo-700`
+/// class (`#432dd7`), a different lineage than the reference's drawn hex.
+const BADGE_PENCIL: Color32 = Color32::from_rgb(0x43, 0x38, 0xca);
+/// The pressed keycap's inset shadow (`shadow-inner`). epaint has no inset
+/// shadow primitive, so two translucent inside strokes -- a wider, fainter
+/// band and a tighter one -- approximate the CSS `inset 0 2px 4px
+/// rgb(0 0 0 / 0.05)` darkening along the box's inner edge.
+const INNER_SHADOW: Color32 = Color32::from_black_alpha(8);
+const INNER_SHADOW_WIDE: f32 = 3.0;
+const INNER_SHADOW_TIGHT: f32 = 1.5;
 
 /// One D-pad direction's display identity: its capture slot, sub-legend,
-/// arrow, accent colour, and outer ring glow colour. Ported unchanged from the
-/// Iced `Direction` constants; `docs/architecture/ui.md` fixes the mapping
-/// (UP = Immediate, LEFT = Press Delay, RIGHT = Random Mix, DOWN = Release
-/// Delay).
+/// arrow, fill accent, arrow ink, and outer ring glow colour. Ported from the
+/// Iced `Direction` constants; `docs/architecture/ui.md` fixes the fill
+/// mapping (UP = Immediate, LEFT = Press Delay, RIGHT = Random Mix, DOWN =
+/// Release Delay).
 pub struct Direction {
     pub slot: KeySlot,
     pub label: &'static str,
     pub arrow: Arrow,
+    /// The direction's SOCD mode colour: the accent fill for the pressed and
+    /// rebinding states.
     pub accent: Color32,
+    /// The legend arrow's resting ink. The reference draws it with its own hex
+    /// literal (`KeyMappingsCard.tsx` `accentColor`), a different value than
+    /// the CSS-class mode colour the fill takes.
+    pub ink: Color32,
     pub ring: Color32,
 }
 
@@ -68,6 +99,7 @@ pub const UP: Direction = Direction {
     label: "UP",
     arrow: Arrow::Up,
     accent: theme::IMMEDIATE_ACCENT,
+    ink: Color32::from_rgb(0x25, 0x63, 0xeb),
     ring: Color32::from_rgb(0x93, 0xc5, 0xfd),
 };
 pub const DOWN: Direction = Direction {
@@ -75,6 +107,7 @@ pub const DOWN: Direction = Direction {
     label: "DOWN",
     arrow: Arrow::Down,
     accent: theme::VIOLET_600,
+    ink: Color32::from_rgb(0x7c, 0x3a, 0xed),
     ring: Color32::from_rgb(0xc4, 0xb5, 0xfd),
 };
 pub const LEFT: Direction = Direction {
@@ -82,6 +115,7 @@ pub const LEFT: Direction = Direction {
     label: "LEFT",
     arrow: Arrow::Left,
     accent: theme::INDIGO_600,
+    ink: Color32::from_rgb(0x63, 0x66, 0xf1),
     ring: Color32::from_rgb(0xa5, 0xb4, 0xfc),
 };
 pub const RIGHT: Direction = Direction {
@@ -89,6 +123,7 @@ pub const RIGHT: Direction = Direction {
     label: "RIGHT",
     arrow: Arrow::Right,
     accent: theme::MIX_TEXT,
+    ink: Color32::from_rgb(0x93, 0x33, 0xea),
     ring: Color32::from_rgb(0xd8, 0xb4, 0xfe),
 };
 
@@ -304,17 +339,26 @@ fn paint(
     };
 
     let radius = CornerRadius::same(RADIUS);
+    // The pressed box is the reference's `scale-95`: a physical keypress
+    // compresses the painted square about its centre while the allocated box
+    // -- and the D-pad grid that measures it -- stays put, exactly as a CSS
+    // transform leaves the layout box alone.
+    let box_rect = painted_box(rect, state.mode);
     // The ring and drop shadows paint outside the keycap's own box, so they
     // take a clip expanded by the blur; clipping them to `rect` would cut the
     // rebind glow off at the keycap's edge and leave only the Iced behaviour's
-    // inner half. Box and label still clip to the keycap.
-    ui.painter_at(rect.expand(SHADOW_REACH))
-        .add(shadow.as_shape(rect, radius));
+    // inner half. Box and label still clip to the keycap; the hover badge
+    // sits outside the box too and is painted on this painter last.
+    let halo = ui.painter_at(rect.expand(SHADOW_REACH));
+    halo.add(shadow.as_shape(box_rect, radius));
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, radius, fill);
-    painter.rect_stroke(rect, radius, Stroke::new(2.0, edge), StrokeKind::Inside);
+    painter.rect_filled(box_rect, radius, fill);
+    if state.mode == KeycapMode::Pressed {
+        paint_inner_shadow(&painter, box_rect, radius);
+    }
+    painter.rect_stroke(box_rect, radius, Stroke::new(2.0, edge), StrokeKind::Inside);
 
-    let content = rect.shrink(PADDING);
+    let content = box_rect.shrink(PADDING);
     let legend = Rect::from_min_size(content.min, Vec2::new(content.width(), LEGEND_HEIGHT));
     let legend_ink = if active {
         // The Iced keycap's legend: `Color::from_rgba(1.0, 1.0, 1.0, 0.8)`.
@@ -341,7 +385,7 @@ fn paint(
     let arrow_ink = if active {
         Color32::WHITE
     } else {
-        direction.accent
+        direction.ink
     };
     paint_arrow(
         &painter,
@@ -375,6 +419,66 @@ fn paint(
             paint_text_block(&painter, center, &display.lines, display.size, gap, ink);
         }
     }
+
+    if hovered {
+        paint_edit_badge(&halo, box_rect);
+    }
+}
+
+/// The keycap's drawn box: the allocated square, compressed by [`PRESS_SCALE`]
+/// about its centre while a physical key is down (the reference's
+/// `scale-95`). Every other mode draws the allocated box.
+fn painted_box(rect: Rect, mode: KeycapMode) -> Rect {
+    if mode == KeycapMode::Pressed {
+        Rect::from_center_size(rect.center(), rect.size() * PRESS_SCALE)
+    } else {
+        rect
+    }
+}
+
+/// The pressed keycap's inset shadow (`shadow-inner`): the two translucent
+/// inside strokes described at [`INNER_SHADOW`], drawn on the deflated box so
+/// the band follows the pressed geometry.
+fn paint_inner_shadow(painter: &Painter, rect: Rect, radius: CornerRadius) {
+    painter.rect_stroke(
+        rect,
+        radius,
+        Stroke::new(INNER_SHADOW_WIDE, INNER_SHADOW),
+        StrokeKind::Inside,
+    );
+    painter.rect_stroke(
+        rect,
+        radius,
+        Stroke::new(INNER_SHADOW_TIGHT, INNER_SHADOW),
+        StrokeKind::Inside,
+    );
+}
+
+/// The hover edit badge: a 20px white circle with an [`theme::INDIGO_200`]
+/// hairline and the drawn edit glyph, 4px past the box's top-right corner
+/// (`-top-1 -right-1`). It sits outside the keycap's own clip, so it takes the
+/// halo painter the ring shadows use.
+fn paint_edit_badge(painter: &Painter, box_rect: Rect) {
+    let badge = Rect::from_min_size(
+        Pos2::new(
+            box_rect.right() + BADGE_OFFSET - BADGE_SIZE,
+            box_rect.top() - BADGE_OFFSET,
+        ),
+        Vec2::splat(BADGE_SIZE),
+    );
+    painter.add(theme::SHADOW_KEYCAP.as_shape(badge, theme::CIRCLE_RADIUS));
+    painter.circle_filled(badge.center(), BADGE_SIZE / 2.0, theme::SURFACE);
+    painter.circle_stroke(
+        badge.center(),
+        BADGE_SIZE / 2.0 - 0.5,
+        Stroke::new(1.0, theme::INDIGO_200),
+    );
+    theme::paint_icon(
+        painter,
+        Rect::from_center_size(badge.center(), Vec2::splat(BADGE_ICON)),
+        theme::Icon::Edit,
+        BADGE_PENCIL,
+    );
 }
 
 /// Paints one galley, stamping it twice so it reads heavier.
@@ -437,17 +541,22 @@ fn paint_text_block(
     }
 }
 
-/// The direction legend's arrow, tracing the Iced `icons::draw_icon` geometry
-/// so the two ports stay comparable.
+/// The direction legend's arrow: the reference `CanvasIcon` line-and-chevron
+/// geometry (a 0.15s padding, a 45-degree chevron, `lineCap`/`lineJoin` round),
+/// drawn from the same coordinate tables so the two ports stay comparable.
 fn paint_arrow(painter: &Painter, rect: Rect, arrow: Arrow, color: Color32) {
     let size = rect.width().min(rect.height());
     let stroke = Stroke::new((size * 0.1).max(1.2), color);
     let point = |x: f32, y: f32| Pos2::new(rect.left() + x * size, rect.top() + y * size);
     let line = |coordinates: &[(f32, f32)]| {
-        painter.add(Shape::line(
-            coordinates.iter().map(|&(x, y)| point(x, y)).collect(),
-            stroke,
-        ));
+        let points: Vec<Pos2> = coordinates.iter().map(|&(x, y)| point(x, y)).collect();
+        painter.add(Shape::line(points.clone(), stroke));
+        // The reference strokes with `lineCap = 'round'` and `lineJoin =
+        // 'round'`; epaint has neither, so a disc at every vertex rounds the
+        // open ends and fills the chevron's point.
+        for vertex in points {
+            painter.circle_filled(vertex, stroke.width / 2.0, color);
+        }
     };
     match arrow {
         Arrow::Up => {
@@ -483,6 +592,46 @@ fn glow(color: Color32, blur: u8) -> Shadow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use egui::epaint::ColorMode;
+    use egui_kittest::{Harness, kittest::Queryable};
+
+    /// Renders one `UP` keycap in `mode` and runs the first frame.
+    fn render_keycap(mode: KeycapMode) -> Harness<'static> {
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(200.0, 200.0))
+            .build_ui(move |ui| {
+                keycap(
+                    ui,
+                    &UP,
+                    Keycap {
+                        name: "W",
+                        mode,
+                        duplicate: false,
+                    },
+                );
+            });
+        harness.run();
+        harness
+    }
+
+    /// Every top-level shape the last frame painted.
+    fn painted_shapes(harness: &Harness<'_>) -> Vec<Shape> {
+        harness
+            .output()
+            .shapes
+            .iter()
+            .map(|clipped| clipped.shape.clone())
+            .collect()
+    }
+
+    /// The solid colour of a path stroke, if it has one.
+    fn solid_color(color: &ColorMode) -> Option<Color32> {
+        match color {
+            ColorMode::Solid(color) => Some(*color),
+            _ => None,
+        }
+    }
 
     #[test]
     fn format_key_for_display_splits_compound_keys() {
@@ -578,5 +727,180 @@ mod tests {
                 "ring colour must be unique"
             );
         }
+    }
+
+    #[test]
+    fn direction_arrow_inks_are_the_reference_drawn_literals() {
+        // The `CanvasIcon color=...` arguments in the reference's
+        // `renderKeycap` calls (KeyMappingsCard.tsx): blue, indigo, purple and
+        // violet drawn hexes. They are a different lineage than the
+        // class-based SOCD mode colours the accent holds.
+        let channels = |color: Color32| [color.r(), color.g(), color.b()];
+        assert_eq!(channels(UP.ink), [0x25, 0x63, 0xeb]);
+        assert_eq!(channels(LEFT.ink), [0x63, 0x66, 0xf1]);
+        assert_eq!(channels(RIGHT.ink), [0x93, 0x33, 0xea]);
+        assert_eq!(channels(DOWN.ink), [0x7c, 0x3a, 0xed]);
+        // The fill accent and the arrow ink are distinct concepts with
+        // distinct values.
+        for direction in [&UP, &DOWN, &LEFT, &RIGHT] {
+            assert_ne!(direction.ink, direction.accent);
+        }
+    }
+
+    #[test]
+    fn the_pressed_box_deflates_to_scale_95() {
+        let rect = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::splat(KEYCAP_SIZE));
+        let pressed = painted_box(rect, KeycapMode::Pressed);
+        assert!((pressed.width() - 76.0).abs() < 0.01);
+        assert!((pressed.height() - 76.0).abs() < 0.01);
+        assert!((pressed.center() - rect.center()).length() < 0.01);
+        // The compression is paint-time only: normal and rebinding keep the
+        // allocated box, so the D-pad grid never reflows.
+        assert_eq!(painted_box(rect, KeycapMode::Normal), rect);
+        assert_eq!(painted_box(rect, KeycapMode::Rebinding), rect);
+    }
+
+    #[test]
+    fn the_pressed_keycap_paints_the_deflated_box_and_its_inner_shadow() {
+        let harness = render_keycap(KeycapMode::Pressed);
+        let rect = harness.get_by_label("UP keycap: W (pressed)").rect();
+        let shapes = painted_shapes(&harness);
+
+        let box_shape = shapes
+            .iter()
+            .find_map(|shape| match shape {
+                Shape::Rect(rect_shape) if rect_shape.fill == UP.accent => Some(rect_shape.clone()),
+                _ => None,
+            })
+            .expect("the pressed fill is the direction accent");
+        assert!((box_shape.rect.center() - rect.center()).length() < 0.01);
+        assert!(
+            (box_shape.rect.width() - rect.width() * PRESS_SCALE).abs() < 0.01,
+            "the pressed box must shrink about its centre"
+        );
+
+        let bands: Vec<egui::epaint::RectShape> = shapes
+            .iter()
+            .filter_map(|shape| match shape {
+                Shape::Rect(rect_shape) if rect_shape.stroke.color == INNER_SHADOW => {
+                    Some(rect_shape.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            bands.len(),
+            2,
+            "the inset shadow is the two-layer approximation"
+        );
+        for band in &bands {
+            assert_eq!(band.rect, box_shape.rect);
+            assert_eq!(band.stroke_kind, StrokeKind::Inside);
+        }
+    }
+
+    #[test]
+    fn the_arrow_keeps_the_canvas_icon_geometry_with_round_caps() {
+        let harness = render_keycap(KeycapMode::Normal);
+        let shapes = painted_shapes(&harness);
+
+        let arrow: Vec<egui::epaint::PathShape> = shapes
+            .iter()
+            .filter_map(|shape| match shape {
+                Shape::Path(path) if solid_color(&path.stroke.color) == Some(UP.ink) => {
+                    Some(path.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(arrow.len(), 2, "the arrow is a stem and a chevron");
+        let stem = arrow
+            .iter()
+            .find(|path| path.points.len() == 2)
+            .expect("the stem is the two-point path");
+        let chevron = arrow
+            .iter()
+            .find(|path| path.points.len() == 3)
+            .expect("the chevron is the three-point path");
+        // The reference proportions: a stem between the 0.15s paddings and a
+        // 45-degree chevron whose arms reach 0.28s.
+        assert!(((stem.points[1] - stem.points[0]).length() - 0.7 * ARROW_SIZE).abs() < 0.01);
+        assert!(
+            ((chevron.points[2].x - chevron.points[0].x).abs() - 0.56 * ARROW_SIZE).abs() < 0.01
+        );
+        assert!(
+            ((chevron.points[0].y - chevron.points[1].y).abs() - 0.28 * ARROW_SIZE).abs() < 0.01
+        );
+        assert_eq!(
+            chevron.points[1], stem.points[1],
+            "the chevron meets the stem's tip"
+        );
+
+        // `CanvasIcon` strokes with `lineCap`/`lineJoin` round; epaint has no
+        // cap option, so every vertex carries a disc of the stroke's radius.
+        let caps: Vec<egui::epaint::CircleShape> = shapes
+            .iter()
+            .filter_map(|shape| match shape {
+                Shape::Circle(circle) if circle.fill == UP.ink => Some(*circle),
+                _ => None,
+            })
+            .collect();
+        let vertices: usize = arrow.iter().map(|path| path.points.len()).sum();
+        assert_eq!(caps.len(), vertices, "one cap disc per arrow vertex");
+        for path in &arrow {
+            for vertex in &path.points {
+                assert!(
+                    caps.iter().any(|cap| (cap.center - *vertex).length() < 0.01
+                        && (cap.radius - path.stroke.width / 2.0).abs() < 0.01),
+                    "vertex {vertex:?} has no cap disc"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_edit_badge_hangs_off_the_top_right_corner_on_hover() {
+        let mut harness = render_keycap(KeycapMode::Normal);
+        let rect = harness.get_by_label("UP keycap: W").rect();
+        let find_badge = |shapes: &[Shape]| {
+            shapes.iter().find_map(|shape| match shape {
+                Shape::Circle(circle)
+                    if circle.fill == theme::SURFACE
+                        && (circle.radius - BADGE_SIZE / 2.0).abs() < 0.01 =>
+                {
+                    Some(*circle)
+                }
+                _ => None,
+            })
+        };
+        assert!(
+            find_badge(&painted_shapes(&harness)).is_none(),
+            "the badge is hover-only"
+        );
+
+        harness.get_by_label("UP keycap: W").hover();
+        harness.run();
+        let shapes = painted_shapes(&harness);
+        let badge = find_badge(&shapes).expect("hovering raises the badge");
+        let expected = Pos2::new(
+            rect.right() - BADGE_SIZE / 2.0 + BADGE_OFFSET,
+            rect.top() + BADGE_SIZE / 2.0 - BADGE_OFFSET,
+        );
+        assert!(
+            (badge.center - expected).length() < 0.01,
+            "badge {badge:?} must hang off the top-right corner"
+        );
+        assert!(
+            shapes
+                .iter()
+                .any(|shape| matches!(shape, Shape::Circle(circle)
+                if circle.stroke.color == theme::INDIGO_200)),
+            "the badge keeps its indigo-200 hairline"
+        );
+        assert!(
+            shapes.iter().any(|shape| matches!(shape, Shape::Path(path)
+                if solid_color(&path.stroke.color) == Some(BADGE_PENCIL))),
+            "the badge carries the drawn pencil"
+        );
     }
 }
