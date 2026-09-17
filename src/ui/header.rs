@@ -278,7 +278,9 @@ fn title_divider(ui: &mut Ui) {
 
 /// The connection/status mark: the reference's 8px circle inside its 4px state
 /// ring (`w-2 h-2 ... ring-4`, Header.tsx:140-151), with the `animate-pulse`
-/// and `animate-ping` states driven while they are shown (ui.md:24-26).
+/// and `animate-ping` states driven while they are shown (ui.md:24-26). A
+/// deactivated window still paints the current frame but asks for no new
+/// ones: it animates nothing and requests no frames at all (ui.md:27-31).
 fn status_dot(ui: &mut Ui, state: &State) {
     let (rect, _) = ui.allocate_exact_size(Vec2::splat(STATUS_DOT), Sense::hover());
     let now = ui.input(|input| input.time) as f32;
@@ -286,7 +288,7 @@ fn status_dot(ui: &mut Ui, state: &State) {
     let painter = ui.painter();
     painter.circle_filled(rect.center(), paint.ring_radius, paint.ring);
     painter.circle_filled(rect.center(), paint.dot_radius, paint.dot);
-    if paint.animating {
+    if paint.animating && state.focused {
         request_animation_frame(ui);
     }
 }
@@ -772,6 +774,50 @@ mod tests {
         assert!(
             repaint_delay(&harness) <= Duration::from_millis(50),
             "the ping must schedule its own frames"
+        );
+    }
+
+    #[test]
+    fn the_unfocused_dot_paints_the_frame_but_requests_no_repaint() {
+        // Both animations stop when the window is deactivated: the dot still
+        // paints its current frame, but it must request no frames at all
+        // (ui.md:27-31), like the preview clock and the timeline playhead.
+        let mut measuring = dot_harness(baseline_state());
+        measuring
+            .state_mut()
+            .snapshot
+            .as_mut()
+            .unwrap()
+            .measurement_active = true;
+        measuring.state_mut().focused = false;
+        measuring.input_mut().time = Some(0.0);
+        measuring.step();
+        assert!(
+            repaint_delay(&measuring) > Duration::from_millis(100),
+            "an unfocused pulse must request no frames"
+        );
+        assert!(
+            ring_and_dot(&measuring, AMBER_100, theme::AMBER_500),
+            "the unfocused pulse still paints its current frame"
+        );
+
+        let mut rebinding = dot_harness(baseline_state());
+        rebinding
+            .state_mut()
+            .snapshot
+            .as_mut()
+            .unwrap()
+            .capture_slot = Some(KeySlot::VerticalFirst);
+        rebinding.state_mut().focused = false;
+        rebinding.input_mut().time = Some(0.0);
+        rebinding.step();
+        assert!(
+            repaint_delay(&rebinding) > Duration::from_millis(100),
+            "an unfocused ping must request no frames"
+        );
+        assert!(
+            ring_and_dot(&rebinding, theme::INDIGO_100, INDIGO_500),
+            "the unfocused ping still paints its current frame"
         );
     }
 
