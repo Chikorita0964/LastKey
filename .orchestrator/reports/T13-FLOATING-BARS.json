@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "execution_id": "c1aa3a14-05d0-445f-b464-9848d93ee0b7",
+  "task_id": "T13-FLOATING-BARS",
+  "status": "completed",
+  "summary": "F18 page chrome: the header and action bar are floating sticky bars with card chrome, a full PAGE_PADDING margin from every window edge, and no scroll coupling with the body. The action bar's reserve now includes the card frame's strokes so its bottom margin is exact, and the page composition is shared with the tests.",
+  "branch": "agent/worker-1",
+  "implementation_commit": "fd46b7377b7665f11edfd31f56946a607cb5e697",
+  "owned_files": ["src/ui/app.rs", "src/ui/header.rs", "docs/architecture/ui.md"],
+  "changed_files": ["src/ui/app.rs", "src/ui/header.rs", "docs/architecture/ui.md"],
+  "tests": [
+    {"command": "cargo test --no-default-features --features egui-ui --lib --test ui_semantic", "result": "pass"},
+    {"command": "cargo test --locked --all-targets", "result": "pass"},
+    {"command": "cargo clippy --locked --all-targets -- -D warnings", "result": "pass"},
+    {"command": "cargo test --locked --no-default-features --features egui-ui --lib --bin lastkey-settings --test ui_semantic", "result": "pass"},
+    {"command": "cargo clippy --locked --no-default-features --features egui-ui --all-targets -- -D warnings", "result": "pass"},
+    {"command": "cargo check --locked --target x86_64-unknown-linux-gnu --all-targets", "result": "pass"},
+    {"command": "cargo fmt --all -- --check", "result": "pass"},
+    {"command": "cargo tree --no-default-features -e normal", "result": "pass"},
+    {"command": "git diff --check", "result": "pass"},
+    {"command": ".github\\scripts\\Test-ReleaseFormDefault.ps1", "result": "pass"}
+  ],
+  "mandatory_acceptance": {
+    "APP-STICKY-FLOATING-BARS": {"status": "satisfied", "evidence": "The header and the action bar render outside the body's single scroll owner with theme::card_style chrome, inset by theme::PAGE_PADDING on every side. the_floating_bars_keep_their_window_edge_margins draws the real page (SettingsApp::page, extracted from the App impl so the tests exercise it as it ships) and asserts the header's top/left and the action bar's bottom/right margins all equal PAGE_PADDING (measured page [8,8]-[1032,792] with header [24,24]-[1016,88] and bar [24,710]-[1016,776]). the_floating_bars_stay_pinned_while_the_body_scrolls scrolls the body via its ScrollArea and asserts the settings cards move (top 104 to 4, behind the header) while both bar rects stay identical. The failing pre-fix measurement showed the bar 4px short of its margin, which the ACTION_BAR_HEIGHT frame-stroke reserve fixes. ui.md Layout now records the presentation."}
+  },
+  "risks": [
+    "The bars' rounding, border and shadow come from theme::card_style, shared with the setting cards; the bars intentionally follow that shared style, and the reserve constant CARD_STROKE mirrors the style's 2px stroke width, so a future change to theme::card_style must update it (theme.rs is outside this task's ownership).",
+    "The tests measure margins relative to the painted page canvas rather than the window rect, because the test runner adds its own outer margin; the shipping page's window-edge margin is the canvas margin by construction.",
+    "The assigned base_commit's T2/T5/T6 app.rs changes are outside page, body, and actions_bar (those regions are identical on both sides), but the integration merge still needs the Integrator's review of app.rs.",
+    "Native visual confirmation is outside this execution; the presentation is pinned by widget tests only."
+  ],
+  "blockers": []
+}
