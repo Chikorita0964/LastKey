@@ -394,13 +394,11 @@ pub const BADGE_RADIUS: CornerRadius = CornerRadius::same(4);
 pub const DOT_RADIUS: CornerRadius = CornerRadius::same(3);
 pub const CIRCLE_RADIUS: CornerRadius = CornerRadius::same(255);
 
-/// Slider geometry from the Iced `accent_slider`: a 10pt rail rounded to 5, a
-/// hollow handle that swells from 7 to 8 while hovered or grabbed, ringed 3pt
-/// in the accent.
-pub const SLIDER_RAIL_WIDTH: f32 = 10.0;
-pub const SLIDER_RAIL_RADIUS: CornerRadius = CornerRadius::same(5);
-pub const SLIDER_HANDLE_RADIUS: f32 = 7.0;
-pub const SLIDER_HANDLE_RADIUS_DRAG: f32 = 8.0;
+/// The slider handle's ring width from the Iced `accent_slider`: 3pt in the
+/// accent (or [`SLIDER_RAIL_DISABLED`] while disabled). The single-handle rail
+/// width, rail radius, and handle radii are retired with T12: the timing card
+/// draws its own two-handle rail and mixer geometry and no longer consumes
+/// them.
 pub const SLIDER_HANDLE_BORDER: f32 = 3.0;
 /// The range slider's disabled ink (`iced-ui/widgets.rs:234`,
 /// `Color::from_rgb8(203, 213, 225)`), which replaces the per-mode accent on
@@ -1130,15 +1128,15 @@ pub const BUTTON_ICON_GAP: f32 = 6.0;
 
 /// The double-stamp weight approximation's offset: a second pass of the same
 /// galley at `max(size * STAMP_OFFSET_FACTOR, STAMP_OFFSET_MIN)` px to the
-/// right, the geometry `src/ui/keycap.rs`'s `stamp_galley` renders with.
+/// right, the geometry [`stamp_galley`] renders with.
 pub const STAMP_OFFSET_FACTOR: f32 = 0.04;
 pub const STAMP_OFFSET_MIN: f32 = 0.35;
 
 /// Paint one galley twice at a sub-pixel offset so it reads heavier.
 ///
-/// This is the single owner the R2 round-1 issue 8 asked for -- the copy
-/// `keycap.rs` carries is the consumer wave's to delete, exactly as its
-/// `KeycapMode` copy was this one's to absorb. It is **not** a blessing of
+/// This is the single owner the R2 round-1 issue 8 asked for: the local copy
+/// `keycap.rs` carried was deleted in T12, and its call sites now resolve to
+/// this function. It is **not** a blessing of
 /// the approximation: egui's bundled faces ship a single weight, so the Iced
 /// port's `UI_FONT_BOLD`/`UI_FONT_BLACK` families cannot be selected and
 /// `RichText::strong` only recolours. Whether to register a weighted face

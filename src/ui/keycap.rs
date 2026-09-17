@@ -481,28 +481,12 @@ fn paint_edit_badge(painter: &Painter, box_rect: Rect) {
     );
 }
 
-/// Paints one galley, stamping it twice so it reads heavier.
+/// The double-stamp weight approximation has one owner, [`theme::stamp_galley`].
 ///
-/// egui's bundled faces ship a single weight, so the Iced port's
-/// `UI_FONT_BOLD`/`UI_FONT_BLACK` families cannot be selected here, and
-/// `RichText::strong` only recolours. A sub-pixel second stamp is the closest
-/// the default stack gets without pinning a named system face, which
-/// `docs/architecture/ui.md` forbids. A shared weight strategy belongs to the
-/// theme module once T2 lands; this is T3's local stand-in.
-pub(super) fn stamp_galley(
-    painter: &Painter,
-    pos: Pos2,
-    galley: &Arc<Galley>,
-    color: Color32,
-    size: f32,
-) {
-    painter.galley(pos, galley.clone(), color);
-    painter.galley(
-        pos + Vec2::new((size * 0.04).max(0.35), 0.0),
-        galley.clone(),
-        color,
-    );
-}
+/// This re-export keeps the `keycap::stamp_galley` path that `mapping.rs`
+/// still calls; those call sites can move to the theme path in a change that
+/// owns that file.
+pub(super) use super::theme::stamp_galley;
 
 /// Paints one or two centred lines as a block, with the same weight
 /// approximation as [`stamp_galley`].
@@ -706,6 +690,29 @@ mod tests {
         assert_eq!(
             keycap_label(&RIGHT, KeycapMode::Rebinding, "D"),
             "RIGHT keycap: rebinding"
+        );
+    }
+
+    /// T12: the weight stamp has one owner, `theme::stamp_galley`. The keycap
+    /// legend must carry its two passes at the shared offset; a local copy
+    /// with its own geometry would break this.
+    #[test]
+    fn the_legend_stamp_uses_the_shared_theme_offset() {
+        let harness = render_keycap(KeycapMode::Normal);
+        let mut passes: Vec<f32> = Vec::new();
+        for shape in painted_shapes(&harness) {
+            if let Shape::Text(text) = shape
+                && text.galley.text() == "W"
+            {
+                passes.push(text.pos.x);
+            }
+        }
+        passes.sort_by(f32::total_cmp);
+        assert_eq!(passes.len(), 2, "the legend carries the two stamp passes");
+        let expected = (18.0 * theme::STAMP_OFFSET_FACTOR).max(theme::STAMP_OFFSET_MIN);
+        assert!(
+            (passes[1] - passes[0] - expected).abs() < 1e-3,
+            "the second pass sits at the shared offset: {passes:?} vs {expected}"
         );
     }
 
