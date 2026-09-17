@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "execution_id": "ef602f98-e1a4-45e3-896a-3d1a38d6812b",
+  "task_id": "T6-APP-TABLE",
+  "status": "completed",
+  "summary": "Latency table styling and proportions (F14, F22), measurement stat formatting and accents (F15, F21, F23), and action bar non-italic feedback (F20) are implemented in src/ui/app.rs. The implementation sits on a clean local merge of the assigned base_commit ab4c4cc into agent/worker-3; the scoped loop and full gate pass.",
+  "branch": "agent/worker-3",
+  "implementation_commit": "c761d4f0e7d2c37b9ad7002e534b506a1940933c",
+  "owned_files": ["src/ui/app.rs"],
+  "changed_files": ["src/ui/app.rs"],
+  "tests": [
+    { "command": "cargo test --no-default-features --features egui-ui --lib -- ui::app::tests::", "result": "pass" },
+    { "command": "cargo test --locked --no-default-features --features egui-ui --lib --test ui_semantic", "result": "pass" },
+    { "command": "cargo fmt --all -- --check", "result": "pass" },
+    { "command": "cargo test --locked --all-targets", "result": "pass" },
+    { "command": "cargo clippy --locked --all-targets -- -D warnings", "result": "pass" },
+    { "command": "cargo test --locked --no-default-features --features egui-ui --lib --bin lastkey-settings --test ui_semantic", "result": "pass" },
+    { "command": "cargo clippy --locked --no-default-features --features egui-ui --all-targets -- -D warnings", "result": "pass" },
+    { "command": "cargo check --locked --target x86_64-unknown-linux-gnu --all-targets", "result": "pass" },
+    { "command": "cargo tree --no-default-features -e normal", "result": "pass" },
+    { "command": "git diff --check", "result": "pass" },
+    { "command": ".github\\scripts\\Test-ReleaseFormDefault.ps1", "result": "pass" }
+  ],
+  "mandatory_acceptance": {
+    "APP-TABLE-STYLING-AND-PROPORTIONS": {
+      "status": "satisfied",
+      "evidence": "F22: PATTERN_COLUMN and SAMPLES_COLUMN now hold the reference widths 240.0 and 130.0, the five metric columns share the remainder through column_widths(), and cell() claims its full width with set_min_width so each row advances by the column geometry instead of its own content width -- before this, painted figure right edges drifted 37.5px between the header and the pattern row. F14: pattern_row no longer overrides column index 1; every figure cell paints theme::BODY_TEXT in the single non-bold monospace pass, so the P50 highlight (EMERALD_500/AMBER_500 ink and the bold stamp) is gone. Widget test ui::app::tests::the_latency_table_uses_the_reference_proportions_and_uniform_figure_ink asserts the fixed-column span, that all six figures share their header's right edge within 0.5px, that the metric steps are equal with a positive fill, and that the P50 figures are painted once with BODY_TEXT."
+    },
+    "APP-MEASUREMENT-FORMAT-AND-ACCENTS": {
+      "status": "satisfied",
+      "evidence": "F21: the new grouped() helper inserts thousands separators, and all displayed integer counts go through it (both stat tiles, the table sample counts, the indistinguishable row). F15: the physical overlap share stat now passes theme::AMBER_500, the same ink as its table row dot, instead of theme::WARN_TEXT. F23: an available suggestion_tile value now renders in theme::INDIGO_600 instead of theme::PRIMARY_TEXT. Widget test ui::app::tests::the_measurement_card_groups_counts_and_keeps_the_reference_accents asserts that 1,072 / 1,240 / 1,040 paint grouped while the raw strings do not appear, that every painted 25.0% overlap-share shape carries AMBER_500, and that every painted 2.4 - 3.7 ms suggestion shape carries INDIGO_600."
+    },
+    "APP-ACTION-BAR-NON-ITALIC": {
+      "status": "satisfied",
+      "evidence": "F20: the dirty-draft hint in feedback() no longer calls RichText::italics(), so the label paints upright in theme::ICON_MUTED. Widget test ui::app::tests::the_dirty_draft_hint_is_not_italic dirties the draft, runs a frame, and asserts no painted section of the 'Click Apply to commit draft edits.' galley has TextFormat::italics set."
+    }
+  },
+  "risks": [
+    "All three criteria are verified by widget tests and the full gate, not by native on-screen inspection; the stage's native-visual gap in docs/architecture/verification.md (Unverified Areas) remains for the latency table, the measurement tiles, and the action bar.",
+    "The table columns now claim their assigned widths instead of shrinking to content; that changes the rendered geometry of all three table rows at once (previously the columns drifted with each row's content width). The change is confined to app.rs table helpers and is covered by the geometry test.",
+    "The implementation commit is stacked on a local merge of base_commit ab4c4cc into agent/worker-3, which also carries the previous execution's T3 report commits; the merge was conflict-free and no file outside src/ui/app.rs changed in this task."
+  ],
+  "blockers": []
+}
