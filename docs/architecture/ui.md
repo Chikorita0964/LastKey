@@ -33,14 +33,16 @@ Rendering rules, stated as what to use rather than only what to avoid:
 - Text uses generic font families at call sites, never a named one: `theme::UI_FONT` is
   `FontFamily::Proportional` and `theme::MONO_FONT` is `FontFamily::Monospace`. The face those
   families resolve is owned by `theme::fonts()` (F24): it registers the native Windows UI face
-  (Segoe UI, read from `%WINDIR%\Fonts\segoeui.ttf`) at the head of `FontFamily::Proportional` and
-  keeps eframe's bundled `default_fonts` faces behind it, which epaint walks in order as the
-  per-glyph fallback — Hangul, CJK, and emoji included. A missing or unreadable system file leaves
-  the bundled set untouched, so the window still renders where Segoe UI is absent. A named family
-  (`FontFamily::Name(..)`) pins a face that is absent on other targets and renders tofu; canvas
-  text takes the same generic-family rule. Bold emphasis remains the double-stamp approximation
-  (`theme::stamp_galley`) until a weighted family has call sites: egui selects a face by family,
-  not by weight, so loading a bold file alone changes nothing.
+  (Segoe UI, read from `%WINDIR%\Fonts\segoeui.ttf`) at the head of `FontFamily::Proportional`, and
+  epaint walks the chain behind it per glyph: eframe's bundled Ubuntu-Light, then
+  NotoEmoji-Regular and emoji-icon-font, which are the two faces that cover emoji. Hangul and CJK
+  have no covering face in that chain today, so `src/ui/language/zh.rs` strings render tofu until a
+  face that covers them is registered; `verification.md` tracks that gap. A missing or unreadable
+  system file leaves the bundled set untouched, so the window still renders where Segoe UI is
+  absent. A named family (`FontFamily::Name(..)`) pins a face that is absent on other targets and
+  renders tofu; canvas text takes the same generic-family rule. Bold emphasis remains the
+  double-stamp approximation (`theme::stamp_galley`) until a weighted family has call sites: egui
+  selects a face by family, not by weight, so loading a bold file alone changes nothing.
 - Still excluded: icon fonts (glyph coverage differs per OS) and runtime image decoding (`png` stays
   in `[build-dependencies]`).
 - UI strings live in `src/ui/language/`, one file per language including `en.rs`. Each exports
