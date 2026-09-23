@@ -8,11 +8,16 @@ release/
 *.pdb
 *.res
 
-# Local agent tooling wiring: machine-specific and not part of the product.
-.vscode/mcp.json
-
 # Local agent session state and design scratch material
 .claude/
+
+# Kilo Agent Manager: managed worktrees are full checkouts of this repository
+# placed inside it, and the panel state is per-machine. Neither belongs in the
+# history. The agent definitions under .kilo/agents/ are tracked on purpose.
+.kilo/
+.vscode/
+.orchestrator/
+.tmp/
 
 # Personal local agent routing, untracked by design. AGENTS.md stays at the root
 # because agents look for it there by convention; everything else is a directory
