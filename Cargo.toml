@@ -18,6 +18,9 @@ egui-ui = ["dep:eframe", "dep:egui", "dep:png"]
 # loopback `127.0.0.1:5719`). Never enable it for a release build; see
 # `src/ui/inspection.rs` for the full contract and the loopback warning.
 agent-inspection = ["egui-ui", "eframe/inspection"]
+# GPUI settings window with the gpui-mcp automation bridge. The window itself
+# arrives with GPUI_MIGRATION.md M01/M02; this wires the dependency graph.
+gpui-ui = ["dep:gpui-mcp"]
 
 [[bin]]
 name = "lastkey"
@@ -55,6 +58,8 @@ eframe = { version = "0.36.2", optional = true, default-features = false, featur
     "wgpu",
 ] }
 egui = { version = "0.36.2", optional = true }
+# Pinned rev: the fork tracks upstream, so a branch would move this surface.
+gpui-mcp = { git = "https://github.com/Chikorita0964/gpui-mcp", rev = "fc38ab12a7826751c6cdf152ef112a6cbc86f5ab", optional = true }
 tray-icon = "0.25.1"
 windows = { version = "0.62", features = [
     "Win32_Foundation",
@@ -80,3 +85,7 @@ winres = "0.1"
 
 [target.'cfg(windows)'.dev-dependencies]
 egui_kittest = "0.36.2"
+
+# gpui-mcp's visibility patches (its vendor/PATCHES.md); both must link one gpui-pre.
+[patch.crates-io]
+gpui-pre = { git = "https://github.com/Chikorita0964/gpui-mcp", rev = "fc38ab12a7826751c6cdf152ef112a6cbc86f5ab" }
