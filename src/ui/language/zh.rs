@@ -20,7 +20,7 @@ pub fn text(source: &str) -> Option<&'static str> {
         "Unclear input order (<1 ms), excluded from timing ranges." => {
             "输入顺序不明确（小于 1 ms），不计入时序范围。"
         }
-        "Preview" => "预览",
+        "PREVIEW" => "预览",
         "Previous example" => "上一个示例",
         "Next example" => "下一个示例",
         "Opposite-direction overlap" => "相反方向重叠",
@@ -64,7 +64,6 @@ pub fn text(source: &str) -> Option<&'static str> {
         "Enable the SOCD filter" => "启用 SOCD 过滤器",
         "Disable the SOCD filter" => "禁用 SOCD 过滤器",
         "All keys uniquely assigned." => "所有按键均无重复。",
-        "4 directions mapped" => "已映射 4 个方向",
         "Duplicate key bindings detected." => "检测到重复按键。",
         "UP" => "上",
         "DOWN" => "下",

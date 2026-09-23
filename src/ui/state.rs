@@ -23,7 +23,7 @@ use super::{
 /// itself, leaving server errors on screen until the next snapshot.
 pub const INVALID_TIMING_TEXT: &str = "Invalid timing value; reverted to the current draft.";
 
-/// A side effect `update` asks the caller to perform. Everything the Iced
+/// A side effect `update` asks the caller to perform. Everything the settings
 /// version expressed as a `Task` lands here, so the state layer stays free of
 /// both the runtime and the window.
 #[derive(Clone, Debug, Eq, PartialEq)]

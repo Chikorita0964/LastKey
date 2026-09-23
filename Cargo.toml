@@ -35,7 +35,7 @@ toml = "0.9"
 
 [target.'cfg(windows)'.dependencies]
 # `default-features = false` plus an explicit minimum, verified against 0.36.2:
-# `accesskit` is why the UI is egui and not iced -- without it the running
+# `accesskit` is why the UI is egui -- without it the running
 # window exposes zero UI Automation controls, the exact defect the migration
 # exists to fix; `wgpu` is the renderer eframe's `Renderer` requires (dropping
 # every backend is a compile_error!, and `wgpu_no_default_features` alone would

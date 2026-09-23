@@ -1,11 +1,11 @@
 //! The egui settings window: page composition, state, cards, and the IPC
-//! client. The Iced implementation it replaced was retired in T11; the
-//! behavioural contract now lives in `docs/architecture/ui.md`.
+//! client. The behavioural contract lives in `docs/architecture/ui.md` and the
+//! visual contract in `docs/architecture/design.md`.
 //!
-//! Doc comments in this tree cite the retired Iced sources with an `iced-ui/`
-//! path prefix (for example `iced-ui/widgets.rs:234`). That tree no longer
-//! exists in the working copy; recover a cited file from git history (last
-//! present before T11).
+//! Every colour, radius, shadow, and spacing this tree paints comes from
+//! [`theme`], which is the single owner of the visual contract. A view module
+//! that finds itself reaching for a literal should add a named token there
+//! instead, so the design doc has exactly one place to describe.
 
 mod app;
 pub mod header;
@@ -15,6 +15,7 @@ pub mod keycap;
 pub mod language;
 pub mod mapping;
 pub mod message;
+pub mod motion;
 pub mod preview;
 pub mod profiles;
 pub mod state;

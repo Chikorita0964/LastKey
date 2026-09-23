@@ -67,7 +67,7 @@ impl Language {
 
 /// Draws the language panel's rows, one full-width option per [`Language::ALL`]
 /// with the session's language carrying the trailing check mark. Port of
-/// `profile_slots`'s languages arm (iced-ui/app.rs:1615-1649): the scroller's
+/// `profile_slots`'s languages arm: the scroller's
 /// `space-y-0.5` gap, the selected row's active-option pair, and the plain row
 /// that stays open on the panel surface.
 pub fn language_rows(ui: &mut Ui, state: &State) -> Vec<Message> {
@@ -105,19 +105,15 @@ fn language_row(ui: &mut Ui, state: &State, language: Language) -> Response {
     let hovered = response.contains_pointer();
     let (fill, edge, ink) = if selected {
         let fill = if hovered {
-            theme::ACTIVE_OPTION_HOVER_BG
+            theme::INDIGO_100_80
         } else {
-            theme::ACTIVE_OPTION_BG
+            theme::INDIGO_50_80
         };
         (fill, theme::INDIGO_200, theme::INDIGO_700)
     } else if hovered {
-        (
-            theme::HOVER_WASH,
-            theme::NAME_HOVER_BORDER,
-            theme::INDIGO_600,
-        )
+        (theme::INDIGO_50_60, theme::INDIGO_300, theme::INDIGO_600)
     } else {
-        (theme::SURFACE, Color32::TRANSPARENT, theme::SLATE_600)
+        (theme::WHITE, Color32::TRANSPARENT, theme::SLATE_600)
     };
 
     let painter = ui.painter();
@@ -135,7 +131,7 @@ fn language_row(ui: &mut Ui, state: &State, language: Language) -> Response {
             Pos2::new(rect.right() - PAD_X - CHECK / 2.0, rect.center().y),
             Vec2::splat(CHECK),
         );
-        theme::paint_icon(painter, check_rect, theme::Icon::Check, theme::PRIMARY_TEXT);
+        theme::paint_icon(painter, check_rect, theme::Icon::Check, theme::INDIGO_600);
     }
     response
 }

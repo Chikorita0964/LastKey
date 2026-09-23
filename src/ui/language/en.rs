@@ -21,7 +21,7 @@ pub fn text(source: &str) -> Option<&'static str> {
         "Unclear input order (<1 ms), excluded from timing ranges." => {
             "Unclear input order (<1 ms), excluded from timing ranges."
         }
-        "Preview" => "Preview",
+        "PREVIEW" => "PREVIEW",
         "Previous example" => "Previous example",
         "Next example" => "Next example",
         "Opposite-direction overlap" => "Opposite-direction overlap",
@@ -67,7 +67,6 @@ pub fn text(source: &str) -> Option<&'static str> {
         "Enable the SOCD filter" => "Enable the SOCD filter",
         "Disable the SOCD filter" => "Disable the SOCD filter",
         "All keys uniquely assigned." => "All keys uniquely assigned.",
-        "4 directions mapped" => "4 directions mapped",
         "Duplicate key bindings detected." => "Duplicate key bindings detected.",
         "UP" => "UP",
         "DOWN" => "DOWN",

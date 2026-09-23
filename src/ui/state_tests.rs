@@ -1,7 +1,5 @@
-//! Ported from the Iced `iced-ui/app.rs` tests. Only the tests that exercise
-//! `update` and the pure helpers come across; the ones that asserted on Iced
-//! widget trees belong to the view layer and are rewritten there as
-//! `egui_kittest` tests (T8).
+//! The `update` and pure-helper tests. The widget-tree assertions belong to
+//! the view layer and live there as `egui_kittest` tests (T8).
 
 use crate::{
     core::PhysicalKey,

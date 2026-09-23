@@ -2,10 +2,10 @@
 //! commands go back through a channel, and inbound events reach the app through
 //! a channel plus a wake callback.
 //!
-//! Port of `iced-ui/ipc_client.rs`. The Iced `Sipper` stream is replaced by
-//! `std::sync::mpsc` plus `wake`: eframe has no async runtime, so the reader
-//! calls the wake callback (the app passes `Context::request_repaint`) after
-//! every queued event, and the app drains the receiver on the next frame.
+//! The event stream is `std::sync::mpsc` plus `wake`: eframe has no async
+//! runtime, so the reader calls the wake callback (the app passes
+//! `Context::request_repaint`) after every queued event, and the app drains the
+//! receiver on the next frame.
 
 use std::{
     sync::{
