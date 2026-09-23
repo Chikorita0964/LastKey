@@ -1,23 +1,21 @@
 //! The Key mappings card: header, capture banner, D-pad stage, and the
 //! unique/duplicate footer.
 //!
-//! The Iced original is the mappings block in `SettingsApp::settings_view`
-//! plus `mapping_pad`, `rebind_banner`, `assignment_status`, and
-//! `resolve_dpad` in `iced-ui/app.rs`; `docs/architecture/ui.md` owns the
-//! contract they must keep. The card paints and pushes [`Message`]s only: it
-//! never saves settings, sends IPC, or mutates application state, and it
-//! returns the messages so the caller can feed them to `state::update`.
+//! `docs/architecture/ui.md` owns the contract the card must keep. The card
+//! paints and pushes [`Message`]s only: it never saves settings, sends IPC, or
+//! mutates application state, and it returns the messages so the caller can
+//! feed them to `state::update`.
 //!
 //! Colours come from [`super::theme`] so the palette keeps one owner; the
-//! card's pixel metrics stay local and name the Iced `theme::` constant they
+//! card's pixel metrics stay local and name the theme constant they
 //! replace.
 
 use std::f32::consts::PI;
 use std::time::Duration;
 
 use egui::{
-    Align, Color32, CornerRadius, FontId, Id, Layout, Margin, Painter, Pos2, Rect, Response, Sense,
-    Shape, Stroke, StrokeKind, Ui, Vec2, WidgetInfo, WidgetType,
+    Align, Color32, CornerRadius, FontId, Id, Layout, Margin, Pos2, Rect, Response, Sense, Shape,
+    Stroke, StrokeKind, Ui, Vec2, WidgetInfo, WidgetType,
 };
 
 use crate::core::PhysicalKey;
@@ -27,20 +25,10 @@ use super::{
     keycap::{self, DOWN, Direction, Keycap, KeycapMode, LEFT, RIGHT, UP},
     message::Message,
     state::{State, key_slot_index},
-    theme,
+    theme::{self, Icon, secondary_button},
     timeline::Timeline,
 };
 
-/// `rounded-2xl`: the card and the stage tile.
-const CARD_RADIUS: u8 = 16;
-/// `theme::BUTTON_PADDING`: `py-1.5 px-3` plus the 1px border iced lays inside
-/// the padding. The reference draws a 30px control.
-const BUTTON_PAD_X: f32 = 13.0;
-const BUTTON_HEIGHT: f32 = 30.0;
-const BUTTON_RADIUS: u8 = 12;
-const BUTTON_TEXT_SIZE: f32 = 12.0;
-const BUTTON_ICON: f32 = 14.0;
-const BUTTON_ICON_GAP: f32 = 6.0;
 /// The banner's ESC chip: `theme::banner_cancel_button` with `px-2.5 py-1`.
 const ESC_PAD_X: f32 = 10.0;
 const ESC_PAD_Y: f32 = 4.0;
@@ -79,9 +67,9 @@ pub fn key_mappings_card(ui: &mut Ui, state: &State) -> Vec<Message> {
     let mut messages = Vec::new();
 
     egui::Frame::NONE
-        .fill(theme::SURFACE)
-        .stroke(Stroke::new(2.0, theme::CARD_BORDER))
-        .corner_radius(CornerRadius::same(CARD_RADIUS))
+        .fill(theme::WHITE)
+        .stroke(Stroke::new(2.0, theme::INDIGO_200_80))
+        .corner_radius(theme::CARD_RADIUS)
         .inner_margin(Margin::same(20))
         .shadow(theme::SHADOW_CARD)
         .show(ui, |ui| {
@@ -110,7 +98,7 @@ fn header(ui: &mut Ui, state: &State, messages: &mut Vec<Message>) {
                     .language
                     .text("Hardware scan codes the SOCD filter uses"),
                 12.0,
-                theme::MUTED_TEXT,
+                theme::SLATE_500,
                 false,
             );
         });
@@ -145,12 +133,12 @@ fn rebind_banner(ui: &mut Ui, state: &State) -> bool {
             ui.set_min_width(ui.available_width());
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 10.0;
-                dot(ui, Color32::WHITE);
+                dot(ui, theme::WHITE);
                 text(
                     ui,
                     state.language.text("Press a new key on your keyboard..."),
                     12.0,
-                    Color32::WHITE,
+                    theme::WHITE,
                     true,
                 );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -170,9 +158,9 @@ fn mapping_pad(ui: &mut Ui, state: &State, snapshot: &UiSnapshot, messages: &mut
     let duplicates = duplicate_slots(&snapshot.draft.bindings);
     let timeline = state.monitor.timeline();
     egui::Frame::NONE
-        .fill(theme::INSET)
-        .stroke(Stroke::new(1.0, theme::BORDER))
-        .corner_radius(CornerRadius::same(CARD_RADIUS))
+        .fill(theme::SLATE_50_80)
+        .stroke(Stroke::new(1.0, theme::SLATE_200))
+        .corner_radius(theme::CARD_RADIUS)
         .inner_margin(Margin::same(STAGE_PADDING as i8))
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
@@ -180,12 +168,12 @@ fn mapping_pad(ui: &mut Ui, state: &State, snapshot: &UiSnapshot, messages: &mut
             ui.vertical_centered(|ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
-                    icon(ui, Icon::Edit, 12.0, theme::MUTED_TEXT);
+                    icon(ui, Icon::Edit, 12.0, theme::SLATE_500);
                     text(
                         ui,
                         state.language.text("Click keycap to rebind"),
                         11.0,
-                        theme::MUTED_TEXT,
+                        theme::SLATE_500,
                         true,
                     );
                 });
@@ -223,9 +211,9 @@ fn mapping_pad(ui: &mut Ui, state: &State, snapshot: &UiSnapshot, messages: &mut
         });
 }
 
-/// One directional keycap. The mode is the Iced `keycap` decision unchanged:
-/// the capture slot wins, then a live press -- from the window's own key
-/// events or, while recording, the timeline's held state -- then rest.
+/// One directional keycap. The mode is the reference's `keycap` decision
+/// unchanged: the capture slot wins, then a live press -- from the window's own
+/// key events or, while recording, the timeline's held state -- then rest.
 fn directional_keycap(
     ui: &mut Ui,
     state: &State,
@@ -255,22 +243,13 @@ fn directional_keycap(
     }
 }
 
-/// The footer row below the stage: the direction count on the left, the
-/// unique/duplicate assignment status on the right.
+/// The footer row below the stage: the assignment status on the right. The
+/// reference's leading slot is an empty `flex-1` spacer
+/// (`KeyMappingsCard.tsx:420`), so nothing is painted on the left. There is no
+/// rule above the row either: the status is separated from the stage by the
+/// card's own `SECTION_GAP`, not by a painted hairline.
 fn footer(ui: &mut Ui, state: &State, snapshot: &UiSnapshot) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
-    ui.painter().rect_filled(rect, 0, theme::BORDER);
     ui.horizontal(|ui| {
-        // `text-slate-400`: [`theme::ICON_MUTED`] owns that exact byte
-        // (`#94a3b8`); [`theme::MUTED_TEXT`] would darken the caption to
-        // slate-500.
-        text(
-            ui,
-            state.language.text("4 directions mapped"),
-            11.0,
-            theme::ICON_MUTED,
-            false,
-        );
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
             assignment_status(ui, &duplicate_slots(&snapshot.draft.bindings), state);
@@ -291,10 +270,21 @@ fn assignment_status(ui: &mut Ui, duplicates: &[bool; 4], state: &State) {
         if duplicate {
             theme::RED_600
         } else {
-            theme::EMERALD_700
+            theme::EMERALD_600_80
         },
-        true,
+        // The reference writes the two states at two weights: `font-medium`
+        // on the unique status and `font-semibold` on the duplicate notice.
+        // The unique status is the Synchronized mark, and that badge's label
+        // is a plain `Label` -- so the success state drops the stamp and the
+        // error keeps the reference's emphasis.
+        duplicate,
     );
+    // The mark is the action bar's Synchronized mark: the same check in the
+    // same `emerald-500`, beside the same `emerald-600/80` label at the same
+    // weight. The reference tints this footer a step apart (`text-emerald-600`
+    // on the check, `text-emerald-700` on the label) and sets it a weight
+    // heavier; both drew two identical marks as two different things, so one
+    // mark takes one pair of inks and one weight.
     icon(
         ui,
         if duplicate {
@@ -304,9 +294,9 @@ fn assignment_status(ui: &mut Ui, duplicates: &[bool; 4], state: &State) {
         },
         14.0,
         if duplicate {
-            theme::ERROR_TEXT
+            theme::RED_600
         } else {
-            theme::GREEN_CHECK
+            theme::EMERALD_500
         },
     );
 }
@@ -315,7 +305,7 @@ fn assignment_status(ui: &mut Ui, duplicates: &[bool; 4], state: &State) {
 /// the winner while it is showing filtered output (`!physical`), and the
 /// window's own press set with its timestamps resolves it otherwise: the later
 /// press takes a contested pair. The `!physical` condition is unchanged from
-/// the Iced `resolve_dpad`.
+/// the reference's `resolve_dpad`.
 fn resolve_dpad(
     pressed_keys: &[bool; 4],
     press_timestamps: &[Option<std::time::Instant>; 4],
@@ -374,7 +364,7 @@ fn resolve_dpad(
 }
 
 /// Flags every binding slot that shares its key with another slot. Ported
-/// unchanged from the Iced `duplicate_slots`.
+/// unchanged from the reference's `duplicate_slots`.
 fn duplicate_slots(bindings: &[PhysicalKey; 4]) -> [bool; 4] {
     std::array::from_fn(|index| {
         bindings
@@ -418,12 +408,12 @@ fn dpad_center_tile(ui: &mut Ui, shift_x: f32, shift_y: f32, active: bool) {
     }
 
     let painter = ui.painter_at(rect);
-    let radius = CornerRadius::same(16);
+    let radius = theme::CARD_RADIUS;
     painter.rect_filled(rect, radius, theme::SLATE_100);
     painter.rect_stroke(
         rect,
         radius,
-        Stroke::new(1.0, theme::BORDER),
+        Stroke::new(1.0, theme::SLATE_200),
         StrokeKind::Inside,
     );
 
@@ -436,28 +426,20 @@ fn dpad_center_tile(ui: &mut Ui, shift_x: f32, shift_y: f32, active: bool) {
         .collect();
     painter.extend(Shape::dashed_line(
         &ring,
-        Stroke::new(1.0, theme::BORDER),
+        Stroke::new(1.0, theme::SLATE_200),
         3.0,
         3.0,
     ));
-    painter.circle_filled(center, 4.0, theme::DPAD_GUIDE_DOT);
+    painter.circle_filled(center, 4.0, theme::SLATE_300_60);
 
     let dot = Pos2::new(center.x + offset.x, center.y + offset.y);
     if active {
-        painter.circle_filled(dot, 12.0, theme::DPAD_ACTIVE_GLOW);
-        painter.circle_filled(
-            Pos2::new(dot.x, dot.y + 1.0),
-            10.0,
-            theme::DPAD_ACTIVE_DOT_SHADOW,
-        );
-        painter.circle_filled(dot, 10.0, theme::IMMEDIATE_ACCENT);
+        painter.circle_filled(dot, 12.0, theme::BLUE_600_25);
+        painter.circle_filled(Pos2::new(dot.x, dot.y + 1.0), 10.0, theme::BLUE_600_30);
+        painter.circle_filled(dot, 10.0, theme::BLUE_600);
     } else {
-        painter.circle_filled(
-            Pos2::new(dot.x, dot.y + 1.0),
-            9.0,
-            theme::DPAD_IDLE_DOT_SHADOW,
-        );
-        painter.circle_filled(dot, 9.0, theme::DPAD_IDLE_DOT);
+        painter.circle_filled(Pos2::new(dot.x, dot.y + 1.0), 9.0, theme::BLACK_10);
+        painter.circle_filled(dot, 9.0, theme::SLATE_400_80);
     }
 }
 
@@ -567,77 +549,9 @@ fn ease_out(progress: f32) -> f32 {
 fn section_title(ui: &mut Ui, kind: Icon, label: &str) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
-        icon(ui, kind, 16.0, theme::PRIMARY_TEXT);
-        text(ui, label, theme::HEADING_SIZE, theme::BODY_TEXT, true);
+        icon(ui, kind, 16.0, theme::INDIGO_600);
+        text(ui, label, theme::HEADING_SIZE, theme::SLATE_900, true);
     });
-}
-
-/// Outlined action control: white shell, slate edge, slate-600 label, and the
-/// Iced `theme::secondary_button` hover (indigo ink over an indigo-50 wash).
-///
-/// The label galley is laid out with [`Color32::PLACEHOLDER`] on purpose: a
-/// galley carries the colour it was laid out with, and `Painter::galley`'s
-/// fallback colour only reaches `PLACEHOLDER` glyphs. Laying this text out in
-/// a real colour would pin it there and ignore the per-state `ink` below.
-fn secondary_button(ui: &mut Ui, kind: Icon, label: &str) -> Response {
-    let galley = ui.painter().layout_no_wrap(
-        label.to_owned(),
-        FontId::proportional(BUTTON_TEXT_SIZE),
-        Color32::PLACEHOLDER,
-    );
-    let content = BUTTON_ICON + BUTTON_ICON_GAP + galley.size().x;
-    let (rect, response) = ui.allocate_exact_size(
-        Vec2::new(content + 2.0 * BUTTON_PAD_X, BUTTON_HEIGHT),
-        Sense::click(),
-    );
-    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), label));
-    let hovered = response.hovered();
-    let (fill, edge, label_ink) = if hovered {
-        (
-            theme::HOVER_WASH,
-            theme::NAME_HOVER_BORDER,
-            theme::INDIGO_600,
-        )
-    } else {
-        (theme::SURFACE, theme::BORDER, theme::ICON_SECONDARY)
-    };
-    let painter = ui.painter_at(rect);
-    let radius = CornerRadius::same(BUTTON_RADIUS);
-    painter.rect_filled(rect, radius, fill);
-    painter.rect_stroke(rect, radius, Stroke::new(1.0, edge), StrokeKind::Inside);
-    let start = rect.center().x - content / 2.0;
-    paint_icon(
-        &painter,
-        Rect::from_min_size(
-            Pos2::new(start, rect.center().y - BUTTON_ICON / 2.0),
-            Vec2::splat(BUTTON_ICON),
-        ),
-        kind,
-        action_icon_ink(kind, label_ink),
-    );
-    keycap::stamp_galley(
-        &painter,
-        Pos2::new(
-            start + BUTTON_ICON + BUTTON_ICON_GAP,
-            rect.center().y - galley.size().y / 2.0,
-        ),
-        &galley,
-        label_ink,
-        BUTTON_TEXT_SIZE,
-    );
-    response
-}
-
-/// The icon ink rule from the Iced `icon_label`: a Restore glyph keeps the
-/// reference's slate-600 ink in every state, while other action icons inherit
-/// the button's text colour so their hover states keep working. The label
-/// itself follows the hover ink either way.
-fn action_icon_ink(kind: Icon, label_ink: Color32) -> Color32 {
-    if kind == Icon::Restore {
-        theme::ICON_SECONDARY
-    } else {
-        label_ink
-    }
 }
 
 /// The banner's ESC chip (reference `bg-indigo-700 hover:bg-indigo-800`).
@@ -664,21 +578,21 @@ fn esc_button(ui: &mut Ui, label: &str) -> Response {
     };
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, CornerRadius::same(ESC_RADIUS), fill);
-    keycap::stamp_galley(
+    theme::stamp_galley(
         &painter,
         Pos2::new(
             rect.center().x - galley.size().x / 2.0,
             rect.center().y - galley.size().y / 2.0,
         ),
         &galley,
-        Color32::WHITE,
+        theme::WHITE,
         ESC_TEXT_SIZE,
     );
     response
 }
 
 /// One measured line of text, painted at its natural size. `bold` picks the
-/// local weight approximation in [`keycap::stamp_galley`]. The galley is laid
+/// shared weight approximation in [`theme::stamp_galley`]. The galley is laid
 /// out with [`Color32::PLACEHOLDER`] so the `color` handed to the painter is
 /// the one that renders.
 ///
@@ -696,7 +610,7 @@ fn text(ui: &mut Ui, content: &str, size: f32, color: Color32, bold: bool) -> Re
     let (rect, response) = ui.allocate_exact_size(galley.size(), Sense::hover());
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, ui.is_enabled(), content));
     if bold {
-        keycap::stamp_galley(ui.painter(), rect.min, &galley, color, size);
+        theme::stamp_galley(ui.painter(), rect.min, &galley, color, size);
     } else {
         ui.painter().galley(rect.min, galley, color);
     }
@@ -711,73 +625,13 @@ fn dot(ui: &mut Ui, color: Color32) {
 
 /// A fixed-size icon node. The card needs five glyphs; each is traced from
 /// the matching `icons::draw_icon` path so the ports stay comparable.
+///
+/// The glyph table itself is [`theme::paint_icon`]'s: this wrapper only
+/// reserves the box and publishes no node, which is what a decorative glyph
+/// needs.
 fn icon(ui: &mut Ui, kind: Icon, size: f32, color: Color32) {
     let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
-    paint_icon(ui.painter(), rect, kind, color);
-}
-
-/// The card's icon set.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Icon {
-    Keyboard,
-    Restore,
-    Edit,
-    Check,
-    Warning,
-}
-
-fn paint_icon(painter: &Painter, rect: Rect, kind: Icon, color: Color32) {
-    let size = rect.width().min(rect.height());
-    let stroke = Stroke::new((size * 0.1).max(1.2), color);
-    let point = |x: f32, y: f32| Pos2::new(rect.left() + x * size, rect.top() + y * size);
-    let line = |coordinates: &[(f32, f32)]| {
-        painter.add(Shape::line(
-            coordinates.iter().map(|&(x, y)| point(x, y)).collect(),
-            stroke,
-        ));
-    };
-    match kind {
-        Icon::Keyboard => {
-            painter.rect_stroke(
-                Rect::from_min_max(point(0.15, 0.23), point(0.85, 0.78)),
-                CornerRadius::same(1),
-                stroke,
-                StrokeKind::Middle,
-            );
-            line(&[(0.32, 0.6), (0.68, 0.6)]);
-            for x in [0.28, 0.5, 0.72] {
-                painter.circle_filled(point(x, 0.4), size * 0.04, color);
-            }
-        }
-        Icon::Restore => {
-            // The Iced arc runs PI * 0.2 -> PI * 1.8 around the centre at r
-            // 0.32; sampled because epaint shapes are polylines.
-            let arc: Vec<Pos2> = (0..=24)
-                .map(|step| {
-                    let angle = PI * 0.2 + PI * 1.6 * (step as f32 / 24.0);
-                    point(0.5 + angle.cos() * 0.32, 0.5 + angle.sin() * 0.32)
-                })
-                .collect();
-            painter.add(Shape::line(arc, stroke));
-            let x = 0.5 + (PI * 1.8).cos() * 0.32;
-            let y = 0.5 + (PI * 1.8).sin() * 0.32;
-            line(&[(x - 0.15, y), (x, y), (x, y + 0.15)]);
-        }
-        Icon::Edit => line(&[
-            (0.2, 0.8),
-            (0.2, 0.65),
-            (0.65, 0.2),
-            (0.8, 0.35),
-            (0.35, 0.8),
-            (0.2, 0.8),
-        ]),
-        Icon::Check => line(&[(0.15, 0.52), (0.4, 0.78), (0.85, 0.25)]),
-        Icon::Warning => {
-            line(&[(0.5, 0.15), (0.85, 0.85), (0.15, 0.85), (0.5, 0.15)]);
-            line(&[(0.5, 0.38), (0.5, 0.62)]);
-            painter.circle_filled(point(0.5, 0.75), size * 0.05, color);
-        }
-    }
+    theme::paint_icon(ui.painter(), rect, kind, color);
 }
 
 #[cfg(test)]
@@ -1002,7 +856,7 @@ mod tests {
 
         assert_eq!(
             painted_text_color(&harness, "Restore mapping defaults"),
-            Some(theme::ICON_SECONDARY),
+            Some(theme::SLATE_600),
             "at rest the label must render in the secondary ink, not in the colour it was laid out with"
         );
 
@@ -1015,16 +869,31 @@ mod tests {
         );
     }
 
-    #[test]
-    fn other_action_icons_follow_the_button_ink() {
-        assert_eq!(
-            action_icon_ink(Icon::Restore, theme::INDIGO_600),
-            theme::ICON_SECONDARY
-        );
-        assert_eq!(
-            action_icon_ink(Icon::Keyboard, theme::INDIGO_600),
-            theme::INDIGO_600
-        );
+    /// Every filled rect that reads as a rule: a hairline no taller than 2px
+    /// and wider than any box the card draws (keycap, pill, value box, tile).
+    /// The card has no such shape, so the vector is the card's rules.
+    fn painted_rules(harness: &egui_kittest::Harness<'_, FakeRuntime>) -> Vec<Rect> {
+        fn collect(shape: &egui::Shape, out: &mut Vec<Rect>) {
+            match shape {
+                egui::Shape::Rect(rect)
+                    if rect.rect.height() <= 2.0 && rect.rect.width() >= 200.0 =>
+                {
+                    out.push(rect.rect);
+                }
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut out = Vec::new();
+        for clipped in &harness.output().shapes {
+            collect(&clipped.shape, &mut out);
+        }
+        out
     }
 
     /// Every solid stroke colour painted by a widget's own painter, i.e. the
@@ -1058,7 +927,7 @@ mod tests {
     }
 
     #[test]
-    fn the_restore_icon_keeps_the_iced_slate_ink_on_hover() {
+    fn the_restore_icon_keeps_the_slate_ink_on_hover() {
         use egui_kittest::{Harness, kittest::Queryable};
 
         let mut harness = Harness::builder()
@@ -1072,7 +941,7 @@ mod tests {
             );
         let button = harness.get_by_label("Restore mapping defaults").rect();
 
-        // Migration constraint 5 preserves the Iced `icon_label` rule: the
+        // Migration constraint 5 preserves the `icon_label` rule: the
         // Restore glyph keeps slate-600 in every state while the label moves to
         // the hover ink. R1 asked for one shared ink variable, which would have
         // recoloured the icon; this test records the evidence-backed deviation.
@@ -1083,7 +952,7 @@ mod tests {
             }
             let strokes = painted_stroke_colors(&harness, button);
             assert!(
-                strokes.contains(&theme::ICON_SECONDARY),
+                strokes.contains(&theme::SLATE_600),
                 "the Restore glyph must paint in the secondary slate (hovered: {hovered})"
             );
             assert!(
@@ -1265,42 +1134,169 @@ mod tests {
         );
     }
 
-    /// F03: the footer carries the direction count on the left and the
-    /// assignment status on the right, on one row below the divider.
+    /// F03: the footer carries the assignment status on the right, with the
+    /// reference's empty `flex-1` spacer ahead of it.
     #[test]
-    fn the_footer_pairs_the_direction_count_with_the_status() {
+    fn the_footer_puts_the_status_at_the_trailing_edge() {
         use egui_kittest::kittest::Queryable;
 
         let harness = card_harness();
 
-        let count = harness.get_by_label("4 directions mapped").rect();
         let status = harness.get_by_label("All keys uniquely assigned.").rect();
+        let card = harness
+            .get_by_role_and_label(egui::accesskit::Role::Button, "Restore mapping defaults");
+        let _ = card;
+        // The status is the only footer content, so it must sit against the
+        // card's trailing content edge rather than drifting inward.
+        let body = harness.get_by_label("Key mappings").rect();
         assert!(
-            (count.center().y - status.center().y).abs() <= 1.0,
-            "the count and the status must share the footer row: {count:?} vs {status:?}"
+            status.right() > body.left(),
+            "the status sits in the card's footer row: {status:?}"
         );
         assert!(
-            count.right() <= status.left(),
-            "the count is the left label and the status the right one: {count:?} vs {status:?}"
+            harness.query_by_label("4 directions mapped").is_none(),
+            "the retired direction count must not render"
         );
     }
 
-    /// F03's caption is registered in every language file, so the footer
-    /// renders a translation rather than the English-source fallback.
+    /// Every solid stroke colour the card paints through a path shape. The
+    /// glyph table draws each `Icon` as `Shape::line`, which epaint stores as a
+    /// `Shape::Path`, so this vector is the card's icon inks.
+    fn painted_glyph_inks(harness: &egui_kittest::Harness<'_, FakeRuntime>) -> Vec<Color32> {
+        use egui::epaint::ColorMode;
+
+        fn collect(shape: &egui::Shape, out: &mut Vec<Color32>) {
+            match shape {
+                egui::Shape::Path(path) => {
+                    if let ColorMode::Solid(color) = path.stroke.color {
+                        out.push(color);
+                    }
+                }
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut out = Vec::new();
+        for clipped in &harness.output().shapes {
+            collect(&clipped.shape, &mut out);
+        }
+        out
+    }
+
+    /// The footer's mark is the Synchronized badge's mark: the same check in
+    /// the same `emerald-500`, beside the same `emerald-600/80` label. The two
+    /// marks are identical, so two identical marks must not read as two
+    /// different states; the reference tints this footer's pair a step apart
+    /// (`text-emerald-600` on the check, `text-emerald-700` on the label), and
+    /// the port overrides that on purpose.
     #[test]
-    fn the_direction_count_caption_is_registered_in_every_language() {
-        use crate::ui::language::Language;
+    fn the_assignment_mark_is_the_synchronized_mark() {
+        let harness = card_harness();
+
+        let inks = painted_glyph_inks(&harness);
+        assert!(
+            inks.contains(&theme::EMERALD_500),
+            "the assignment check takes the Synchronized check's emerald: {inks:?}"
+        );
 
         assert_eq!(
-            Language::English.text("4 directions mapped"),
-            "4 directions mapped",
-            "the English file keeps the identity mapping"
+            painted_text_color(&harness, "All keys uniquely assigned."),
+            Some(theme::EMERALD_600_80),
+            "the assignment label takes the Synchronized label's ink"
         );
-        for language in [Language::Chinese, Language::Spanish] {
-            assert_ne!(
+    }
+
+    /// How many times a painted label reaches the frame. [`text`] paints a
+    /// stamped label twice at the shared offset and a plain one once, so the
+    /// count is the label's weight.
+    fn painted_text_passes(
+        harness: &egui_kittest::Harness<'_, FakeRuntime>,
+        needle: &str,
+    ) -> usize {
+        harness
+            .output()
+            .shapes
+            .iter()
+            .filter(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) => text.galley.text().contains(needle),
+                _ => false,
+            })
+            .count()
+    }
+
+    /// The footer's success state is the Synchronized mark in weight as well
+    /// as ink: that badge's label is a plain `Label`, so the footer's carries
+    /// one pass. The reference sets the unique status `font-medium` and the
+    /// duplicate notice `font-semibold`; the port overrides the success state
+    /// so the two identical marks read identically, and keeps the reference's
+    /// emphasis on the error.
+    #[test]
+    fn the_assignment_label_carries_the_synchronized_weight() {
+        let unique = card_harness();
+        assert_eq!(
+            painted_text_passes(&unique, "All keys uniquely assigned."),
+            1,
+            "the unique status is the Synchronized mark, and that label is plain"
+        );
+
+        // Sharing one physical key between two slots is what flips the footer;
+        // the error must keep the reference's semibold stamp.
+        let mut duplicate = card_harness();
+        let shared = duplicate
+            .state()
+            .state
+            .snapshot
+            .as_ref()
+            .unwrap()
+            .draft
+            .bindings[0];
+        duplicate
+            .state_mut()
+            .state
+            .snapshot
+            .as_mut()
+            .unwrap()
+            .draft
+            .bindings[1] = shared;
+        duplicate.run();
+        assert_eq!(
+            painted_text_passes(&duplicate, "Duplicate key bindings detected."),
+            2,
+            "the error keeps the reference's semibold emphasis"
+        );
+    }
+
+    /// The footer's separator rule is retired. The status is set off from the
+    /// stage by the card's own `SECTION_GAP` alone, so the card must paint no
+    /// full-width hairline anywhere -- the header's `SHADOW_2XS` hairline is a
+    /// shadow, not a fill, and the value boxes' 1px edges are strokes.
+    #[test]
+    fn the_card_paints_no_separator_rule() {
+        let harness = card_harness();
+
+        let rules = painted_rules(&harness);
+        assert!(
+            rules.is_empty(),
+            "the mapping card paints no rule, found: {rules:?}"
+        );
+    }
+
+    /// The retired caption is gone from every language file, so nothing can
+    /// fall back to the English source string.
+    #[test]
+    fn the_direction_count_caption_is_retired_from_every_language() {
+        use crate::ui::language::Language;
+
+        for language in [Language::English, Language::Chinese, Language::Spanish] {
+            assert_eq!(
                 language.text("4 directions mapped"),
                 "4 directions mapped",
-                "{language:?} must register its own entry, not fall back to English"
+                "{language:?} must no longer register the retired caption"
             );
         }
     }

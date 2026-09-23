@@ -1,24 +1,22 @@
 //! The profile / language overlay: the backdrop, the anchored panel, the slot
 //! cards, the in-place rename box, and the language rows.
 //!
-//! Port of `SettingsApp::profile_dialog`, `profile_slots`, `profile_slot_card`
-//! and `profile_chip` (iced-ui/app.rs:1479-1953, 3059-3099). `docs/architecture/ui.md`
-//! owns the contract; this module paints and pushes [`Message`]s only.
+//! `docs/architecture/ui.md` owns the contract; this module paints and pushes
+//! [`Message`]s only.
 //!
 //! # Layering and press routing
 //!
-//! Iced built the overlay as a `stack` of a full-window backdrop, an `opaque`
-//! panel container, and the panel's own `mouse_area`, so a press that reached
-//! the panel but not one of its controls committed an open rename
-//! (`SaveProfileNameIfEditing`). egui's hit test gives the same precedence when
-//! the containers themselves sense clicks: a widget's background interaction is
-//! registered before its content, so the deepest control under the pointer
-//! always wins and the surface only receives the presses nothing else claimed.
-//! The backdrop is therefore an interactive `Area` in `Order::Middle`, the
-//! panel an interactive `Area` in `Order::Foreground`, and each card an
-//! interactive `Ui` scope inside it.
+//! The overlay is a full-window backdrop, an opaque panel container, and the
+//! panel's own press catcher, so a press that reaches the panel but not one of
+//! its controls commits an open rename (`SaveProfileNameIfEditing`). egui's hit
+//! test gives the same precedence when the containers themselves sense clicks:
+//! a widget's background interaction is registered before its content, so the
+//! deepest control under the pointer always wins and the surface only receives
+//! the presses nothing else claimed. The backdrop is therefore an interactive
+//! `Area` in `Order::Middle`, the panel an interactive `Area` in
+//! `Order::Foreground`, and each card an interactive `Ui` scope inside it.
 //!
-//! One translation difference: Iced published card presses on the press, egui
+//! One translation difference: card presses publish on the press, while egui
 //! reports a click on release. A single press still produces one message per
 //! control, and a press that ends outside the control it began on is the
 //! cancel case both models treat the same way.
@@ -42,15 +40,14 @@ use crate::protocol::UiSnapshot;
 use crate::settings::ProfileSlot;
 
 use super::{
-    header::{self, Icon},
-    language,
+    header, language,
     message::Message,
     state::{ProfileDialog, SlotState, State},
     theme, timing,
 };
 
 /// The panel's top offset from the window's top edge: the page padding, the
-/// header, and the 8px gap (Iced `PROFILE_PANEL_TOP`, iced-ui/app.rs:79).
+/// header, and an 8px gap.
 pub const PROFILE_PANEL_TOP: f32 = theme::PAGE_PADDING + header::HEADER_HEIGHT + 8.0;
 
 /// The rename box's stable id, so `Effect::FocusProfileName` can find it.
@@ -73,10 +70,10 @@ fn panel_id() -> Id {
 }
 
 /// Bridges the state layer's [`SlotState`] to the token module's
-/// [`theme::SlotState`]. T1's `state` and T2's `theme` each ported the Iced
-/// three-state contract, and the two enums are distinct types; the view is the
-/// only place that needs both, so the bridge lives here rather than in either
-/// owner. Consolidating them is a Master-level decision (see the T6 report).
+/// [`theme::SlotState`]. The two enums are distinct types carrying the same
+/// three-state contract, and the view is the only place that needs both, so
+/// the bridge lives here rather than in either owner. Consolidating them is a
+/// Master-level decision (see the T6 report).
 fn theme_slot_state(state: SlotState) -> theme::SlotState {
     match state {
         SlotState::Idle => theme::SlotState::Idle,
@@ -87,7 +84,7 @@ fn theme_slot_state(state: SlotState) -> theme::SlotState {
 
 /// Draws the overlay and returns the messages this frame produced. Draws
 /// nothing when the panel is closed or no snapshot has mounted yet, the two
-/// cases the Iced `profile_dialog` returned a zero-sized element for.
+/// cases that have nothing to anchor the panel to.
 pub fn profile_overlay(ui: &mut Ui, state: &State) -> Vec<Message> {
     let mut messages = Vec::new();
     if matches!(state.profiles, ProfileDialog::Closed) || state.snapshot.is_none() {
@@ -100,8 +97,7 @@ pub fn profile_overlay(ui: &mut Ui, state: &State) -> Vec<Message> {
 }
 
 /// Ask for the rename box to take focus with its whole value selected, the
-/// port of the Iced `Message::EditProfileName` task (`operation::focus` +
-/// `operation::select_all`, iced-ui/app.rs:517-519). The app loop calls this
+/// focus-and-select-all pair the rename flow needs. The app loop calls this
 /// when it executes `Effect::FocusProfileName`.
 ///
 /// The request is stored, not applied here: the effect arrives on the frame
@@ -115,8 +111,7 @@ pub fn focus_profile_name(ui: &Ui) {
 }
 
 /// The full-window press catcher under the panel. A press that reaches it is a
-/// press outside the panel, which closes the dialog (Iced: the backdrop
-/// `mouse_area` with `CloseProfiles`).
+/// press outside the panel, which closes the dialog.
 fn backdrop(ctx: &Context, messages: &mut Vec<Message>) {
     Area::new(backdrop_id())
         .order(Order::Middle)
@@ -156,7 +151,8 @@ fn panel(ctx: &Context, state: &State, messages: &mut Vec<Message>) {
         )
         .sense(Sense::click())
         .show(ctx, |ui| {
-            // Iced text is not selectable; more importantly, a selectable
+            // A selectable name box would fight the drag-to-rename
+            // interaction; more importantly, a selectable
             // label senses clicks and would swallow the surface press before
             // it reaches the panel.
             ui.style_mut().interaction.selectable_labels = false;
@@ -188,7 +184,7 @@ fn panel(ctx: &Context, state: &State, messages: &mut Vec<Message>) {
 
 /// The panel's header: the section glyph, the title and its subtitle (or the
 /// panel's live error), and the borderless close circle. Port of
-/// iced-ui/app.rs:1496-1558; the text sizes and paddings come from the theme.
+/// the panel's content column; the text sizes and paddings come from the theme.
 fn panel_header(ui: &mut Ui, state: &State, languages: bool, messages: &mut Vec<Message>) {
     egui::Frame::new()
         .inner_margin(theme::PROFILE_HEADER_PADDING)
@@ -196,18 +192,18 @@ fn panel_header(ui: &mut Ui, state: &State, languages: bool, messages: &mut Vec<
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
                 let (rect, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
-                header::paint_icon(
+                theme::paint_icon(
                     ui.painter(),
                     rect,
                     if languages {
-                        Icon::Languages
+                        theme::Icon::Languages
                     } else {
-                        Icon::Layers
+                        theme::Icon::Layers
                     },
-                    theme::PRIMARY_TEXT,
+                    theme::INDIGO_600,
                 );
                 // The heading block keeps the subtitle inside the title column
-                // so the close button adds no height of its own (Iced comment).
+                // so the close button adds no height of its own.
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = theme::PROFILE_HEADER_GAP;
                     ui.label(
@@ -227,18 +223,18 @@ fn panel_header(ui: &mut Ui, state: &State, languages: bool, messages: &mut Vec<
                                     .text("Changes are saved when you click Apply."),
                             )
                             .size(11.0)
-                            .color(theme::MUTED_TEXT),
+                            .color(theme::SLATE_500),
                         );
                     }
                     if let Some(error) = &state.error {
                         ui.label(
                             RichText::new(state.language.text(error))
                                 .size(12.0)
-                                .color(theme::ERROR_TEXT),
+                                .color(theme::RED_600),
                         );
                     }
                 });
-                // Only a load hides the close button (Iced `in_flight`).
+                // Only a load hides the close button.
                 if !matches!(state.profiles, ProfileDialog::Loading) {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let (box_size, icon_size) = if languages {
@@ -255,7 +251,7 @@ fn panel_header(ui: &mut Ui, state: &State, languages: bool, messages: &mut Vec<
         });
 }
 
-/// The borderless close circle (Iced `profile_close_button`): a muted glyph at
+/// The borderless close circle: a muted glyph at
 /// rest, an indigo-50 wash and an indigo-600 glyph under the pointer. The
 /// reference sizes it on the box -- 36px on the slot dialog, 28px on the
 /// language menu -- and centres the glyph by its padding.
@@ -265,7 +261,7 @@ fn close_button(ui: &mut Ui, box_size: f32, icon_size: f32) -> Response {
     let hovered = response.hovered();
     let painter = ui.painter();
     if hovered {
-        // `Color { a: 0.7, ..INDIGO_50 }`, the Iced hover fill, derived from
+        // `Color { a: 0.7, ..INDIGO_50 }`, the hover fill, derived from
         // the theme token instead of re-typing its channels.
         let fill = Color32::from_rgba_unmultiplied(
             theme::INDIGO_50.r(),
@@ -278,12 +274,12 @@ fn close_button(ui: &mut Ui, box_size: f32, icon_size: f32) -> Response {
     let ink = if hovered {
         theme::INDIGO_600
     } else {
-        theme::ICON_MUTED
+        theme::SLATE_400
     };
-    header::paint_icon(
+    theme::paint_icon(
         painter,
         Rect::from_center_size(rect.center(), Vec2::splat(icon_size)),
-        Icon::Close,
+        theme::Icon::Close,
         ink,
     );
     response
@@ -291,7 +287,7 @@ fn close_button(ui: &mut Ui, box_size: f32, icon_size: f32) -> Response {
 
 /// The body for the slot dialog: the loading line, or one card per bank slot.
 /// A rename in flight renders through the same card list, because swapping the
-/// list for a progress line is the panel flickering (Iced comment).
+/// list for a progress line is the panel flickering.
 fn slot_list(ui: &mut Ui, state: &State, messages: &mut Vec<Message>) {
     let Some(snapshot) = &state.snapshot else {
         return;
@@ -311,7 +307,7 @@ fn slot_list(ui: &mut Ui, state: &State, messages: &mut Vec<Message>) {
         }
     }
     // The name box's own hover is one value in the state, so it is cleared by
-    // the list when no box carries the pointer (the Iced mouse_area published
+    // the list when no box carries the pointer (the mouse_area published
     // its exit the same way). Emitting only the positive side from the boxes
     // keeps the message order irrelevant.
     if hovered_name.is_none()
@@ -382,7 +378,7 @@ fn slot_card(
         )
     });
 
-    // The card's hover is a `contains_pointer` test: like the Iced mouse_area,
+    // The card's hover is a `contains_pointer` test: like the mouse_area,
     // it fires while the pointer is over a child control too. The state update
     // makes the exit order-safe for a pointer that moves between cards.
     let card_hovered = response.contains_pointer();
@@ -464,9 +460,9 @@ fn name_box(
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), name));
     let hovered = response.contains_pointer();
     let (fill, edge) = if hovered {
-        (theme::NAME_HOVER_FILL, theme::NAME_HOVER_BORDER)
+        (theme::INDIGO_50_60, theme::INDIGO_300)
     } else {
-        (theme::SURFACE, ink.hairline)
+        (theme::WHITE, ink.hairline)
     };
     paint_name_box(ui, rect, fill, edge);
     paint_name_content(ui, rect, &galley, ink);
@@ -481,7 +477,7 @@ fn name_box(
 fn committed_box(ui: &mut Ui, name: &str, ink: theme::SlotInk) {
     let (galley, response, rect) = name_box_frame(ui, name, Sense::hover());
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, ui.is_enabled(), name));
-    paint_name_box(ui, rect, theme::SURFACE, ink.hairline);
+    paint_name_box(ui, rect, theme::WHITE, ink.hairline);
     paint_name_content(ui, rect, &galley, ink);
 }
 
@@ -490,7 +486,7 @@ fn committed_box(ui: &mut Ui, name: &str, ink: theme::SlotInk) {
 /// to `INDIGO_400`. The field takes the text's own width and grows to the
 /// right as the name is typed (the owner's requested departure from the
 /// reference's fixed `w-28`). Enter saves; Escape unwinds through the app's
-/// global key path, exactly as it did in Iced.
+/// global key path, exactly as it did before.
 ///
 /// The field's width is measured from the committed name, which the state
 /// layer updates one frame behind the keystroke that produced it. With egui's
@@ -508,7 +504,7 @@ fn rename_field(ui: &mut Ui, state: &State, name: &str, messages: &mut Vec<Messa
     let hint_galley = layout_label(ui, hint, 12.0);
     let width = galley.size().x.max(hint_galley.size().x);
     let frame = egui::Frame::new()
-        .fill(theme::SURFACE)
+        .fill(theme::WHITE)
         .stroke(Stroke::new(1.0, theme::INDIGO_400))
         .corner_radius(theme::SEGMENT_RADIUS)
         .inner_margin(theme::SLOT_NAME_INPUT_PADDING)
@@ -521,7 +517,7 @@ fn rename_field(ui: &mut Ui, state: &State, name: &str, messages: &mut Vec<Messa
                     .desired_width(width)
                     .clip_text(false)
                     .font(FontId::proportional(12.0))
-                    .text_color(theme::BODY_TEXT)
+                    .text_color(theme::SLATE_900)
                     .hint_text(hint.to_owned())
                     .vertical_align(Align::Center),
             )
@@ -588,7 +584,7 @@ fn paint_name_box(ui: &Ui, rect: Rect, fill: Color32, edge: Color32) {
 }
 
 /// The name and its pencil, both in the ink the caller chose. The name is
-/// stamped because the Iced label used `UI_FONT_BOLD` (the port's weight
+/// stamped because the label is emphasised (the port's weight
 /// approximation; the font-weight decision stays open).
 fn paint_name_content(
     ui: &Ui,
@@ -680,7 +676,7 @@ fn chip(ui: &mut Ui, physical: PhysicalKey, snapshot: &UiSnapshot, ink: theme::S
     painter.rect(
         rect,
         theme::CHIP_RADIUS,
-        theme::SURFACE,
+        theme::WHITE,
         Stroke::new(1.0, ink.chip_edge),
         StrokeKind::Inside,
     );
@@ -688,14 +684,14 @@ fn chip(ui: &mut Ui, physical: PhysicalKey, snapshot: &UiSnapshot, ink: theme::S
 }
 
 /// The confirm banner over a card whose press would discard a dirty draft.
-/// The banner is `opaque` in Iced: it covers the card so the card's own load
+/// The banner covers the card so the card's own load
 /// target is not reachable, and its two buttons are the only controls on it.
 fn confirm_overlay(ui: &mut Ui, rect: Rect, state: &State, slot: u8, messages: &mut Vec<Message>) {
     let painter = ui.painter();
     painter.rect(
         rect,
-        theme::GROUP_RADIUS,
-        theme::CONFIRM_OVERLAY_FILL,
+        theme::CONTROL_RADIUS,
+        theme::WHITE_95,
         Stroke::new(1.0, theme::SLATE_300),
         StrokeKind::Inside,
     );
@@ -720,7 +716,7 @@ fn confirm_overlay(ui: &mut Ui, rect: Rect, state: &State, slot: u8, messages: &
                     .text("Unapplied draft changes will be discarded."),
             )
             .size(11.0)
-            .color(theme::MUTED_TEXT),
+            .color(theme::SLATE_500),
         );
     });
     banner.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -735,9 +731,9 @@ fn confirm_overlay(ui: &mut Ui, rect: Rect, state: &State, slot: u8, messages: &
 }
 
 /// A label-only control for the confirm banner: the filled primary Load and
-/// the outlined Cancel, at the Iced `[6, 12]` padding. `theme::secondary_button`
+/// the outlined Cancel, at the `[6, 12]` padding. `theme::secondary_button`
 /// always paints an icon and neither of these has one, so this is the
-/// label-only arm of the same shell (iced-ui/app.rs:1887-1898).
+/// label-only arm of the same shell.
 fn banner_button(ui: &mut Ui, label: &str, primary: bool) -> Response {
     const PAD_X: f32 = 12.0;
     const PAD_Y: f32 = 6.0;
@@ -754,15 +750,11 @@ fn banner_button(ui: &mut Ui, label: &str, primary: bool) -> Response {
         } else {
             theme::INDIGO_600
         };
-        (fill, theme::INDIGO_700, Color32::WHITE)
+        (fill, theme::INDIGO_700, theme::WHITE)
     } else if hovered {
-        (
-            theme::HOVER_WASH,
-            theme::NAME_HOVER_BORDER,
-            theme::INDIGO_600,
-        )
+        (theme::INDIGO_50_60, theme::INDIGO_300, theme::INDIGO_600)
     } else {
-        (theme::SURFACE, theme::BORDER, theme::SLATE_600)
+        (theme::WHITE, theme::SLATE_200, theme::SLATE_600)
     };
     let painter = ui.painter();
     painter.rect(
@@ -1031,7 +1023,7 @@ mod tests {
         // The drawn panel frame: `PROFILE_PANEL_WIDTH` plus `PANEL_PADDING` on
         // each side plus the 1px stroke egui adds around a frame's content
         // (`Frame::outer_rect`), its right edge `PAGE_PADDING` from the window
-        // and its top `PROFILE_PANEL_TOP` below it -- the Iced `align_right`
+        // and its top `PROFILE_PANEL_TOP` below it -- the align_right
         // container with the `PROFILE_PANEL_TOP` spacer plus its own border.
         // The frame's shadow/fill/stroke ride inside a `Shape::Vec`, so the
         // search recurses.
@@ -1063,7 +1055,7 @@ mod tests {
             collect(&clipped.shape, &mut wide);
         }
         let found = wide.iter().any(|&(x, y, width, fill)| {
-            fill == theme::SURFACE
+            fill == theme::WHITE
                 && (x - expected_min.x).abs() <= 1.5
                 && (y - expected_min.y).abs() <= 1.5
                 && (width - drawn_width).abs() <= 1.5

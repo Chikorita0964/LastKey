@@ -1,21 +1,15 @@
 //! Page header: branding, connection status, the icon-only profile /
 //! language / engine controls, and the amber dirty badge.
 //!
-//! Ports the header row of `SettingsApp::view` (iced-ui/app.rs:1071-1146) and
-//! the dirty badge of `settings_actions` (iced-ui/app.rs:2162-2170). The Iced
-//! app mounts the badge in the pinned action bar; T6 owns it because the
-//! dispatch assigns it, and T7 mounts it there. The module paints and pushes
+//! The header mounts the dirty badge, which the dispatch assigns to the
+//! action bar's ownership. The module paints and pushes
 //! [`Message`]s only: it never saves settings, sends IPC, or mutates state.
 //!
 //! # Ownership boundary for the glyphs
 //!
-//! [`theme::Icon`] (T2's shared action set) carries five glyphs: `Keyboard`,
-//! `Restore`, `Edit`, `Check`, `Warning`. The page glyphs the header and the
-//! panel controls need -- `Layers`, `Languages`, `Power`, `Close` -- are
-//! painted here because this task owns no theme file. Each traces the same
-//! `iced-ui/icons.rs` path with the same paint-only shape as the shared set,
-//! so folding them into it later is a move, not a rewrite; `mapping.rs`
-//! carries its own five-glyph copy for the same boundary reason.
+//! [`theme::Icon`] is the window's one glyph table. The page controls this
+//! module paints -- `Power`, `Languages`, `Layers` -- are variants of it, so a
+//! glyph is traced once and a surface supplies only its box and its ink.
 //!
 //! # Accessible names
 //!
@@ -25,23 +19,21 @@
 //! is the open policy T2's report raised; these are the port's names until
 //! that decision lands.
 
-use std::f32::consts::PI;
 use std::time::Duration;
 
 use egui::{
-    Align, Color32, CornerRadius, Id, Layout, Margin, Painter, Pos2, Rect, Response, RichText,
-    Sense, Shape, Stroke, StrokeKind, Ui, Vec2, WidgetInfo, WidgetType,
+    Align, Color32, CornerRadius, Id, Layout, Margin, Rect, Response, RichText, Sense, Stroke,
+    StrokeKind, Ui, Vec2, WidgetInfo, WidgetType,
 };
 
 use super::{message::Message, state::State, theme};
 
-/// The drawn height of the header bar. The Iced `HEADER_HEIGHT`
-/// (iced-ui/app.rs:78) is the same 60, and `profiles::PROFILE_PANEL_TOP`
-/// anchors the overlay one `PAGE_PADDING + HEADER_HEIGHT + 8` below the
-/// window top.
+/// The drawn height of the header bar, which
+/// `profiles::PROFILE_PANEL_TOP` anchors the overlay one
+/// `PAGE_PADDING + HEADER_HEIGHT + 8` below the window top.
 pub const HEADER_HEIGHT: f32 = 60.0;
 
-/// Iced `Padding { left: 20.0, ..Padding::from(12) }` (iced-ui/app.rs:1140).
+/// The header's container padding: a 20px leading inset and 12px elsewhere.
 const HEADER_PADDING: Margin = Margin {
     left: 20,
     right: 12,
@@ -54,9 +46,9 @@ const HEADER_PADDING: Margin = Margin {
 const HEADER_CONTENT_HEIGHT: f32 =
     HEADER_HEIGHT - HEADER_PADDING.top as f32 - HEADER_PADDING.bottom as f32;
 
-/// The 14px glyphs the Iced header buttons drew (`icons::icon(name, 14.0, ..)`).
+/// The header buttons' glyph box.
 const HEADER_ICON: f32 = 14.0;
-/// The status dot's 8px box (`fn dot`, iced-ui/app.rs:2462).
+/// The status dot's 8px box.
 const STATUS_DOT: f32 = 8.0;
 /// The dot's `ring-4` outer band: 4px outside the dot box (Header.tsx:143-148).
 const STATUS_RING: f32 = 4.0;
@@ -69,21 +61,10 @@ const PING_SECONDS: f32 = 1.0;
 const PING_RISE: f32 = 0.75;
 /// The fallback frame time when the backend predicts none.
 const ANIMATION_FRAME_FALLBACK: Duration = Duration::from_millis(16);
-/// The dot-to-status gap (Iced `.spacing(14)`).
+/// The dot-to-status gap.
 const STATUS_GAP: f32 = 14.0;
-/// The Iced `widgets::logo` is a fixed 32x32.
+/// The logo's fixed 32x32 box.
 const LOGO_SIZE: f32 = 32.0;
-/// The dot's ring steps the theme does not publish (`ring-amber-100`,
-/// `ring-emerald-100`), plus the reference's `bg-indigo-500` rebinding ink.
-/// All three are derived from the reference's Tailwind v4 oklch declarations;
-/// the same conversion reproduces the theme's verified indigo-100, slate-100,
-/// slate-200, amber-500, and emerald-500 read-backs exactly. They stay beside
-/// their only consumer because this task owns no theme file; `preview.rs`
-/// carries the same indigo-500 value for its neutral-dot highlight, and both
-/// should fold into the theme when that file is next owned.
-const AMBER_100: Color32 = Color32::from_rgb(0xfe, 0xf3, 0xc6);
-const EMERALD_100: Color32 = Color32::from_rgb(0xd0, 0xfa, 0xe5);
-const INDIGO_500: Color32 = Color32::from_rgb(0x61, 0x5f, 0xff);
 
 /// Draws the header bar and returns the messages this frame produced.
 ///
@@ -98,17 +79,17 @@ pub fn header(ui: &mut Ui, state: &State) -> Vec<Message> {
         .snapshot
         .as_ref()
         .is_some_and(|snapshot| snapshot.filter_enabled);
-    // Iced gates each control with `on_press_maybe`: a control whose condition
-    // fails is inert, not an error path, so a press simply produces no message.
+    // A control whose condition fails is inert, not an error path, so a press
+    // simply produces no message.
     let profiles_enabled = connected && has_snapshot;
     let languages_enabled = has_snapshot;
     let power_enabled = profiles_enabled && state.pending_filter.is_none();
-    // The power glyph keeps the Iced ink pair: indigo while the filter is on,
-    // muted while it is off (`Some(if filter_enabled { .. } else { .. })`).
+    // The power glyph keeps its own ink pair: indigo while the filter is on,
+    // muted while it is off.
     let power_ink = if filter_enabled {
-        theme::PRIMARY_TEXT
+        theme::INDIGO_600
     } else {
-        theme::ICON_MUTED
+        theme::SLATE_400
     };
 
     theme::card_style()
@@ -135,17 +116,23 @@ pub fn header(ui: &mut Ui, state: &State) -> Vec<Message> {
                 // lays them out from the right, so they are added in visual
                 // reverse: power, language, profiles.
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if icon_button(ui, power_enabled, Icon::Power, "Engine on/off", power_ink)
-                        .clicked()
+                    if icon_button(
+                        ui,
+                        power_enabled,
+                        theme::Icon::Power,
+                        "Engine on/off",
+                        power_ink,
+                    )
+                    .clicked()
                     {
                         messages.push(Message::ToggleFilter);
                     }
                     if icon_button(
                         ui,
                         languages_enabled,
-                        Icon::Languages,
+                        theme::Icon::Languages,
                         "Language",
-                        theme::PRIMARY_TEXT,
+                        theme::INDIGO_600,
                     )
                     .clicked()
                     {
@@ -154,9 +141,9 @@ pub fn header(ui: &mut Ui, state: &State) -> Vec<Message> {
                     if icon_button(
                         ui,
                         profiles_enabled,
-                        Icon::Layers,
+                        theme::Icon::Layers,
                         "Profile slots",
-                        theme::PRIMARY_TEXT,
+                        theme::INDIGO_600,
                     )
                     .clicked()
                     {
@@ -171,13 +158,13 @@ pub fn header(ui: &mut Ui, state: &State) -> Vec<Message> {
 
 /// The amber "Unsaved Draft Changes" badge. Draws nothing while the draft is
 /// clean; the caller mounts it unconditionally and the badge appears with the
-/// first uncommitted edit (the Iced action bar did the same with its
+/// first uncommitted edit (the action bar does the same with its
 /// conditional element slot).
 pub fn dirty_badge(ui: &mut Ui, state: &State) {
     if !state.is_dirty() {
         return;
     }
-    let ink = theme::AMBER_DARK;
+    let ink = theme::AMBER_700;
     theme::dirty_badge()
         .inner_margin(Margin {
             left: theme::BUTTON_PADDING.left as i8,
@@ -201,13 +188,20 @@ pub fn dirty_badge(ui: &mut Ui, state: &State) {
         });
 }
 
-/// One icon-only header control: the outlined shell the Iced `secondary_button`
-/// style draws (white fill, `BORDER` edge, `HOVER_WASH` fill and
-/// `NAME_HOVER_BORDER` edge under the pointer) with the 29px height and
+/// One icon-only header control: the outlined shell the shared
+/// `secondary_button`
+/// style draws (white fill, `SLATE_200` edge, `INDIGO_50_60` fill and
+/// `INDIGO_300` edge under the pointer) with the 29px height and
 /// `HEADER_ICON_PADDING` measured from the reference. The glyph takes an
-/// explicit ink, as the Iced icons did, so the power-off state keeps its
+/// explicit ink, as the header icons do, so the power-off state keeps its
 /// muted colour rather than following a button text colour.
-fn icon_button(ui: &mut Ui, enabled: bool, kind: Icon, label: &str, ink: Color32) -> Response {
+fn icon_button(
+    ui: &mut Ui,
+    enabled: bool,
+    kind: theme::Icon,
+    label: &str,
+    ink: Color32,
+) -> Response {
     let size = Vec2::new(
         HEADER_ICON + theme::HEADER_ICON_PADDING.left + theme::HEADER_ICON_PADDING.right,
         theme::HEADER_ICON_HEIGHT,
@@ -223,9 +217,9 @@ fn icon_button(ui: &mut Ui, enabled: bool, kind: Icon, label: &str, ink: Color32
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, label));
     let hovered = enabled && response.hovered();
     let (fill, edge) = if hovered {
-        (theme::HOVER_WASH, theme::NAME_HOVER_BORDER)
+        (theme::INDIGO_50_60, theme::INDIGO_300)
     } else {
-        (theme::SURFACE, theme::BORDER)
+        (theme::WHITE, theme::SLATE_200)
     };
     let painter = ui.painter();
     painter.rect(
@@ -235,7 +229,7 @@ fn icon_button(ui: &mut Ui, enabled: bool, kind: Icon, label: &str, ink: Color32
         Stroke::new(1.0, edge),
         StrokeKind::Inside,
     );
-    paint_icon(
+    theme::paint_icon(
         painter,
         Rect::from_center_size(rect.center(), Vec2::splat(HEADER_ICON)),
         kind,
@@ -277,7 +271,7 @@ fn title_divider(ui: &mut Ui) {
     const DIVIDER_HEIGHT: f32 = 16.0;
     let (rect, _) = ui.allocate_exact_size(Vec2::new(1.0, DIVIDER_HEIGHT), Sense::hover());
     ui.painter()
-        .rect_filled(rect, CornerRadius::ZERO, theme::BORDER);
+        .rect_filled(rect, CornerRadius::ZERO, theme::SLATE_200);
 }
 
 /// The connection/status mark: the reference's 8px circle inside its 4px state
@@ -354,9 +348,9 @@ impl DotState {
     fn ink(self) -> (Color32, Color32) {
         match self {
             Self::Idle => (theme::SLATE_300, theme::SLATE_100),
-            Self::Measuring => (theme::AMBER_500, AMBER_100),
-            Self::Rebinding => (INDIGO_500, theme::INDIGO_100),
-            Self::Synced => (theme::EMERALD_500, EMERALD_100),
+            Self::Measuring => (theme::AMBER_500, theme::AMBER_100),
+            Self::Rebinding => (theme::INDIGO_500, theme::INDIGO_100),
+            Self::Synced => (theme::EMERALD_500, theme::EMERALD_100),
         }
     }
 
@@ -385,86 +379,6 @@ impl DotState {
             ring_radius: (STATUS_DOT / 2.0 + STATUS_RING) * scale,
             ring: ring.gamma_multiply(alpha),
             animating,
-        }
-    }
-}
-
-/// The four page glyphs this task paints; see the module-level boundary note.
-/// `theme::Icon` keeps the shared action set and is used for `Check`/`Edit`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum Icon {
-    Layers,
-    Languages,
-    Power,
-    Close,
-}
-
-/// Trace one [`Icon`] into `rect` at `color`. The geometry is
-/// `iced-ui/icons.rs::draw_icon`'s, in the same normalized coordinates the
-/// shared [`theme::paint_icon`] uses, so the two painters stay comparable.
-pub(super) fn paint_icon(painter: &Painter, rect: Rect, kind: Icon, color: Color32) {
-    let size = rect.width().min(rect.height());
-    let stroke = Stroke::new((size * 0.1).max(1.2), color);
-    let fine = Stroke::new((size * 0.09).max(1.2), color);
-    let point = |x: f32, y: f32| Pos2::new(rect.left() + x * size, rect.top() + y * size);
-    let polyline = |stroke: Stroke, coordinates: &[(f32, f32)]| {
-        painter.add(Shape::line(
-            coordinates.iter().map(|&(x, y)| point(x, y)).collect(),
-            stroke,
-        ));
-    };
-    match kind {
-        Icon::Layers => {
-            // Three stacked plates: the top one closed, the lower two open
-            // chevrons (iced-ui/icons.rs:453-471).
-            polyline(
-                fine,
-                &[
-                    (0.5, 0.12),
-                    (0.88, 0.31),
-                    (0.5, 0.5),
-                    (0.12, 0.31),
-                    (0.5, 0.12),
-                ],
-            );
-            polyline(fine, &[(0.12, 0.5), (0.5, 0.69), (0.88, 0.5)]);
-            polyline(fine, &[(0.12, 0.69), (0.5, 0.88), (0.88, 0.69)]);
-        }
-        Icon::Languages => {
-            // The reference's translate glyph: six strokes in a 24-unit box,
-            // drawn at the reference's 0.09 stroke (iced-ui/icons.rs:335-353).
-            let parts: &[&[(f32, f32)]] = &[
-                &[(8.0, 2.0), (8.0, 5.0)],
-                &[(2.0, 5.0), (14.0, 5.0)],
-                &[(4.0, 14.0), (10.0, 8.0), (12.0, 5.0)],
-                &[(5.0, 8.0), (11.0, 14.0)],
-                &[(12.0, 22.0), (17.0, 11.0), (22.0, 22.0)],
-                &[(14.0, 18.0), (20.0, 18.0)],
-            ];
-            for part in parts {
-                let coordinates: Vec<(f32, f32)> =
-                    part.iter().map(|&(x, y)| (x / 24.0, y / 24.0)).collect();
-                polyline(fine, &coordinates);
-            }
-        }
-        Icon::Power => {
-            // An arc open at the top, with the stem down its centre
-            // (iced-ui/icons.rs:483-493). The arc is sampled because epaint
-            // shapes are polylines.
-            let arc: Vec<Pos2> = (0..=24)
-                .map(|step| {
-                    let start = -PI / 2.0 + 0.6;
-                    let end = -PI / 2.0 - 0.6 + 2.0 * PI;
-                    let angle = start + (end - start) * (step as f32 / 24.0);
-                    point(0.5 + angle.cos() * 0.3, 0.56 + angle.sin() * 0.3)
-                })
-                .collect();
-            painter.add(Shape::line(arc, stroke));
-            polyline(stroke, &[(0.5, 0.14), (0.5, 0.56)]);
-        }
-        Icon::Close => {
-            polyline(stroke, &[(0.15, 0.15), (0.85, 0.85)]);
-            polyline(stroke, &[(0.85, 0.15), (0.15, 0.85)]);
         }
     }
 }
@@ -684,7 +598,7 @@ mod tests {
         let dividers: Vec<_> = painted_rects(&harness)
             .into_iter()
             .filter(|rect| {
-                rect.fill == theme::BORDER
+                rect.fill == theme::SLATE_200
                     && (rect.rect.width() - 1.0).abs() < 0.01
                     && (rect.rect.height() - 16.0).abs() < 0.01
             })
@@ -731,7 +645,7 @@ mod tests {
     fn the_synced_dot_wears_the_emerald_ring() {
         let harness = dot_harness(baseline_state());
         assert!(
-            ring_and_dot(&harness, EMERALD_100, theme::EMERALD_500),
+            ring_and_dot(&harness, theme::EMERALD_100, theme::EMERALD_500),
             "the synchronized dot must paint the emerald ring and dot"
         );
         assert!(
@@ -754,7 +668,7 @@ mod tests {
         harness.input_mut().time = Some(0.0);
         harness.step();
         assert!(
-            ring_and_dot(&harness, AMBER_100, theme::AMBER_500),
+            ring_and_dot(&harness, theme::AMBER_100, theme::AMBER_500),
             "the measuring dot must paint the amber ring and dot"
         );
         assert!(
@@ -772,7 +686,7 @@ mod tests {
         harness.input_mut().time = Some(0.0);
         harness.step();
         assert!(
-            ring_and_dot(&harness, theme::INDIGO_100, INDIGO_500),
+            ring_and_dot(&harness, theme::INDIGO_100, theme::INDIGO_500),
             "the rebinding dot must paint the indigo ring and dot"
         );
         assert!(
@@ -801,7 +715,7 @@ mod tests {
             "an unfocused pulse must request no frames"
         );
         assert!(
-            ring_and_dot(&measuring, AMBER_100, theme::AMBER_500),
+            ring_and_dot(&measuring, theme::AMBER_100, theme::AMBER_500),
             "the unfocused pulse still paints its current frame"
         );
 
@@ -820,7 +734,7 @@ mod tests {
             "an unfocused ping must request no frames"
         );
         assert!(
-            ring_and_dot(&rebinding, theme::INDIGO_100, INDIGO_500),
+            ring_and_dot(&rebinding, theme::INDIGO_100, theme::INDIGO_500),
             "the unfocused ping still paints its current frame"
         );
     }
@@ -845,7 +759,7 @@ mod tests {
         // The static states paint their exact inks and request nothing.
         let synced = DotState::Synced.paint(123.0);
         assert_eq!(synced.dot, theme::EMERALD_500);
-        assert_eq!(synced.ring, EMERALD_100);
+        assert_eq!(synced.ring, theme::EMERALD_100);
         assert!(!synced.animating);
 
         // `animate-pulse`: full opacity at the cycle start, half at its end.
@@ -857,7 +771,7 @@ mod tests {
 
         // `animate-ping`: the circle doubles and vanishes by the 75% keyframe.
         let start = DotState::Rebinding.paint(0.0);
-        assert_eq!(start.dot, INDIGO_500);
+        assert_eq!(start.dot, theme::INDIGO_500);
         assert_eq!(start.dot_radius, STATUS_DOT / 2.0);
         assert!(start.animating);
         let gone = DotState::Rebinding.paint(PING_SECONDS * PING_RISE);

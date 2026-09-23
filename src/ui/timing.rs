@@ -6,8 +6,8 @@
 //! behavior.
 
 use egui::{
-    Align, Align2, Color32, CornerRadius, FontId, Frame, Id, Margin, Pos2, Rect, Response, Sense,
-    Stroke, TextEdit, Ui, WidgetInfo, WidgetType, text::CCursor, vec2,
+    Align, Align2, Color32, FontId, Frame, Id, Margin, Pos2, Rect, Response, Sense, Stroke,
+    TextEdit, Ui, WidgetInfo, WidgetType, text::CCursor, vec2,
 };
 
 use crate::settings::{SocdMode, TimingSettings};
@@ -18,9 +18,9 @@ use super::{
     preview::{self, Preview},
     state::{TimingInputs, parse_ms_text, parse_press_rate_text, parse_rate_text},
     theme::{
-        self, BODY_TEXT, CARD_PADDING, ERROR_TEXT, GROUP_PADDING, HEADING_SIZE, IMMEDIATE_ACCENT,
-        INDIGO_600, INSET, MIX_TEXT, MUTED_TEXT, PRIMARY_TEXT, RELEASE_TEXT, SECTION_GAP,
-        SLATE_100, SLIDER_HANDLE_BORDER, SLIDER_RAIL_DISABLED, SURFACE, VIOLET_600,
+        self, BLUE_600, CARD_PADDING, GROUP_PADDING, HEADING_SIZE, INDIGO_600, PURPLE_600, RED_600,
+        SECTION_GAP, SLATE_100, SLATE_300, SLATE_500, SLATE_900, SLIDER_HANDLE_BORDER, VIOLET_500,
+        VIOLET_600, WHITE,
     },
 };
 
@@ -29,23 +29,44 @@ use super::{
 // ----------------------------------------------------------------------------
 
 /// Geometry shared by every slider in the timing card (F08): a 12px rail
-/// rounded to 6 -- the reference's `h-3` + `rounded-full` -- and a constant
-/// 16px (radius 8) thumb, the reference's `w-4 h-4`, whose size does not
-/// depend on the status. The theme's single-handle `SLIDER_RAIL_*` /
-/// `SLIDER_HANDLE_RADIUS*` tokens are no longer consumed by this card; the
-/// Random Mix mixer takes this geometry too instead of the Iced
-/// `accent_slider` one.
+/// rounded to 6 -- the reference's `h-3` + `rounded-full` -- and a thumb
+/// whose *drawn box* is the reference's `w-4 h-4` (16px), a size the status
+/// does not change.
+///
+/// The thumb's radius is the circle's path radius, not the box's. epaint
+/// paints a `CircleShape`'s stroke entirely **outside** the path
+/// (`tessellate_circle` calls `PathStroke::from(stroke).outside()`), while a
+/// CSS border is drawn inside its box. The two boxes therefore differ:
+///
+/// | | outer | core |
+/// |---|---|---|
+/// | reference (`w-4 h-4` + `border-[3px]`) | `16` | `16 - 2 * 3 = 10` |
+/// | epaint | `2 * (radius + stroke)` | `2 * radius` |
+///
+/// Matching both puts the path at `8 - 3 = 5`, which draws the reference's
+/// 16px box around a 10px core. The path radius is *not* `8 - 3/2`: that would
+/// assume the stroke straddles the path, and the resulting 6.5 drew a 19px
+/// handle -- a visibly heavier control than the reference's, which is exactly
+/// what the request named.
+///
+/// The theme's single-handle `SLIDER_RAIL_*` / `SLIDER_HANDLE_RADIUS*` tokens
+/// are no longer consumed by this card; the Random Mix mixer takes this
+/// geometry too. The rail's radius is [`theme::CHIP_RADIUS`] at the paint call,
+/// and the thumb's ring is [`SLIDER_HANDLE_BORDER`].
 const RAIL_WIDTH: f32 = 12.0;
-const RAIL_RADIUS: CornerRadius = CornerRadius::same(6);
-const THUMB_RADIUS: f32 = 8.0;
+const THUMB_RADIUS: f32 = 5.0;
 
 /// Color associated with each SOCD mode.
+///
+/// Every arm names the mode's Tailwind `-600` base directly, the same token its
+/// card tint, keycap fill, and preview accent read, so the four arms are
+/// visibly the four ramp steps the mode table in `theme.rs` lists.
 pub const fn mode_color(mode: SocdMode) -> Color32 {
     match mode {
-        SocdMode::Immediate => IMMEDIATE_ACCENT,
+        SocdMode::Immediate => BLUE_600,
         SocdMode::PressDelay => INDIGO_600,
         SocdMode::ReleaseDelay => VIOLET_600,
-        SocdMode::RandomMix => MIX_TEXT,
+        SocdMode::RandomMix => PURPLE_600,
     }
 }
 
@@ -87,6 +108,9 @@ pub fn select_all_text(ui: &Ui, id: Id, text: &str) {
 // Value Box
 // ----------------------------------------------------------------------------
 
+/// The manual entry box's text size (`text-xs`, the reference's 12px).
+const VALUE_TEXT_SIZE: f32 = 12.0;
+
 /// Configuration properties for rendering a value box.
 #[derive(Clone, Copy, Debug)]
 pub struct ValueBoxProps {
@@ -121,6 +145,18 @@ impl ValueBoxProps {
 /// subsequent clicks within the armed box fall through to native caret placement.
 /// Strictly read-only with respect to `TimingInputs`; buffer changes emit
 /// `Message::TimingTextChanged` for `state::update` to apply as the single writer.
+///
+/// **The figure paints at normal weight -- the edit's own single pass, not a
+/// [`theme::stamp_galley`] second one.** The reference writes its entry boxes
+/// `font-mono font-bold`, but a *monospace bold face* does that work and the
+/// port cannot select one (egui's bundled faces ship a single weight). The
+/// stamp standing in for it offsets its second pass by `max(12 * 0.04, 0.35)`
+/// = 0.48 px, which at this size reads as a smeared figure rather than a
+/// heavier one -- and, worse, it leaves the value a different weight from the
+/// `~`, `:`, `ms` and `%` glyphs sharing its pill, so one pill carries two
+/// weights. One pass keeps the pill uniform, which is the property a reader
+/// actually sees; the reference's bold buys no separation here anyway, because
+/// the unit sits right beside the figure either way.
 pub fn value_box(
     ui: &mut Ui,
     props: ValueBoxProps,
@@ -128,25 +164,21 @@ pub fn value_box(
     messages: &mut Vec<Message>,
 ) -> Response {
     let id = value_box_id(props.field);
-    let text_color = if props.invalid {
-        ERROR_TEXT
-    } else {
-        props.accent
-    };
+    let text_color = if props.invalid { RED_600 } else { props.accent };
 
     // Frame-local buffer so the view remains read-only with respect to TimingInputs.
     let mut local_text = buffer.to_owned();
-    let response = ui.add(
-        TextEdit::singleline(&mut local_text)
-            .id(id)
-            .desired_width(props.width)
-            .font(FontId::new(12.0, egui::FontFamily::Proportional))
-            .horizontal_align(Align::Center)
-            .vertical_align(Align::Center)
-            .text_color(text_color)
-            .margin(Margin::symmetric(2, 1))
-            .frame(Frame::NONE),
-    );
+    let output = TextEdit::singleline(&mut local_text)
+        .id(id)
+        .desired_width(props.width)
+        .font(FontId::new(VALUE_TEXT_SIZE, egui::FontFamily::Proportional))
+        .horizontal_align(Align::Center)
+        .vertical_align(Align::Center)
+        .text_color(text_color)
+        .margin(Margin::symmetric(2, 1))
+        .frame(Frame::NONE)
+        .show(ui);
+    let response = output.response.response;
 
     let field_name = match props.field {
         TimingField::TransitionMinimum => "Transition Minimum",
@@ -208,7 +240,19 @@ struct RangeDragState {
     offset: f32,
 }
 
-/// Dual-thumb range slider operating over 0.0..=20.0 ms.
+/// The duration rail's upper bound, in milliseconds.
+///
+/// The reference's rail stops at `DELAY_MS_MAX = 20` (`domain/socd.ts:12`) and
+/// keeps larger values reachable only through the numeric editors. The rail is
+/// asked to reach the settings layer's own ceiling instead, so a long delay can
+/// be dragged rather than typed. [`crate::settings::MAX_TIMING_MICROS`] is the
+/// single upper bound every timing entry path already shares (the numeric
+/// editors clamp at it, and `Settings::validate` rejects anything past it), so
+/// the rail reads it rather than carrying a second literal that could drift.
+const RAIL_MAX_MS: f32 = crate::settings::MAX_TIMING_MICROS as f32 / 1_000.0;
+
+/// Dual-thumb range slider operating over `0.0..=`[`RAIL_MAX_MS`] ms in 0.1 ms
+/// units -- the precision `Settings::validate` enforces for every timing field.
 /// Clamps to `floor` on the lower bound, preserves drag offsets for near-thumb clicks,
 /// jumps thumbs for distant presses, and sorts automatically when handles cross.
 pub fn range_slider(ui: &mut Ui, props: RangeSliderProps<'_>) -> Option<(f32, f32)> {
@@ -228,10 +272,13 @@ pub fn range_slider(ui: &mut Ui, props: RangeSliderProps<'_>) -> Option<(f32, f3
     let track_width = (track_end - track_start).max(1.0);
     let center_y = rect.center().y;
 
-    let to_x = |v: f32| track_start + (v.clamp(0.0, 20.0) / 20.0) * track_width;
-    let to_value = |x: f32| ((x - track_start) / track_width * 20.0).clamp(0.0, 20.0);
+    let to_x = |v: f32| track_start + (v.clamp(0.0, RAIL_MAX_MS) / RAIL_MAX_MS) * track_width;
+    let to_value = |x: f32| ((x - track_start) / track_width * RAIL_MAX_MS).clamp(0.0, RAIL_MAX_MS);
+    // `* 10.0` then `/ 10.0` quantizes to the 0.1 ms unit the settings layer
+    // stores (`micros % 100 == 0`), independent of the rail's span.
     let to_rounded = |x: f32| {
-        (((x - track_start) / track_width * 200.0).round() / 10.0).clamp(props.floor, 20.0)
+        (((x - track_start) / track_width * RAIL_MAX_MS * 10.0).round() / 10.0)
+            .clamp(props.floor, RAIL_MAX_MS)
     };
 
     let mut result = None;
@@ -240,8 +287,8 @@ pub fn range_slider(ui: &mut Ui, props: RangeSliderProps<'_>) -> Option<(f32, f3
         if response.drag_started() {
             if let Some(pos) = response.interact_pointer_pos() {
                 let val = to_value(pos.x);
-                let cur_min = props.min_val.min(20.0);
-                let cur_max = props.max_val.min(20.0);
+                let cur_min = props.min_val.min(RAIL_MAX_MS);
+                let cur_max = props.max_val.min(RAIL_MAX_MS);
                 let select_min = if cur_min == cur_max {
                     val <= cur_min
                 } else {
@@ -253,13 +300,15 @@ pub fn range_slider(ui: &mut Ui, props: RangeSliderProps<'_>) -> Option<(f32, f3
                     (cur_max, cur_min)
                 };
 
-                let offset = if (val - selected).abs() * track_width / 20.0 <= 12.0 {
+                // A press within 12px of a thumb drags it with its offset
+                // preserved; a distant press jumps the nearer thumb.
+                let offset = if (val - selected).abs() * track_width / RAIL_MAX_MS <= 12.0 {
                     val - selected
                 } else {
                     0.0
                 };
                 ui.data_mut(|d| d.insert_temp(props.id, RangeDragState { anchor, offset }));
-                let jumped = to_rounded(pos.x - offset * track_width / 20.0);
+                let jumped = to_rounded(pos.x - offset * track_width / RAIL_MAX_MS);
                 let (n_min, n_max) = if jumped <= anchor {
                     (jumped, anchor)
                 } else {
@@ -271,7 +320,7 @@ pub fn range_slider(ui: &mut Ui, props: RangeSliderProps<'_>) -> Option<(f32, f3
             && let Some(drag) = ui.data(|d| d.get_temp::<RangeDragState>(props.id))
             && let Some(pos) = response.interact_pointer_pos()
         {
-            let moved = to_rounded(pos.x - drag.offset * track_width / 20.0);
+            let moved = to_rounded(pos.x - drag.offset * track_width / RAIL_MAX_MS);
             let (n_min, n_max) = if moved <= drag.anchor {
                 (moved, drag.anchor)
             } else {
@@ -287,7 +336,7 @@ pub fn range_slider(ui: &mut Ui, props: RangeSliderProps<'_>) -> Option<(f32, f3
     let active_accent = if props.enabled {
         props.accent
     } else {
-        SLIDER_RAIL_DISABLED
+        SLATE_300
     };
     let rail_half = RAIL_WIDTH / 2.0;
 
@@ -296,7 +345,7 @@ pub fn range_slider(ui: &mut Ui, props: RangeSliderProps<'_>) -> Option<(f32, f3
         Pos2::new(track_start, center_y - rail_half),
         Pos2::new(track_end, center_y + rail_half),
     );
-    painter.rect_filled(track_rect, RAIL_RADIUS, SLATE_100);
+    painter.rect_filled(track_rect, theme::CHIP_RADIUS, SLATE_100);
 
     // Active range span
     let span_start = to_x(props.min_val);
@@ -306,18 +355,20 @@ pub fn range_slider(ui: &mut Ui, props: RangeSliderProps<'_>) -> Option<(f32, f3
             Pos2::new(span_start, center_y - rail_half),
             Pos2::new(span_end, center_y + rail_half),
         );
-        painter.rect_filled(span_rect, RAIL_RADIUS, active_accent);
+        painter.rect_filled(span_rect, theme::CHIP_RADIUS, active_accent);
     }
 
     // Two thumbs: white background, 3px accent stroke, the shared constant
-    // 16px size (the reference thumb has no status-dependent size)
+    // 16px drawn box (the reference thumb has no status-dependent size).
+    // epaint draws the stroke outside the path, so the box is
+    // `2 * THUMB_RADIUS + SLIDER_HANDLE_BORDER`.
     for val in [props.min_val, props.max_val] {
         let thumb_x = to_x(val);
         let center = Pos2::new(thumb_x, center_y);
         painter.circle(
             center,
             THUMB_RADIUS,
-            SURFACE,
+            WHITE,
             Stroke::new(SLIDER_HANDLE_BORDER, active_accent),
         );
     }
@@ -337,12 +388,11 @@ pub fn range_slider(ui: &mut Ui, props: RangeSliderProps<'_>) -> Option<(f32, f3
 // ----------------------------------------------------------------------------
 
 /// Random Mix ratio rail slider: the card's shared 12px rail rounded to 6 and
-/// a constant 16px (radius 8) handle ringed in MIX_TEXT, the same geometry the
+/// a constant 16px handle ringed in [`PURPLE_600`], the same geometry the
 /// duration rail uses (F08; the reference draws both with an `h-3` rail and a
-/// `w-4 h-4` thumb). The rail is filled `PRIMARY_TEXT` left of the handle and
-/// `RELEASE_TEXT` right of it, the split the Iced `theme::mixer_slider` sets
-/// by overriding `accent_slider`'s second rail background
-/// (`iced-ui/theme.rs:1116-1121`, iced `widget/src/slider.rs:455-481`).
+/// `w-4 h-4` thumb). The rail is filled [`INDIGO_600`] left of the handle and
+/// [`VIOLET_500`] right of it, so one glance shows the split the two delay
+/// modes produce.
 pub fn mixer_slider(
     ui: &mut Ui,
     press_share: f32,
@@ -383,12 +433,12 @@ pub fn mixer_slider(
     let painter = ui.painter();
     let rail_half = RAIL_WIDTH / 2.0;
 
-    // Rail split at the handle: PRIMARY_TEXT to the left, RELEASE_TEXT to the
+    // Rail split at the handle: INDIGO_600 to the left, VIOLET_500 to the
     // right, both on the shared 12px rounded-6 rail.
     let handle_x = to_x(press_share);
     for (start, end, fill) in [
-        (track_start, handle_x, PRIMARY_TEXT),
-        (handle_x, track_end, RELEASE_TEXT),
+        (track_start, handle_x, INDIGO_600),
+        (handle_x, track_end, VIOLET_500),
     ] {
         let (start, end) = (start.min(end), start.max(end));
         if end > start {
@@ -396,18 +446,18 @@ pub fn mixer_slider(
                 Pos2::new(start, center_y - rail_half),
                 Pos2::new(end, center_y + rail_half),
             );
-            painter.rect_filled(span_rect, RAIL_RADIUS, fill);
+            painter.rect_filled(span_rect, theme::CHIP_RADIUS, fill);
         }
     }
 
-    // Handle thumb: white fill, 3.0 border in MIX_TEXT, the shared constant
-    // 16px size that hover and drag do not change (the reference thumb is
-    // status-independent).
+    // Handle thumb: white fill, 3.0 border in PURPLE_600, the shared constant
+    // 16px drawn box that hover and drag do not change (the reference thumb
+    // is status-independent).
     painter.circle(
         Pos2::new(handle_x, center_y),
         THUMB_RADIUS,
-        SURFACE,
-        Stroke::new(SLIDER_HANDLE_BORDER, MIX_TEXT),
+        WHITE,
+        Stroke::new(SLIDER_HANDLE_BORDER, PURPLE_600),
     );
 
     response.widget_info(|| {
@@ -429,42 +479,77 @@ pub fn mixer_slider(
 // Mode Selector
 // ----------------------------------------------------------------------------
 
+/// The card heading: the stamp-weighted title the reference renders bold.
+/// egui's bundled faces ship one weight, so `RichText::strong` alone renders
+/// thin; every card title stamps instead (`Key mappings`, `Input timing
+/// measurement`, `Measured Input Transitions`, `Suggested delays` all do).
+/// Painted text still publishes its node so label queries keep finding it.
+fn card_title(ui: &mut Ui, content: &str) {
+    let galley = ui.painter().layout_no_wrap(
+        content.to_owned(),
+        FontId::new(HEADING_SIZE, egui::FontFamily::Proportional),
+        Color32::PLACEHOLDER,
+    );
+    let (rect, response) = ui.allocate_exact_size(galley.size(), Sense::hover());
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, ui.is_enabled(), content));
+    theme::stamp_galley(ui.painter(), rect.min, &galley, SLATE_900, HEADING_SIZE);
+}
+
 /// Horizontal 4-mode segment picker for the timing card.
 ///
-/// The strip insets its segments by 4 (`iced-ui/app.rs:3123`,
-/// `container(segments).padding(4)`), and each segment is padded by
-/// [`theme::MODE_PADDING`] (`iced-ui/app.rs:3117`). The selected segment is a
-/// solid mode-accent chip with white bold text (F07); the others stay
-/// transparent with muted ink.
+/// The strip is the reference's `grid grid-cols-4 gap-1 p-1 bg-white
+/// border border-slate-200 rounded-xl shadow-2xs`: a white card with a slate
+/// hairline, its segments inset by [`theme::MODE_STRIP_PADDING`] and spaced by
+/// [`theme::MODE_STRIP_GAP`]. It is deliberately *not* a [`theme::group_style`]
+/// surface -- that frame is the card's slate-50 inset, which is the surface the
+/// strip sits *on* rather than the one it is.
+///
+/// The selected segment is `bg-indigo-600` with white bold text; every other
+/// segment is transparent with `text-slate-600` ink and no edge (`border: 0`).
+/// The chip colour is the reference's own literal and does **not** follow the
+/// mode accent: `renderModeSegmented` hardcodes `bg-indigo-600` for all four
+/// modes, so Release Delay selects the same indigo chip the other three do
+/// rather than turning violet.
 pub fn mode_selector(
     ui: &mut Ui,
     selected: SocdMode,
     language: Language,
     messages: &mut Vec<Message>,
 ) {
-    theme::group_style()
-        .inner_margin(Margin::same(4))
+    Frame::NONE
+        .fill(WHITE)
+        .stroke(Stroke::new(1.0, theme::SLATE_200))
+        .corner_radius(theme::CONTROL_RADIUS)
+        .shadow(theme::SHADOW_2XS)
+        .inner_margin(Margin::same(theme::MODE_STRIP_PADDING as i8))
         .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.x = theme::MODE_STRIP_GAP;
             ui.columns(4, |cols| {
                 for (i, mode) in SocdMode::ALL.iter().copied().enumerate() {
                     let col = &mut cols[i];
                     let is_active = mode == selected;
                     let label = mode_label(mode, language);
                     let ink = if is_active {
-                        Color32::WHITE
+                        theme::WHITE
                     } else {
-                        MUTED_TEXT
+                        theme::SLATE_600
                     };
 
+                    // The reference segment is `rounded-lg` (8px) on a 28px
+                    // box. The selected one takes the solid indigo fill and
+                    // `shadow-xs`; the others stay transparent and carry no
+                    // edge at all (`border: 0`), which is what the retired
+                    // `CHIP_RADIUS` chip was drawing a hairline on top of.
                     let btn_frame = if is_active {
                         Frame::NONE
-                            .fill(mode_color(mode))
-                            .corner_radius(theme::CHIP_RADIUS)
+                            .fill(INDIGO_600)
+                            .corner_radius(theme::SEGMENT_RADIUS)
+                            .shadow(theme::SHADOW_XS)
                             .inner_margin(theme::MODE_PADDING)
                     } else {
                         Frame::NONE
                             .fill(Color32::TRANSPARENT)
-                            .corner_radius(theme::CHIP_RADIUS)
+                            .corner_radius(theme::SEGMENT_RADIUS)
                             .inner_margin(theme::MODE_PADDING)
                     };
 
@@ -548,13 +633,15 @@ pub fn duration_range(
 
             // Row 1: dot + label + space + pill
             ui.horizontal(|ui| {
-                // Color dot
-                let (dot_rect, _) = ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
-                ui.painter()
-                    .circle_filled(dot_rect.center(), 3.5, props.accent);
+                // The mark centres on the label's line box (the reference's
+                // `items-center`) and takes the reference's `gap-1.5` ahead of
+                // it, so it is handed the label's own line rather than a box
+                // of its own.
+                ui.spacing_mut().item_spacing.x = theme::LEGEND_GAP;
+                theme::legend_mark(ui, props.accent, 3.5, theme::line_height(ui, 12.0));
 
                 ui.colored_label(
-                    BODY_TEXT,
+                    SLATE_900,
                     egui::RichText::new(language.text(props.label))
                         .font(FontId::new(12.0, egui::FontFamily::Proportional))
                         .strong(),
@@ -638,9 +725,8 @@ pub fn rate_group(
     let press_invalid = parse_press_rate_text(press_str).is_none();
     let invalid = rate_invalid || press_invalid;
 
-    // The Iced ratio group is the one slot in this card padded with
-    // `theme::GROUP_PADDING` rather than the 12 the duration ranges use
-    // (`iced-ui/app.rs:3180`).
+    // The ratio group is the one slot in this card padded with
+    // `theme::GROUP_PADDING` rather than the 12 the duration ranges use.
     theme::slot_style()
         .inner_margin(Margin::same(GROUP_PADDING as i8))
         .show(ui, |ui| {
@@ -648,11 +734,11 @@ pub fn rate_group(
 
             // Row 1: dot + title + pill
             ui.horizontal(|ui| {
-                let (dot_rect, _) = ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
-                ui.painter().circle_filled(dot_rect.center(), 3.5, MIX_TEXT);
+                ui.spacing_mut().item_spacing.x = theme::LEGEND_GAP;
+                theme::legend_mark(ui, PURPLE_600, 3.5, theme::line_height(ui, 12.0));
 
                 ui.colored_label(
-                    BODY_TEXT,
+                    SLATE_900,
                     egui::RichText::new(language.text("Delay Mix Ratio"))
                         .font(FontId::new(12.0, egui::FontFamily::Proportional))
                         .strong(),
@@ -663,45 +749,45 @@ pub fn rate_group(
                         .inner_margin(Margin::symmetric(6, 1))
                         .show(ui, |ui| {
                             ui.spacing_mut().item_spacing = vec2(4.0, 0.0);
-                            ui.colored_label(MIX_TEXT, "%");
+                            ui.colored_label(PURPLE_600, "%");
 
-                            // R1 issue 10: RELEASE_TEXT is intentional for the preservation rate box
-                            // per iced-ui/app.rs:3317 (matching the release-delay accent).
+                            // R1 issue 10: VIOLET_500 is intentional for the preservation rate
+                            // box (matching the release-delay accent).
                             let rate_props = ValueBoxProps::new(
                                 TimingField::PreservationRate,
                                 editing[TimingField::PreservationRate.index()],
                                 rate_invalid,
                                 32.0,
-                                RELEASE_TEXT,
+                                VIOLET_500,
                             );
                             value_box(ui, rate_props, rate_str, messages);
 
-                            ui.colored_label(MIX_TEXT, ":");
+                            ui.colored_label(PURPLE_600, ":");
 
                             // F10: the press share is the mirror box, so it takes the
-                            // mixer's left-rail ink (drawn `#4f46e5`) where the release
-                            // box takes its right-rail ink.
+                            // mixer's left-rail ink where the release box takes its
+                            // right-rail ink.
                             let press_props = ValueBoxProps::new(
                                 TimingField::PressRate,
                                 editing[TimingField::PressRate.index()],
                                 press_invalid,
                                 32.0,
-                                PRIMARY_TEXT,
+                                INDIGO_600,
                             );
                             value_box(ui, press_props, press_str, messages);
                         });
                 });
             });
 
-            // Row 2: custom mixer rail (PRIMARY_TEXT left of the handle,
-            // RELEASE_TEXT right of it, MIX_TEXT handle ring)
+            // Row 2: custom mixer rail (INDIGO_600 left of the handle,
+            // VIOLET_500 right of it, PURPLE_600 handle ring)
             if let Some(new_share) = mixer_slider(ui, press_share as f32, true, language) {
                 messages.push(Message::MixChanged(new_share));
             }
 
             // Row 3: helper caption
             ui.colored_label(
-                MUTED_TEXT,
+                SLATE_500,
                 egui::RichText::new(
                     language.text("Each overlap randomly picks one of the two delays below."),
                 )
@@ -773,28 +859,70 @@ pub fn mechanism_steps(ui: &mut Ui, mode: SocdMode, timing: &TimingSettings, lan
     };
 
     let accent = mode_color(mode);
-
-    theme::slot_style()
-        .inner_margin(Margin::same(12))
+    // The reference (`InputTimingsCard.tsx` `renderMechanism`) is a white
+    // floating card (`bg-white px-3.5 py-3 rounded-2xl border
+    // border-slate-200/70 shadow-2xs`), not a dark grey inset slot. The
+    // reference badges are subtle rounded rectangles (`bg-slate-100
+    // text-slate-500` for the neutral steps, the mode accent tint for the
+    // delay steps); step text is readable body copy (`text-slate-600`), not
+    // the faint `SLATE_500`. The block sits directly under the controls it
+    // explains, and in the delay modes nothing follows it, so the row's
+    // leftover collects above it in the stretched card -- the reference's
+    // `mt-auto` bottom pin, expressed by order rather than by a spacer the
+    // height-matching pass would measure back. Immediate mode appends the
+    // preview after it, and the picture takes that pin instead.
+    Frame::NONE
+        .fill(WHITE)
+        .stroke(Stroke::new(1.0, theme::SLATE_200))
+        .corner_radius(theme::CARD_RADIUS)
+        .shadow(theme::SHADOW_2XS)
+        .inner_margin(Margin::symmetric(14, 12))
         .show(ui, |ui| {
-            ui.spacing_mut().item_spacing = vec2(0.0, 8.0);
+            // The reference block is a block-level `div`, so it fills the
+            // column's content width (`mt-auto bg-white ... rounded-2xl`)
+            // rather than shrinking to its text. `Frame` sizes its content
+            // rect to `min_rect`, and every child here is a shrink-to-fit
+            // row, so without this claim the card would hug the longest step
+            // and sit against the column's left edge. `set_min_width` is the
+            // house pattern for a frame that must span its parent
+            // (`mapping.rs`'s cards, the mode selector's segments).
+            ui.set_min_width(ui.available_width());
+            // The reference stacks the header and the list with `space-y-2`
+            // (8px) and the list items with `space-y-1.5` (6px). The two gaps
+            // differ, so both are placed explicitly and the frame's own item
+            // spacing is zeroed.
+            ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+            // Every row here is text or a fixed-size badge, so the layout's
+            // "assume something interactive" floor (egui's 18px
+            // `interact_size.y`) would inflate each row past the reference's
+            // 16px content box and stretch the block by 2px per row.
+            ui.spacing_mut().interact_size.y = 16.0;
 
-            // Header
+            // Header: the reference's `w-2 h-2 rounded-full bg-slate-300`
+            // mark, then the `text-[11px] font-bold text-slate-800` title.
             ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing = vec2(6.0, 0.0);
                 let (dot_rect, _) = ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
                 ui.painter()
-                    .circle_filled(dot_rect.center(), 3.5, MUTED_TEXT);
+                    .circle_filled(dot_rect.center(), 4.0, theme::SLATE_300);
                 ui.colored_label(
-                    BODY_TEXT,
+                    theme::SLATE_800,
                     egui::RichText::new(language.text("How it works"))
                         .font(FontId::new(11.0, egui::FontFamily::Proportional))
                         .strong(),
                 );
             });
 
-            // Steps list
+            // The header-to-list gap (the reference's `space-y-2`).
+            ui.add_space(8.0);
+
+            // Steps list: the reference's `space-y-1.5` (6px) between rows.
             for (index, (label, accented)) in steps.into_iter().enumerate() {
+                if index > 0 {
+                    ui.add_space(6.0);
+                }
                 ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(8.0, 0.0);
                     let (badge_rect, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
                     let (bg, ink) = if accented {
                         (
@@ -802,11 +930,18 @@ pub fn mechanism_steps(ui: &mut Ui, mode: SocdMode, timing: &TimingSettings, lan
                             accent,
                         )
                     } else {
-                        (INSET, MUTED_TEXT)
+                        // The reference neutral badge is `bg-slate-100
+                        // text-slate-500`: the badge's digit takes
+                        // [`SLATE_500`] (the slate-500 ink), a step darker
+                        // than the step copy beside it. The `inset`/
+                        // `SLATE_500` pair this replaces was the dark-slot
+                        // leftover; the fill was the wrong half of it.
+                        (SLATE_100, SLATE_500)
                     };
 
-                    ui.painter()
-                        .rect_filled(badge_rect, theme::BADGE_RADIUS, bg);
+                    // The reference badge is `rounded-md` (6px), the same
+                    // radius the keycap chips use.
+                    ui.painter().rect_filled(badge_rect, theme::CHIP_RADIUS, bg);
                     ui.painter().text(
                         badge_rect.center(),
                         Align2::CENTER_CENTER,
@@ -816,7 +951,7 @@ pub fn mechanism_steps(ui: &mut Ui, mode: SocdMode, timing: &TimingSettings, lan
                     );
 
                     ui.colored_label(
-                        MUTED_TEXT,
+                        theme::SLATE_600,
                         egui::RichText::new(label)
                             .font(FontId::new(11.0, egui::FontFamily::Proportional)),
                     );
@@ -844,7 +979,7 @@ pub struct PreviewMount<'a> {
 /// ranges, Random Mix slider, and mechanism steps.
 ///
 /// The Immediate-mode preview is [`preview::preview_card`] (T5's owner): it
-/// carries the procedural transport glyphs, the 850 ms phase clock, and the
+/// carries the transport glyphs, the 850 ms phase clock, and the
 /// viewport/dialog gates. The card itself stays state-free; the mount carries
 /// the gates in.
 ///
@@ -865,17 +1000,17 @@ pub fn timing_card(
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing = vec2(0.0, SECTION_GAP);
 
-            // Card title row
+            // Card title row: the leading timer mark plus the stamped heading
+            // (`stamp_galley` is the port's bold: egui's bundled faces ship
+            // one weight, so `RichText::strong` alone renders thin).
             ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing = vec2(8.0, 0.0);
+                let (icon_rect, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
+                theme::paint_icon(ui.painter(), icon_rect, theme::Icon::Timer, INDIGO_600);
                 ui.vertical(|ui| {
+                    card_title(ui, language.text("Input timings"));
                     ui.colored_label(
-                        BODY_TEXT,
-                        egui::RichText::new(language.text("Input timings"))
-                            .font(FontId::new(HEADING_SIZE, egui::FontFamily::Proportional))
-                            .strong(),
-                    );
-                    ui.colored_label(
-                        MUTED_TEXT,
+                        SLATE_500,
                         egui::RichText::new(
                             language.text("How opposite-direction overlaps resolve."),
                         )
@@ -907,38 +1042,23 @@ pub fn timing_card(
                     // 1. Mode selector
                     mode_selector(ui, timing.mode, language, messages);
 
-                    // 2. Immediate mode illustrative preview (T5's card)
-                    if timing.mode == SocdMode::Immediate
-                        && let Some(mount) = preview
-                    {
-                        preview::preview_card(
-                            ui,
-                            timing,
-                            mount.preview,
-                            language,
-                            mount.awake,
-                            mount.clock_mounted,
-                            messages,
-                        );
-                    }
-
-                    // 3. Random Mix ratio group
+                    // 2. Random Mix ratio group
                     if timing.mode == SocdMode::RandomMix {
                         rate_group(ui, timing, inputs, editing, language, messages);
                     }
 
-                    // 4. New Key Press Delay duration group
+                    // 3. New Key Press Delay duration group
                     if matches!(timing.mode, SocdMode::PressDelay | SocdMode::RandomMix) {
                         let props = DurationRangeProps::new(
                             TimingField::TransitionMinimum,
                             TimingField::TransitionMaximum,
                             "New Key Press Delay",
-                            PRIMARY_TEXT,
+                            INDIGO_600,
                         );
                         duration_range(ui, props, timing, inputs, editing, language, messages);
                     }
 
-                    // 5. Previous Key Release Delay duration group
+                    // 4. Previous Key Release Delay duration group
                     if matches!(timing.mode, SocdMode::ReleaseDelay | SocdMode::RandomMix) {
                         let props = DurationRangeProps::new(
                             TimingField::PreservedMinimum,
@@ -949,9 +1069,33 @@ pub fn timing_card(
                         duration_range(ui, props, timing, inputs, editing, language, messages);
                     }
 
-                    // 6. Mechanism steps ("How it works")
+                    // 5. Mechanism steps ("How it works"). It sits directly
+                    // under the controls it explains, and takes the stretched
+                    // card's bottom pin in the delay modes, where nothing
+                    // follows it.
                     if timing.mode != SocdMode::RandomMix {
                         mechanism_steps(ui, timing.mode, timing, language);
+                    }
+
+                    // 6. Immediate mode illustrative preview (T5's card), the
+                    // mode's last child, so the stretched card's leftover
+                    // collects above it and the picture holds the bottom pin
+                    // the mechanism block holds in the delay modes. The card
+                    // illustrates fixed demo ranges rather than the draft, so
+                    // the timing settings stay out of the call: it mounts only
+                    // in Immediate mode, where the delay fields it would
+                    // otherwise read belong to other modes.
+                    if timing.mode == SocdMode::Immediate
+                        && let Some(mount) = preview
+                    {
+                        preview::preview_card(
+                            ui,
+                            mount.preview,
+                            language,
+                            mount.awake,
+                            mount.clock_mounted,
+                            messages,
+                        );
                     }
                 });
             // The reference keeps the stretched card's content top-aligned
@@ -1130,7 +1274,7 @@ mod tests {
                     max_val: 8.0,
                     floor: 0.0,
                     enabled: true,
-                    accent: PRIMARY_TEXT,
+                    accent: INDIGO_600,
                     id: Id::new("test-slider"),
                     accessible_name: "Test duration range",
                 },
@@ -1161,6 +1305,143 @@ mod tests {
             mechanism_steps(ui, SocdMode::RandomMix, &timing, Language::English);
         });
         output.drop_without_applying_deltas();
+    }
+
+    /// The reference (`renderMechanism`) floats the block as a white card
+    /// (`bg-white border-slate-200/70 rounded-2xl`), not a dark grey inset
+    /// slot; neutral badges are `bg-slate-100` with a slate-500 digit, and
+    /// step text is `text-slate-600`.
+    #[test]
+    fn test_mechanism_steps_use_the_floating_white_card() {
+        use egui_kittest::Harness;
+
+        let timing = TimingSettings::default();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(400.0, 300.0))
+            .build_ui(move |ui| {
+                mechanism_steps(ui, SocdMode::Immediate, &timing, Language::English);
+            });
+        harness.run();
+
+        // The white floating frame around the steps: WHITE fill, hairline
+        // edge, the card radius (`rounded-2xl`), slot shadow.
+        let card = painted_rects(&harness)
+            .into_iter()
+            .find(|rect| {
+                rect.fill == WHITE
+                    && rect.stroke.color == theme::SLATE_200
+                    && rect.corner_radius == theme::CARD_RADIUS
+            })
+            .expect("the mechanism block paints the white floating card");
+        // No dark-slot fill may wrap the steps.
+        assert!(
+            !painted_rects(&harness)
+                .iter()
+                .any(|rect| rect.fill == theme::SLATE_50_80 && rect.rect.width() > 200.0),
+            "the dark inset slot frame must be gone"
+        );
+        // The neutral step badges sit on SLATE_100 with the chip radius
+        // (`rounded-md`), the reference's 6px.
+        assert!(
+            painted_rects(&harness)
+                .iter()
+                .any(|rect| rect.fill == SLATE_100 && rect.corner_radius == theme::CHIP_RADIUS),
+            "neutral step badges keep the bg-slate-100 fill and rounded-md corners"
+        );
+        // Step text renders at slate-600, the reference's step copy ink.
+        assert_eq!(
+            painted_text_color(&harness, "Detect an opposite-direction overlap."),
+            Some(theme::SLATE_600),
+            "step text keeps the readable slate-600 ink"
+        );
+        let _ = card;
+    }
+
+    /// The reference stacks the block as `space-y-2` (header to list) over
+    /// `space-y-1.5` (between steps): the two gaps differ, so a single item
+    /// spacing cannot express both. Each step row is a 16px content box
+    /// (`leading-snug` over `text-[11px]`), and egui's 18px
+    /// `interact_size.y` floor would inflate every row by 2px.
+    #[test]
+    fn test_mechanism_steps_keep_the_reference_row_pitch() {
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        let timing = TimingSettings::default();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(400.0, 300.0))
+            .build_ui(move |ui| {
+                mechanism_steps(ui, SocdMode::Immediate, &timing, Language::English);
+            });
+        harness.run();
+
+        let header = harness.get_by_label("How it works").rect();
+        let first = harness
+            .get_by_label("Detect an opposite-direction overlap.")
+            .rect();
+        let second = harness
+            .get_by_label("Release the previous key output immediately.")
+            .rect();
+        let third = harness
+            .get_by_label("Send the new key immediately. 0 ms added delay")
+            .rect();
+
+        // The rhythm is measured top-to-top: each row is a 16px content box,
+        // so the header-to-list gap (the reference's `space-y-2`) shows up as
+        // a 24px pitch and the between-step gap (`space-y-1.5`) as 22px.
+        // Measuring tops rather than bottoms keeps the assertion independent
+        // of how the shaper sizes each label's line box.
+        assert!(
+            (first.top() - header.top() - 24.0).abs() < 1.0,
+            "header to first step must pitch 24px, got {}",
+            first.top() - header.top()
+        );
+        assert!(
+            (second.top() - first.top() - 22.0).abs() < 1.0,
+            "step pitch must be 22px, got {}",
+            second.top() - first.top()
+        );
+        assert!(
+            (third.top() - second.top() - 22.0).abs() < 1.0,
+            "step pitch must be 22px, got {}",
+            third.top() - second.top()
+        );
+    }
+
+    /// The reference's header mark is `w-2 h-2 rounded-full bg-slate-300`
+    /// beside a `text-slate-800` title, not the slate-500 ink the dark-slot
+    /// leftover carried.
+    #[test]
+    fn test_mechanism_header_keeps_the_slate_mark_and_title_ink() {
+        use egui_kittest::Harness;
+
+        let timing = TimingSettings::default();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(400.0, 300.0))
+            .build_ui(move |ui| {
+                mechanism_steps(ui, SocdMode::Immediate, &timing, Language::English);
+            });
+        harness.run();
+
+        let mark = harness
+            .output()
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Circle(circle) if circle.fill == theme::SLATE_300 => {
+                    Some(circle.radius)
+                }
+                _ => None,
+            })
+            .expect("the header paints the slate-300 mark");
+        assert!(
+            (mark - 4.0).abs() < 0.01,
+            "the mark is the reference's 8px circle, got radius {mark}"
+        );
+        assert_eq!(
+            painted_text_color(&harness, "How it works"),
+            Some(theme::SLATE_800),
+            "the header title takes the reference's slate-800 ink"
+        );
     }
 
     struct FakeRuntime {
@@ -1391,11 +1672,144 @@ mod tests {
             .collect()
     }
 
-    /// R2 round-3: the strip insets its segments by 4 and each segment is padded
-    /// by `theme::MODE_PADDING`. Iced wraps the segments as
-    /// `container(segments).padding(4)` (`iced-ui/app.rs:3123`) and pads each
-    /// segment with `theme::MODE_PADDING` (`iced-ui/app.rs:3117`). Rendered rather
-    /// than restated, so a flattened margin fails here.
+    /// The reference's slider handle is a `w-4 h-4` box with a 3px border drawn
+    /// *inside* it, so the drawn handle is 16px across around a 10px white
+    /// core. epaint paints the stroke entirely outside the circle's path
+    /// instead, so the drawn box is `2 * (radius + stroke)` and the path radius
+    /// has to be `8 - 3 = 5`. The `8 - 3/2` this replaces assumed a straddling
+    /// stroke and drew a 19px handle -- visibly heavier than the reference.
+    #[test]
+    fn test_slider_thumb_draws_the_reference_16px_box() {
+        use egui_kittest::Harness;
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(600.0, 200.0))
+            .build_ui(|ui| {
+                let _ = range_slider(
+                    ui,
+                    RangeSliderProps {
+                        min_val: 2.0,
+                        max_val: 8.0,
+                        floor: 0.0,
+                        enabled: true,
+                        accent: INDIGO_600,
+                        id: Id::new("thumb-box-test"),
+                        accessible_name: "Thumb box range",
+                    },
+                );
+            });
+        harness.run();
+
+        let drawn = painted_circle_radii(&harness, INDIGO_600);
+        assert_eq!(drawn, vec![THUMB_RADIUS, THUMB_RADIUS]);
+
+        // epaint's `CircleShape::visual_bounding_rect` is
+        // `radius * 2.0 + stroke.width` (the stroke is painted `outside()`),
+        // so this is the box the user actually sees.
+        let box_size = 2.0 * (THUMB_RADIUS + SLIDER_HANDLE_BORDER);
+        assert!(
+            (box_size - 16.0).abs() < 0.01,
+            "the drawn handle must be the reference's 16px `w-4 h-4` box, got {box_size}"
+        );
+        // The white core the border encloses: the reference's `16 - 2 * 3`.
+        let core = 2.0 * THUMB_RADIUS;
+        assert!(
+            (core - 10.0).abs() < 0.01,
+            "the handle's white core must match the reference's 10px, got {core}"
+        );
+    }
+
+    /// Every manual input figure paints **one** pass, so a pill carries one
+    /// weight.
+    ///
+    /// The reference writes its entry boxes `font-mono font-bold`, which is a
+    /// *face* selection the port cannot make (egui's bundled faces ship a
+    /// single weight), so the stamp standing in for it offsets a second pass by
+    /// 0.48 px at this size -- a smear, not a heavier figure. What a reader
+    /// actually sees is that the figure disagreed with the `~`, `:`, `ms` and
+    /// `%` glyphs beside it in the same pill. A stamp creeping back in here is
+    /// the regression this pins.
+    #[test]
+    fn test_value_box_figure_paints_one_pass() {
+        use egui_kittest::Harness;
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1040.0, 800.0))
+            .build_ui_state(
+                |ui, runtime: &mut FakeRuntime| runtime.frame(ui),
+                FakeRuntime::new(test_state()),
+            );
+        harness.run();
+
+        // `test_state` is Press Delay, whose defaults are a 2.0~4.0 ms
+        // transition range, so both boxes are on screen.
+        for value in ["2.0", "4.0"] {
+            let passes = harness
+                .output()
+                .shapes
+                .iter()
+                .filter(|clipped| match &clipped.shape {
+                    egui::Shape::Text(text) => text.galley.text() == value,
+                    _ => false,
+                })
+                .count();
+            assert_eq!(
+                passes, 1,
+                "{value} must paint exactly one pass (the edit's own); \
+                 a second means the stamp is back and the figure disagrees \
+                 with the unit beside it"
+            );
+        }
+    }
+
+    /// The figure and the unit sharing its pill are the same weight, measured
+    /// the way a reader sees it: the *number of paint passes* per glyph.
+    ///
+    /// This is the property the request named. Both `2.0` (a `TextEdit`) and
+    /// `ms` (a plain label) resolve to a single pass, so neither reads heavier
+    /// than the other. A stamp on the figure alone -- whatever its ink or size
+    /// -- makes the counts disagree, which is exactly the mixed-weight pill.
+    #[test]
+    fn test_value_and_unit_in_a_pill_share_one_weight() {
+        use egui_kittest::Harness;
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1040.0, 800.0))
+            .build_ui_state(
+                |ui, runtime: &mut FakeRuntime| runtime.frame(ui),
+                FakeRuntime::new(test_state()),
+            );
+        harness.run();
+
+        let passes = |needle: &str| {
+            harness
+                .output()
+                .shapes
+                .iter()
+                .filter(|clipped| match &clipped.shape {
+                    egui::Shape::Text(text) => text.galley.text() == needle,
+                    _ => false,
+                })
+                .count()
+        };
+
+        for (figure, unit) in [("2.0", "ms"), ("4.0", "ms")] {
+            assert_eq!(
+                passes(figure),
+                passes(unit),
+                "the {figure} figure and the {unit} unit share a pill and must \
+                 share a weight: {figure} paints {} pass(es), {unit} paints {}",
+                passes(figure),
+                passes(unit)
+            );
+        }
+    }
+
+    /// The strip is the reference's own card, not a `group_style` surface: a
+    /// white fill with a slate hairline and `shadow-2xs`, its segments inset by
+    /// `MODE_STRIP_PADDING` and spaced by `MODE_STRIP_GAP` (`grid grid-cols-4
+    /// gap-1 p-1 bg-white border border-slate-200 rounded-xl shadow-2xs`).
+    /// Rendered rather than restated, so a flattened margin fails here.
     #[test]
     fn test_mode_selector_strip_inset_and_segment_padding() {
         use egui_kittest::{Harness, kittest::Queryable};
@@ -1408,13 +1822,28 @@ mod tests {
             });
         harness.run();
 
-        // The strip is the only `group_style` frame in this render: inset fill,
-        // 1px border, `GROUP_RADIUS` corners.
+        // The strip is the only white `CONTROL_RADIUS` frame in this render.
+        // Asserting the fill separates it from the `group_style` slate inset
+        // the old strip used, and the `SHADOW_2XS` paint is checked below.
         let strip = painted_rects(&harness)
             .into_iter()
-            .find(|rect| rect.corner_radius == theme::GROUP_RADIUS && rect.fill == theme::INSET)
-            .expect("the mode strip paints its group frame");
+            .find(|rect| rect.corner_radius == theme::CONTROL_RADIUS && rect.fill == WHITE)
+            .expect("the mode strip paints its white card frame");
+        assert_eq!(
+            strip.stroke.color,
+            theme::SLATE_200,
+            "the strip's hairline is `border-slate-200`, not the card's indigo edge"
+        );
 
+        // `shadow-2xs` is a zero-blur drop; the strip must carry it and not the
+        // blurred `SHADOW_XS` that the selected segment takes.
+        let lift = painted_rects(&harness)
+            .into_iter()
+            .find(|rect| rect.fill == theme::SHADOW_2XS.color)
+            .expect("the strip paints its shadow-2xs lift");
+        assert_eq!(lift.blur_width, 0.0, "`shadow-2xs` carries no blur");
+
+        let mut previous_right: Option<f32> = None;
         for mode in SocdMode::ALL {
             let label = mode_label(mode, Language::English);
             let segment = harness
@@ -1433,21 +1862,44 @@ mod tests {
                 segment.min.y - strip.rect.min.y
             );
 
-            // MODE_PADDING contributes 7px vertically over a 14px label, so a
-            // segment is at least the reference's 28px. The literal
-            // `symmetric(8, 5)` this replaces measured 24. The bound rather than
-            // an equality keeps this about the padding.
-            let height = segment.height();
+            // `gap-1`: consecutive segments are 4 apart. `columns` derives its
+            // gap from `item_spacing.x`, so a flattened spacing collapses the
+            // segments against each other and fails here.
+            if let Some(right) = previous_right {
+                let gap = segment.min.x - right;
+                assert!(
+                    (gap - theme::MODE_STRIP_GAP).abs() < 0.01,
+                    "{label}: segments must be spaced by `gap-1` (measured {gap})"
+                );
+            }
+            previous_right = Some(segment.max.x);
+
+            // The segment is the label's own line box plus `py-1.5` on each
+            // side. Asserting the relationship rather than an absolute height
+            // is deliberate: the harness lays the label out with egui's bundled
+            // faces (14px) while the running window uses the native UI face
+            // (16px), so the reference's 28px is `16 + 2 * 6` there and
+            // `14 + 2 * 6` here. A hardcoded 28 would pass only in the window
+            // and a hardcoded 26 only in the harness -- and the earlier `7`
+            // padding was calibrated to exactly that mistake, drawing a 30px
+            // segment on screen.
+            let label_rect = harness
+                .get_by_role_and_label(egui::accesskit::Role::Label, label)
+                .rect();
+            let expected = label_rect.height() + 2.0 * theme::MODE_PADDING.top;
             assert!(
-                height >= 28.0,
-                "{label}: segment height must follow theme::MODE_PADDING (measured {height})"
+                (segment.height() - expected).abs() < 0.01,
+                "{label}: segment height must be the label plus `py-1.5` on each side \
+                 (label {}, expected {expected}, measured {})",
+                label_rect.height(),
+                segment.height()
             );
         }
     }
 
     /// F08: both sliders in the timing card share one geometry -- a 12px rail
-    /// rounded to 6 and constant 16px (radius 8) thumbs -- and the mixer
-    /// handle keeps its size under hover and drag, as the reference does.
+    /// rounded to 6 and constant 16px thumbs -- and the mixer handle keeps its
+    /// size under hover and drag, as the reference does.
     #[test]
     fn test_sliders_share_one_geometry() {
         use egui_kittest::{Harness, kittest::Queryable};
@@ -1463,7 +1915,7 @@ mod tests {
                         max_val: 8.0,
                         floor: 0.0,
                         enabled: true,
-                        accent: PRIMARY_TEXT,
+                        accent: INDIGO_600,
                         id: Id::new("shared-geometry-range"),
                         accessible_name: "Shared geometry range",
                     },
@@ -1475,7 +1927,7 @@ mod tests {
             .find(|rect| rect.fill == SLATE_100)
             .expect("the duration rail paints its SLATE_100 track");
         let duration_rail = (track.rect.height(), track.corner_radius);
-        let duration_thumbs = painted_circle_radii(&duration, PRIMARY_TEXT);
+        let duration_thumbs = painted_circle_radii(&duration, INDIGO_600);
 
         // The Random Mix rail's geometry.
         let mut mixer = Harness::builder()
@@ -1486,14 +1938,14 @@ mod tests {
         mixer.run();
         let span = painted_rects(&mixer)
             .into_iter()
-            .find(|rect| rect.fill == PRIMARY_TEXT)
+            .find(|rect| rect.fill == INDIGO_600)
             .expect("the mixer paints its left span");
         let mixer_rail = (span.rect.height(), span.corner_radius);
-        let mixer_handles = painted_circle_radii(&mixer, MIX_TEXT);
+        let mixer_handles = painted_circle_radii(&mixer, PURPLE_600);
 
         assert_eq!(
             duration_rail,
-            (12.0, CornerRadius::same(6)),
+            (12.0, theme::CHIP_RADIUS),
             "the duration rail keeps the reference's 12px rounded-6 track"
         );
         assert_eq!(
@@ -1502,13 +1954,13 @@ mod tests {
         );
         assert_eq!(
             duration_thumbs,
-            vec![8.0, 8.0],
-            "both duration thumbs keep the constant 16px diameter"
+            vec![THUMB_RADIUS, THUMB_RADIUS],
+            "both duration thumbs keep the constant 16px drawn box"
         );
         assert_eq!(
             mixer_handles,
-            vec![8.0],
-            "the mixer handle must share the 16px diameter"
+            vec![THUMB_RADIUS],
+            "the mixer handle must share the 16px drawn box"
         );
 
         // The reference handle has no status-dependent size: hovering and
@@ -1518,26 +1970,28 @@ mod tests {
         slider.hover();
         mixer.run();
         assert_eq!(
-            painted_circle_radii(&mixer, MIX_TEXT),
-            vec![8.0],
+            painted_circle_radii(&mixer, PURPLE_600),
+            vec![THUMB_RADIUS],
             "hovering must not resize the mixer handle"
         );
         mixer.drag_at(rect.center());
         mixer.run();
         assert_eq!(
-            painted_circle_radii(&mixer, MIX_TEXT),
-            vec![8.0],
+            painted_circle_radii(&mixer, PURPLE_600),
+            vec![THUMB_RADIUS],
             "dragging must not resize the mixer handle"
         );
         mixer.drop_at(rect.center());
     }
 
-    /// F07: the active mode segment takes a solid mode-accent fill and white
-    /// bold text; every other segment stays transparent with muted ink. The
-    /// old white surface chip with a hairline border must not survive.
+    /// The selected segment is `bg-indigo-600` with white bold text and
+    /// `shadow-xs`; every other segment is transparent with `text-slate-600`
+    /// ink. The chip does **not** follow the mode accent -- the reference
+    /// hardcodes the class for all four modes, so Release Delay selects the same
+    /// indigo chip the rest do.
     #[test]
-    fn test_mode_selector_active_segment_takes_the_mode_accent() {
-        use egui_kittest::Harness;
+    fn test_mode_selector_active_segment_is_the_fixed_indigo_chip() {
+        use egui_kittest::{Harness, kittest::Queryable};
 
         for mode in SocdMode::ALL {
             let mut harness = Harness::builder()
@@ -1548,21 +2002,47 @@ mod tests {
                 });
             harness.run();
 
+            let active = mode_label(mode, Language::English);
             let chip = painted_rects(&harness)
                 .into_iter()
-                .find(|rect| rect.fill == mode_color(mode))
+                .find(|rect| rect.fill == INDIGO_600)
                 .unwrap_or_else(|| {
-                    panic!("{mode:?}: the active segment must paint a solid accent chip")
+                    panic!("{mode:?}: the active segment must paint the indigo-600 chip")
                 });
+            assert_eq!(
+                chip.corner_radius,
+                theme::SEGMENT_RADIUS,
+                "{mode:?}: the chip keeps the segment's `rounded-lg` corners"
+            );
+            // The chip covers the whole segment, so its height is the label's
+            // line box plus `py-1.5` on each side (see the strip test for why
+            // this is a relationship rather than the reference's literal 28).
+            let label_rect = harness
+                .get_by_role_and_label(egui::accesskit::Role::Label, active)
+                .rect();
+            let expected = label_rect.height() + 2.0 * theme::MODE_PADDING.top;
             assert!(
-                chip.rect.height() >= 28.0,
-                "{mode:?}: the accent chip must keep the segment's padded height"
+                (chip.rect.height() - expected).abs() < 0.01,
+                "{mode:?}: the chip must span the segment's padded height \
+                 (expected {expected}, measured {})",
+                chip.rect.height()
+            );
+
+            // The chip's own `shadow-xs` lift, distinct from the strip's
+            // zero-blur `shadow-2xs` underneath it.
+            assert!(
+                painted_rects(&harness).into_iter().any(|rect| {
+                    rect.fill == theme::SHADOW_XS.color
+                        && rect.blur_width == theme::SHADOW_XS.blur as f32
+                        && rect.rect.intersects(chip.rect)
+                }),
+                "{mode:?}: the selected segment carries the `shadow-xs` lift"
             );
 
             let active = mode_label(mode, Language::English);
             assert_eq!(
                 painted_text_color(&harness, active),
-                Some(Color32::WHITE),
+                Some(theme::WHITE),
                 "{active}: the active segment's label must render white"
             );
             for other in SocdMode::ALL {
@@ -1572,15 +2052,81 @@ mod tests {
                 let label = mode_label(other, Language::English);
                 assert_eq!(
                     painted_text_color(&harness, label),
-                    Some(MUTED_TEXT),
-                    "{label}: inactive segments keep the muted ink"
+                    Some(theme::SLATE_600),
+                    "{label}: inactive segments keep the `text-slate-600` ink"
                 );
             }
         }
     }
 
-    /// R2 round-3: the Iced `mixer_slider` fills the rail `PRIMARY_TEXT` left of
-    /// the handle and `RELEASE_TEXT` right of it (`iced-ui/theme.rs:1116-1121`).
+    /// The timing card's vertical order: the mode strip, then the controls the
+    /// mode owns, then "How it works", and -- in Immediate mode, the one mode
+    /// that mounts it -- the preview last.
+    ///
+    /// The preview is the card's bottom pin in Immediate mode the way the
+    /// mechanism block is in the delay modes: it is the last child, so the
+    /// stretched card's leftover collects above it. Both orders are asserted
+    /// as the relationship between the two blocks' own rects, because the
+    /// card stretches to the row's shared height and no absolute y is stable.
+    #[test]
+    fn test_timing_card_puts_the_preview_after_the_mechanism_block() {
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        let timing = TimingSettings::default();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(600.0, 900.0))
+            .build_ui(move |ui| {
+                let inputs = TimingInputs::from_timing(&timing);
+                let editing = [false; 6];
+                let mut messages = Vec::new();
+                let preview = Preview::default();
+                timing_card(
+                    ui,
+                    &timing,
+                    &inputs,
+                    &editing,
+                    Language::English,
+                    Some(PreviewMount {
+                        preview: &preview,
+                        awake: true,
+                        clock_mounted: true,
+                    }),
+                    &mut messages,
+                );
+            });
+        harness.ctx.all_styles_mut(|style| *style = theme::style());
+        harness.ctx.set_fonts(theme::fonts());
+        harness.run();
+        harness.run();
+
+        let steps = harness.get_by_label("How it works").rect();
+        let pill = harness.get_by_label("Play preview").rect();
+        assert!(
+            pill.top() > steps.top(),
+            "the preview must follow the mechanism block \
+             (steps top {}, preview top {})",
+            steps.top(),
+            pill.top()
+        );
+
+        // The strip still leads both: the mode selector is the first control,
+        // so nothing may be pushed above it.
+        let strip = painted_rects(&harness)
+            .into_iter()
+            .find(|rect| rect.corner_radius == theme::CONTROL_RADIUS && rect.fill == WHITE)
+            .expect("the mode strip paints its white card frame");
+        assert!(
+            steps.top() > strip.rect.top() && pill.top() > strip.rect.top(),
+            "the mode strip must stay the card's first control \
+             (strip top {}, steps top {}, preview top {})",
+            strip.rect.top(),
+            steps.top(),
+            pill.top()
+        );
+    }
+
+    /// R2 round-3: the mixer fills the rail `INDIGO_600` left of the handle
+    /// and `VIOLET_500` right of it.
     #[test]
     fn test_mixer_rail_splits_primary_left_release_right() {
         use egui_kittest::Harness;
@@ -1594,18 +2140,18 @@ mod tests {
 
         let rail: Vec<_> = painted_rects(&harness)
             .into_iter()
-            .filter(|rect| rect.corner_radius == RAIL_RADIUS)
+            .filter(|rect| rect.corner_radius == theme::CHIP_RADIUS)
             .collect();
         assert_eq!(rail.len(), 2, "the rail paints two spans: {rail:?}");
 
         let left = rail
             .iter()
-            .find(|rect| rect.fill == PRIMARY_TEXT)
-            .expect("the span left of the handle is PRIMARY_TEXT");
+            .find(|rect| rect.fill == INDIGO_600)
+            .expect("the span left of the handle is INDIGO_600");
         let right = rail
             .iter()
-            .find(|rect| rect.fill == RELEASE_TEXT)
-            .expect("the span right of the handle is RELEASE_TEXT");
+            .find(|rect| rect.fill == VIOLET_500)
+            .expect("the span right of the handle is VIOLET_500");
 
         assert!(
             left.rect.max.x <= right.rect.min.x + f32::EPSILON,
@@ -1624,10 +2170,10 @@ mod tests {
         );
     }
 
-    /// R2 round-3: the duration rail is the Iced `widgets::RangeSlider`, not the
+    /// R2 round-3: the duration rail is a two-handle range slider, not the
     /// single-handle `accent_slider`: a 12px rail rounded to 6 with constant
-    /// 16px thumbs (radius 8) that do not change with the status
-    /// (`iced-ui/widgets.rs:238-285`). F08 unified the mixer onto this same
+    /// 16px thumbs that do not change with the status
+    /// (F08 unified the mixer onto this same
     /// geometry.
     #[test]
     fn test_duration_rail_uses_the_range_geometry() {
@@ -1643,7 +2189,7 @@ mod tests {
                         max_val: 8.0,
                         floor: 0.0,
                         enabled: true,
-                        accent: PRIMARY_TEXT,
+                        accent: INDIGO_600,
                         id: Id::new("rail-geometry-test"),
                         accessible_name: "Rail geometry range",
                     },
@@ -1662,32 +2208,108 @@ mod tests {
             "the duration rail is 12px tall, not the retired accent_slider 10"
         );
         assert_eq!(
-            track.corner_radius, RAIL_RADIUS,
+            track.corner_radius,
+            theme::CHIP_RADIUS,
             "the duration rail is rounded to 6, not the retired accent_slider 5"
         );
 
         assert_eq!(
-            painted_circle_radii(&harness, PRIMARY_TEXT),
+            painted_circle_radii(&harness, INDIGO_600),
             vec![THUMB_RADIUS, THUMB_RADIUS],
             "both thumbs keep the constant 16px size"
         );
 
-        // The Iced widget has no status-dependent thumb size, so a drag must
+        // The rail has no status-dependent thumb size, so a drag must
         // leave the geometry alone.
         harness.drag_at(egui::pos2(300.0, 100.0));
         harness.run();
         harness.hover_at(egui::pos2(340.0, 100.0));
         harness.run();
         assert_eq!(
-            painted_circle_radii(&harness, PRIMARY_TEXT),
+            painted_circle_radii(&harness, INDIGO_600),
             vec![THUMB_RADIUS, THUMB_RADIUS],
             "dragging must not resize the two-handle thumbs"
         );
         harness.drop_at(egui::pos2(340.0, 100.0));
     }
 
+    /// The timing card's two slot frames are the reference's white tile
+    /// (`p-3 rounded-2xl border-slate-200/70 shadow-2xs`), so both take
+    /// [`theme::SHADOW_2XS`] -- a **zero-blur** drop. The port drew them with a
+    /// separate `SHADOW_SLOT` at a 2px blur until the two were folded, which is
+    /// the one pixel change this refactor carries: the tiles now sit on the
+    /// reference's own hairline drop rather than a blurred one.
+    #[test]
+    fn test_slot_frames_use_the_zero_blur_hairline_drop() {
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        let timing = TimingSettings {
+            mode: SocdMode::RandomMix,
+            ..Default::default()
+        };
+        let inputs = TimingInputs::from_timing(&timing);
+        let editing = [false; 6];
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(600.0, 500.0))
+            .build_ui(move |ui| {
+                let mut messages = Vec::new();
+                rate_group(
+                    ui,
+                    &timing,
+                    &inputs,
+                    &editing,
+                    Language::English,
+                    &mut messages,
+                );
+            });
+        harness.run();
+
+        // The ratio slot is the frame wrapping the mixer, identified by
+        // containment the way the padding test does.
+        let rail = harness
+            .get_by_role_and_label(egui::accesskit::Role::Slider, "Delay Mix Ratio")
+            .rect();
+        let slot = painted_rects(&harness)
+            .into_iter()
+            .find(|rect| {
+                rect.fill == WHITE
+                    && rect.corner_radius == theme::CONTROL_RADIUS
+                    && rect.rect.contains_rect(rail)
+            })
+            .expect("the ratio group paints its white slot frame");
+        assert!(
+            slot.rect.contains_rect(rail),
+            "the slot frame wraps its mixer"
+        );
+
+        // Every drop this card paints is the zero-blur `shadow-2xs`: the slot
+        // tiles, the ratio pill, and the mixer's own value pill. The blurred
+        // `SHADOW_XS` is what the retired `SHADOW_SLOT` carried, so any 2px
+        // blur in this render is the regression.
+        let drops: Vec<_> = painted_rects(&harness)
+            .into_iter()
+            .filter(|rect| rect.fill == theme::SHADOW_2XS.color)
+            .collect();
+        assert!(
+            !drops.is_empty(),
+            "the slot paints its `shadow-2xs` drop behind the frame"
+        );
+        for drop in &drops {
+            assert_eq!(
+                drop.blur_width, 0.0,
+                "every drop in the timing card takes `shadow-2xs`, which carries no blur"
+            );
+        }
+        assert!(
+            drops
+                .iter()
+                .any(|drop| drop.corner_radius == theme::CONTROL_RADIUS),
+            "the slot tile's own drop follows the frame's radius"
+        );
+    }
+
     /// R2 round-3: the Random Mix slot is padded with `theme::GROUP_PADDING` (14),
-    /// not the 12 the duration groups use (`iced-ui/app.rs:3180`).
+    /// not the 12 the duration groups use.
     #[test]
     fn test_rate_group_uses_group_padding() {
         use egui_kittest::{Harness, kittest::Queryable};
@@ -1716,15 +2338,15 @@ mod tests {
         // The mixer's own rect is unique in this render, and the slot is the one
         // `slot_style` frame that contains it. Selecting by containment rather
         // than by fill+radius alone keeps this unambiguous: the ratio pill shares
-        // both the SURFACE fill and the GROUP_RADIUS corners.
+        // both the WHITE fill and the CONTROL_RADIUS corners.
         let rail = harness
             .get_by_role_and_label(egui::accesskit::Role::Slider, "Delay Mix Ratio")
             .rect();
         let slot = painted_rects(&harness)
             .into_iter()
             .find(|rect| {
-                rect.corner_radius == theme::GROUP_RADIUS
-                    && rect.fill == SURFACE
+                rect.corner_radius == theme::CONTROL_RADIUS
+                    && rect.fill == WHITE
                     && rect.rect.contains_rect(rail)
             })
             .expect("the ratio group paints the slot frame around its mixer");
@@ -1870,7 +2492,7 @@ mod tests {
 
         // Same rest ink.
         let timing_rest = painted_text_color(&harness, "Restore timing defaults");
-        assert_eq!(timing_rest, Some(theme::ICON_SECONDARY));
+        assert_eq!(timing_rest, Some(theme::SLATE_600));
         assert_eq!(
             timing_rest,
             painted_text_color(&harness, "Restore mapping defaults"),
@@ -1978,16 +2600,16 @@ mod tests {
         let spans: Vec<_> = painted_rects(&harness)
             .into_iter()
             .filter(|rect| {
-                rect.corner_radius == RAIL_RADIUS && slider_rect.contains_rect(rect.rect)
+                rect.corner_radius == theme::CHIP_RADIUS && slider_rect.contains_rect(rect.rect)
             })
             .collect();
         let press_span = spans
             .iter()
-            .find(|rect| rect.fill == PRIMARY_TEXT)
+            .find(|rect| rect.fill == INDIGO_600)
             .expect("the mixer paints its press share span");
         let release_span = spans
             .iter()
-            .find(|rect| rect.fill == RELEASE_TEXT)
+            .find(|rect| rect.fill == VIOLET_500)
             .expect("the mixer paints its release share span");
         let share = (press_span.rect.max.x - press_span.rect.min.x)
             / (release_span.rect.max.x - press_span.rect.min.x);
@@ -2139,6 +2761,54 @@ mod tests {
                 .preserved_overlap_min_micros,
             100,
             "the rail must floor the release delay at 0.1 ms"
+        );
+    }
+
+    /// The rail reaches the settings layer's shared ceiling, not the
+    /// reference's 20 ms: a long delay must be draggable, and the value it
+    /// produces must be one `Settings::validate` accepts.
+    #[test]
+    fn test_range_slider_reaches_the_settings_ceiling() {
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        assert_eq!(
+            RAIL_MAX_MS, 1000.0,
+            "the rail reads the settings layer's 1000 ms ceiling"
+        );
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1040.0, 800.0))
+            .build_ui_state(
+                |ui, runtime: &mut FakeRuntime| runtime.frame(ui),
+                FakeRuntime::new(test_state()),
+            );
+
+        let rail = harness.get_by_role_and_label(
+            egui::accesskit::Role::Slider,
+            "New Key Press Delay duration range",
+        );
+        let rect = rail.rect();
+
+        // Drag the upper thumb to the rail's right edge.
+        let edge = egui::pos2(rect.right() - 1.0, rect.center().y);
+        harness.drag_at(rect.center());
+        harness.run();
+        harness.hover_at(edge);
+        harness.run();
+        harness.hover_at(edge);
+        harness.run();
+        harness.drop_at(edge);
+        harness.run();
+
+        let timing = &harness.state().state.draft.as_ref().unwrap().timing;
+        assert_eq!(
+            timing.socd_transition_max_micros,
+            crate::settings::MAX_TIMING_MICROS,
+            "the rail's right edge must reach the settings ceiling"
+        );
+        assert!(
+            timing.socd_transition_max_micros > 20_000,
+            "the ceiling must be past the retired 20 ms rail stop"
         );
     }
 }

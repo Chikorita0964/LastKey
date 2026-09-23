@@ -2,17 +2,16 @@
 //!
 //! The cards push [`Message`]s into one list; [`state::update`] is the only
 //! transition function; this module performs the returned [`Effect`]s (send,
-//! focus, scroll, raise, close). The view never sends a command itself.
-//! Port of `iced-ui/app.rs`, minus Iced: the eframe [`App`] splits the loop
-//! into `logic` (IPC pump, focus, keys, effects) and `ui` (the page).
+//! focus, scroll, raise, close). The view never sends a command itself. The
+//! eframe [`App`] splits the loop into `logic` (IPC pump, focus, keys, effects)
+//! and `ui` (the page).
 
 use std::sync::mpsc as std_mpsc;
 
 use eframe::{App, CreationContext, Frame, NativeOptions};
 use egui::{
-    Align, Color32, CornerRadius, FontId, IconData, Layout, Margin, Painter, Pos2, Rect, Response,
-    RichText, Sense, Shape, Stroke, StrokeKind, Ui, Vec2, ViewportBuilder, ViewportCommand,
-    WidgetInfo, WidgetType,
+    Align, Color32, CornerRadius, FontId, IconData, Layout, Margin, Pos2, Rect, Response, RichText,
+    Sense, Stroke, StrokeKind, Ui, Vec2, ViewportBuilder, ViewportCommand, WidgetInfo, WidgetType,
 };
 
 use super::{
@@ -32,17 +31,14 @@ use crate::{
 const WINDOW_TITLE: &str = "LastKey Settings";
 const WINDOW_WIDTH: f32 = 1040.0;
 const WINDOW_HEIGHT: f32 = 800.0;
-/// The Iced action bar's container padding.
+/// The action bar's container padding.
 const ACTION_BAR_PADDING: f32 = 16.0;
-/// The card frame stroke `theme::card_style()` draws, which counts toward the
-/// frame's layout size. The bar's reserve has to include it, or the bar sits
-/// in the page's bottom margin instead of keeping it.
-const CARD_STROKE: f32 = 2.0;
 /// The action bar's height, derived from the same constants it is built from
-/// (padding top+bottom plus the frame's two strokes and one button row). The
-/// body reserves it before the bar is drawn so the scroll owner never jumps
-/// and the bar keeps its page-edge margin.
-const ACTION_BAR_HEIGHT: f32 = 2.0 * ACTION_BAR_PADDING + 2.0 * CARD_STROKE + theme::BUTTON_HEIGHT;
+/// (padding top+bottom plus the card frame's two strokes and one button row).
+/// The body reserves it before the bar is drawn so the scroll owner never
+/// jumps and the bar keeps its page-edge margin.
+const ACTION_BAR_HEIGHT: f32 =
+    2.0 * ACTION_BAR_PADDING + 2.0 * theme::CARD_STROKE + theme::BUTTON_HEIGHT;
 /// The body never collapses below this; a tiny window scrolls instead.
 const BODY_MIN_HEIGHT: f32 = 160.0;
 /// Table geometry from the reference (`#card-axis-latencies`): fixed pattern
@@ -56,7 +52,7 @@ pub fn run() -> eframe::Result {
         viewport: ViewportBuilder::default()
             .with_title(WINDOW_TITLE)
             .with_inner_size([WINDOW_WIDTH, WINDOW_HEIGHT])
-            // The Iced shell's minimum window size (iced-ui/app.rs:43-47).
+            // The shell's minimum window size.
             .with_min_inner_size([960.0, 600.0])
             .with_icon(window_icon()),
         ..Default::default()
@@ -90,7 +86,7 @@ struct SettingsApp {
 
 impl SettingsApp {
     fn new(cc: &CreationContext<'_>) -> Self {
-        // The window is light-only like the Iced shell: the port's style is
+        // The window is light-only: the port's style is
         // installed for every system theme so the references' pixels hold.
         cc.egui_ctx.all_styles_mut(|style| *style = theme::style());
         // The text lays out on the theme's font set: the native Segoe UI face
@@ -99,7 +95,7 @@ impl SettingsApp {
         cc.egui_ctx.set_fonts(theme::fonts());
         let ctx = cc.egui_ctx.clone();
         // The reader thread wakes the window after every queued event; eframe
-        // has no async runtime to drive an Iced-style stream.
+        // has no async runtime to drive a streaming read.
         let events = ipc_client::connect(move || ctx.request_repaint());
         Self {
             state: State::default(),
@@ -153,7 +149,7 @@ impl SettingsApp {
     }
 
     /// The body: one scroll owner around the settings cards. The action bar
-    /// stays outside it, including when results grow (Iced layout).
+    /// stays outside it, including when results grow.
     fn body(&mut self, ui: &mut Ui, messages: &mut Vec<Message>) {
         let pending = self.pending_section.take();
         let Some(snapshot) = self.state.snapshot.as_ref() else {
@@ -223,10 +219,10 @@ impl SettingsApp {
     fn page(&mut self, ui: &mut Ui) {
         let mut messages = Vec::new();
 
-        // The Iced canvas: page background behind everything, the page itself
+        // The page canvas: page background behind everything, the page itself
         // inset by PAGE_PADDING.
         ui.painter()
-            .rect_filled(ui.max_rect(), CornerRadius::ZERO, theme::CANVAS);
+            .rect_filled(ui.max_rect(), CornerRadius::ZERO, theme::WHITE);
         egui::Frame::NONE
             .inner_margin(Margin::same(theme::PAGE_PADDING as i8))
             .show(ui, |ui| {
@@ -284,7 +280,7 @@ impl App for SettingsApp {
             self.dispatch(message, ctx);
         }
 
-        // The Iced runtime subscription: Escape cancels a capture, every
+        // The runtime subscription: Escape cancels a capture, every
         // other non-repeat press and every release feeds the press tracker.
         let events = ctx.input(|input| input.events.clone());
         for event in events {
@@ -371,7 +367,7 @@ pub(crate) fn stretch_card(ui: &mut Ui, card: &'static str) {
 }
 
 /// The two settings cards, side by side, each in its own fixed-width column
-/// (the Iced `row![mappings, timing_card]`). Shared by the page and its tests
+/// (the reference's `row![mappings, timing_card]`). Shared by the page and its tests
 /// so the composition is exercised exactly as it ships. Returns each column's
 /// rect so the height contract can be asserted directly.
 ///
@@ -435,6 +431,11 @@ fn settings_cards(ui: &mut Ui, state: &State, messages: &mut Vec<Message>) -> (R
 /// The action bar: restore, dirty badge, feedback, revert, apply. It is the
 /// one place errors and notices are shown, so their appearance never moves a
 /// widget inside the scroll owner. Shared with the tests.
+///
+/// The reference (`ActionBar.tsx`) floats the bar (`sticky bottom-3 z-30`)
+/// with `rounded-2xl` corners, its card shadow, and inset content padding, so
+/// page content passes behind it inside the scroll viewport rather than
+/// stopping flush at the window edge.
 fn actions_bar(ui: &mut Ui, state: &State, messages: &mut Vec<Message>) {
     if state.snapshot.is_none() || state.draft.is_none() {
         return;
@@ -449,7 +450,7 @@ fn actions_bar(ui: &mut Ui, state: &State, messages: &mut Vec<Message>) {
                 ui.spacing_mut().item_spacing.x = theme::ROW_GAP;
                 if action_button(
                     ui,
-                    Glyph::Restore,
+                    theme::Icon::Restore,
                     language.text("Restore all defaults"),
                     ButtonKind::Secondary,
                     true,
@@ -462,7 +463,7 @@ fn actions_bar(ui: &mut Ui, state: &State, messages: &mut Vec<Message>) {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if action_button(
                         ui,
-                        Glyph::Check,
+                        theme::Icon::Check,
                         language.text("Apply"),
                         ButtonKind::Primary,
                         dirty,
@@ -473,7 +474,7 @@ fn actions_bar(ui: &mut Ui, state: &State, messages: &mut Vec<Message>) {
                     }
                     if action_button(
                         ui,
-                        Glyph::Revert,
+                        theme::Icon::Revert,
                         language.text("Revert"),
                         ButtonKind::Secondary,
                         dirty,
@@ -484,7 +485,7 @@ fn actions_bar(ui: &mut Ui, state: &State, messages: &mut Vec<Message>) {
                     }
                     // The feedback fills what is left of the bar; its own row
                     // is icon-first with the text hugging the right edge
-                    // (Iced: Fill row, right-aligned text).
+                    // (the reference's Fill row, right-aligned text).
                     let remaining = ui.available_width();
                     ui.allocate_ui_with_layout(
                         Vec2::new(remaining, theme::BUTTON_HEIGHT),
@@ -507,7 +508,7 @@ fn disconnected_body(ui: &mut Ui, state: &State, messages: &mut Vec<Message>) {
                 .language
                 .text("The settings UI is waiting for LastKey.exe."),
             theme::BODY_TEXT_SIZE,
-            theme::BODY_TEXT,
+            theme::SLATE_900,
             false,
         );
         if plain_button(
@@ -521,7 +522,7 @@ fn disconnected_body(ui: &mut Ui, state: &State, messages: &mut Vec<Message>) {
             messages.push(Message::RequestSnapshot);
         }
         if let Some(error) = &state.error {
-            label(ui, error, 12.0, theme::ERROR_TEXT, false);
+            label(ui, error, 12.0, theme::RED_600, false);
         }
     });
 }
@@ -532,7 +533,7 @@ fn feedback(ui: &mut Ui, state: &State, dirty: bool) {
     match (&state.error, &state.notice) {
         (Some(error), _) => {
             let (rect, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
-            paint_glyph(ui.painter(), rect, Glyph::Warning, theme::ERROR_TEXT);
+            theme::paint_icon(ui.painter(), rect, theme::Icon::Warning, theme::RED_600);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.add(
                     egui::Label::new(
@@ -547,7 +548,7 @@ fn feedback(ui: &mut Ui, state: &State, dirty: bool) {
         }
         (None, Some(notice)) => {
             let (rect, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
-            paint_glyph(ui.painter(), rect, Glyph::Check, theme::OK_TEXT);
+            theme::paint_icon(ui.painter(), rect, theme::Icon::Check, theme::EMERALD_500);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.add(
                     egui::Label::new(
@@ -566,7 +567,7 @@ fn feedback(ui: &mut Ui, state: &State, dirty: bool) {
                     egui::Label::new(
                         RichText::new(state.language.text("Click Apply to commit draft edits."))
                             .size(12.0)
-                            .color(theme::ICON_MUTED),
+                            .color(theme::SLATE_400),
                     )
                     .truncate(),
                 );
@@ -579,12 +580,12 @@ fn feedback(ui: &mut Ui, state: &State, dirty: bool) {
                     egui::Label::new(
                         RichText::new(state.language.text("Synchronized"))
                             .size(12.0)
-                            .color(theme::EMERALD_SYNC),
+                            .color(theme::EMERALD_600_80),
                     )
                     .truncate(),
                 );
                 let (rect, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
-                paint_glyph(ui.painter(), rect, Glyph::Check, theme::OK_TEXT);
+                theme::paint_icon(ui.painter(), rect, theme::Icon::Check, theme::EMERALD_500);
             });
         }
     }
@@ -613,21 +614,25 @@ fn measurement_section(ui: &mut Ui, state: &State, messages: &mut Vec<Message>) 
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = 4.0;
-                        section_title(ui, Glyph::Chart, language.text("Input timing measurement"));
+                        section_title(
+                            ui,
+                            theme::Icon::Chart,
+                            language.text("Input timing measurement"),
+                        );
                         label(
                             ui,
                             language.text("Records your mapped key-pair timing for this session."),
                             12.0,
-                            theme::MUTED_TEXT,
+                            theme::SLATE_500,
                             false,
                         );
                     });
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.spacing_mut().item_spacing.x = theme::ROW_GAP;
                         let (kind, glyph, label_text) = if active {
-                            (ButtonKind::Warning, Glyph::Stop, "Stop measurement")
+                            (ButtonKind::Warning, theme::Icon::Stop, "Stop measurement")
                         } else {
-                            (ButtonKind::Primary, Glyph::Play, "Start measurement")
+                            (ButtonKind::Primary, theme::Icon::Play, "Start measurement")
                         };
                         if action_button(ui, glyph, language.text(label_text), kind, true).clicked()
                         {
@@ -635,7 +640,7 @@ fn measurement_section(ui: &mut Ui, state: &State, messages: &mut Vec<Message>) 
                         }
                         if action_button(
                             ui,
-                            Glyph::Restore,
+                            theme::Icon::Restore,
                             language.text("Reset session"),
                             ButtonKind::Secondary,
                             true,
@@ -652,7 +657,7 @@ fn measurement_section(ui: &mut Ui, state: &State, messages: &mut Vec<Message>) 
                         (
                             language.text("Physical key edges"),
                             grouped(measurement.observed_event_count),
-                            theme::BODY_TEXT,
+                            theme::SLATE_900,
                         ),
                         (
                             language.text("Valid paired samples"),
@@ -708,7 +713,7 @@ fn stat_box(ui: &mut Ui, label_text: &str, value: &str, value_color: Color32) {
             ui.set_min_width(ui.available_width());
             ui.set_min_height(76.0 - 24.0);
             ui.vertical_centered(|ui| {
-                label(ui, label_text, 11.0, theme::BODY_TEXT, true);
+                label(ui, label_text, 11.0, theme::SLATE_900, true);
             });
             ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
                 label(ui, value, 19.0, value_color, true);
@@ -725,14 +730,14 @@ fn latencies_card(ui: &mut Ui, measurement: &MeasurementSnapshot, language: Lang
             ui.spacing_mut().item_spacing = Vec2::new(0.0, theme::ROW_GAP);
             section_title(
                 ui,
-                Glyph::Measurement,
+                theme::Icon::Measurement,
                 language.text("Measured Input Transitions"),
             );
             label(
                 ui,
                 language.text("Updates live while measuring"),
                 12.0,
-                theme::MUTED_TEXT,
+                theme::SLATE_500,
                 false,
             );
             theme::group_style()
@@ -788,12 +793,17 @@ fn latencies_card(ui: &mut Ui, measurement: &MeasurementSnapshot, language: Lang
                         ui.spacing_mut().item_spacing.x = TABLE_GAP;
                         cell(ui, PATTERN_COLUMN, false, |ui| {
                             ui.spacing_mut().item_spacing.x = TABLE_GAP;
-                            dot(ui, theme::RED_500);
+                            theme::legend_mark(
+                                ui,
+                                theme::RED_500,
+                                4.0,
+                                theme::line_height(ui, theme::BODY_TEXT_SIZE),
+                            );
                             label(
                                 ui,
                                 language.text("Indistinguishable"),
                                 theme::BODY_TEXT_SIZE,
-                                theme::BODY_TEXT,
+                                theme::SLATE_900,
                                 true,
                             );
                         });
@@ -801,7 +811,7 @@ fn latencies_card(ui: &mut Ui, measurement: &MeasurementSnapshot, language: Lang
                             figure(
                                 ui,
                                 &grouped(measurement.near_simultaneous_count),
-                                theme::BODY_TEXT,
+                                theme::SLATE_900,
                             );
                         });
                         ui.allocate_ui_with_layout(
@@ -814,7 +824,7 @@ fn latencies_card(ui: &mut Ui, measurement: &MeasurementSnapshot, language: Lang
                                         "Unclear input order (<1 ms), excluded from timing ranges.",
                                     ),
                                     11.0,
-                                    theme::MUTED_TEXT,
+                                    theme::SLATE_500,
                                     false,
                                 );
                             },
@@ -842,21 +852,21 @@ fn recommendations_card(
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 4.0;
-                    section_title(ui, Glyph::Star, language.text("Suggested delays"));
+                    section_title(ui, theme::Icon::Star, language.text("Suggested delays"));
                     label(
                         ui,
                         language.text(
                             "Based on P10-P50 input timings, excluding indistinguishable inputs.",
                         ),
                         12.0,
-                        theme::MUTED_TEXT,
+                        theme::SLATE_500,
                         false,
                     );
                 });
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if trailing_button(
                         ui,
-                        Glyph::ArrowForward,
+                        theme::Icon::ArrowForward,
                         language.text("Apply suggestions"),
                         ButtonKind::Primary,
                         has_suggestions,
@@ -921,18 +931,18 @@ fn suggestion_tile(
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = 2.0;
-                        label(ui, label_text, 12.0, theme::BODY_TEXT, true);
-                        label(ui, hint, 11.0, theme::MUTED_TEXT, false);
+                        label(ui, label_text, 12.0, theme::SLATE_900, true);
+                        label(ui, hint, 11.0, theme::SLATE_500, false);
                     });
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         // The value keeps a right inset so it never
-                        // touches the tile edge (Iced: padding right 4).
+                        // touches the tile edge (the reference's padding right 4).
                         ui.add_space(4.0);
                         let size = if available { 17.0 } else { 13.0 };
                         let color = if available {
                             theme::INDIGO_600
                         } else {
-                            theme::ICON_MUTED
+                            theme::SLATE_400
                         };
                         value_box(ui, value, size, color, value_height);
                     });
@@ -1002,23 +1012,31 @@ fn pattern_row(
         let widths = column_widths(ui.available_width());
         cell(ui, widths[0], false, |ui| {
             ui.spacing_mut().item_spacing.x = TABLE_GAP;
-            dot(ui, color);
+            // The mark centres on the label's line box (the reference's
+            // `items-center`), so it is handed the same line the label's own
+            // galley will occupy rather than a box of its own.
+            theme::legend_mark(
+                ui,
+                color,
+                4.0,
+                theme::line_height(ui, theme::BODY_TEXT_SIZE),
+            );
             label(
                 ui,
                 label_text,
                 theme::BODY_TEXT_SIZE,
-                theme::BODY_TEXT,
+                theme::SLATE_900,
                 true,
             );
         });
         cell(ui, widths[1], true, |ui| {
-            figure(ui, &grouped(count), theme::BODY_TEXT);
+            figure(ui, &grouped(count), theme::SLATE_900);
         });
         for ((value, present), width) in figures.into_iter().zip(&widths[2..]) {
             let ink = if present {
-                theme::BODY_TEXT
+                theme::SLATE_900
             } else {
-                theme::MUTED_TEXT
+                theme::SLATE_500
             };
             cell(ui, *width, true, |ui| figure(ui, &value, ink));
         }
@@ -1049,7 +1067,7 @@ fn column_widths(available: f32) -> [f32; 7] {
 
 /// Table header cell: the card title color, 11px heavy.
 fn heading(ui: &mut Ui, text: &str) {
-    label(ui, text, 11.0, theme::BODY_TEXT, true);
+    label(ui, text, 11.0, theme::SLATE_900, true);
 }
 
 /// Numeric table cell: right-aligned in the monospace face so decimal places
@@ -1068,13 +1086,7 @@ fn figure(ui: &mut Ui, value: &str, color: Color32) {
 fn hrule(ui: &mut Ui) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
     ui.painter()
-        .rect_filled(rect, CornerRadius::ZERO, theme::BORDER);
-}
-
-/// Small status or legend mark, as `dot(color)` drew it.
-fn dot(ui: &mut Ui, color: Color32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::splat(8.0), Sense::hover());
-    ui.painter().circle_filled(rect.center(), 4.0, color);
+        .rect_filled(rect, CornerRadius::ZERO, theme::SLATE_200);
 }
 
 fn duration_stat(micros: Option<u64>) -> (String, bool) {
@@ -1122,12 +1134,12 @@ fn grouped(value: u32) -> String {
 }
 
 /// A section title: the 16px glyph plus the heavy heading.
-fn section_title(ui: &mut Ui, glyph: Glyph, label_text: &str) {
+fn section_title(ui: &mut Ui, glyph: theme::Icon, label_text: &str) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
         let (rect, _) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
-        paint_glyph(ui.painter(), rect, glyph, theme::PRIMARY_TEXT);
-        label(ui, label_text, theme::HEADING_SIZE, theme::BODY_TEXT, true);
+        theme::paint_icon(ui.painter(), rect, glyph, theme::INDIGO_600);
+        label(ui, label_text, theme::HEADING_SIZE, theme::SLATE_900, true);
     });
 }
 
@@ -1157,7 +1169,7 @@ enum ButtonKind {
 
 fn action_button(
     ui: &mut Ui,
-    glyph: Glyph,
+    glyph: theme::Icon,
     label_text: &str,
     kind: ButtonKind,
     enabled: bool,
@@ -1165,11 +1177,11 @@ fn action_button(
     button(ui, Some(glyph), label_text, kind, enabled, true)
 }
 
-/// Label first, glyph last (the Iced `trailing_icon_label`, used by the
+/// Label first, glyph last (the reference's `trailing_icon_label`, used by the
 /// suggestions action).
 fn trailing_button(
     ui: &mut Ui,
-    glyph: Glyph,
+    glyph: theme::Icon,
     label_text: &str,
     kind: ButtonKind,
     enabled: bool,
@@ -1182,11 +1194,11 @@ fn plain_button(ui: &mut Ui, label_text: &str, kind: ButtonKind, enabled: bool) 
 }
 
 /// The action buttons. The port's theme owns the outlined variant
-/// (`theme::secondary_button`); the filled pair (primary, warning) and the
-/// non-action glyphs live here until a shared owner exists.
+/// (`theme::secondary_button`); the filled pair (primary, warning) lives here,
+/// and every glyph they draw is [`theme::Icon`]'s.
 fn button(
     ui: &mut Ui,
-    glyph: Option<Glyph>,
+    glyph: Option<theme::Icon>,
     label_text: &str,
     kind: ButtonKind,
     enabled: bool,
@@ -1235,7 +1247,12 @@ fn button(
     let text_y = rect.center().y - galley.size().y / 2.0;
     match (glyph, glyph_first) {
         (Some(glyph), true) => {
-            paint_glyph(&painter, icon_at(start), glyph, glyph_ink(glyph, ink));
+            theme::paint_icon(
+                &painter,
+                icon_at(start),
+                glyph,
+                theme::action_icon_ink(glyph, ink),
+            );
             theme::stamp_galley(
                 &painter,
                 Pos2::new(start + icon, text_y),
@@ -1252,11 +1269,11 @@ fn button(
                 ink,
                 theme::BUTTON_TEXT_SIZE,
             );
-            paint_glyph(
+            theme::paint_icon(
                 &painter,
                 icon_at(start + galley.size().x + theme::BUTTON_ICON_GAP),
                 glyph,
-                glyph_ink(glyph, ink),
+                theme::action_icon_ink(glyph, ink),
             );
         }
         (None, _) => {
@@ -1272,177 +1289,34 @@ fn button(
     response
 }
 
-/// The button shells and inks per kind and state (Iced `theme::primary_button`
+/// The button shells and inks per kind and state (the reference's
+/// `primary_button`
 /// / `theme::warning_button` / `theme::secondary_button`).
 fn button_ink(kind: ButtonKind, enabled: bool, hovered: bool) -> (Color32, Color32, Color32) {
     if !enabled {
-        return (theme::SURFACE, theme::BORDER, theme::SLATE_300);
+        return (theme::WHITE, theme::SLATE_200, theme::SLATE_300);
     }
     match kind {
         ButtonKind::Secondary => {
             if hovered {
-                (
-                    theme::HOVER_WASH,
-                    theme::NAME_HOVER_BORDER,
-                    theme::INDIGO_600,
-                )
+                (theme::INDIGO_50_60, theme::INDIGO_300, theme::INDIGO_600)
             } else {
-                (theme::SURFACE, theme::BORDER, theme::ICON_SECONDARY)
+                (theme::WHITE, theme::SLATE_200, theme::SLATE_600)
             }
         }
         ButtonKind::Primary => {
             if hovered {
-                (theme::INDIGO_700, theme::INDIGO_700, Color32::WHITE)
+                (theme::INDIGO_700, theme::INDIGO_700, theme::WHITE)
             } else {
-                (theme::INDIGO_600, theme::INDIGO_700, Color32::WHITE)
+                (theme::INDIGO_600, theme::INDIGO_700, theme::WHITE)
             }
         }
         ButtonKind::Warning => {
             if hovered {
-                (theme::AMBER_DARK, theme::AMBER_DARK, Color32::WHITE)
+                (theme::AMBER_700, theme::AMBER_700, theme::WHITE)
             } else {
-                (theme::AMBER_BUTTON, theme::AMBER_DARK, Color32::WHITE)
+                (theme::AMBER_600, theme::AMBER_700, theme::WHITE)
             }
-        }
-    }
-}
-
-/// Restore affordances keep the reference's slate-600 ink; every other glyph
-/// inherits the button text color.
-fn glyph_ink(glyph: Glyph, ink: Color32) -> Color32 {
-    if glyph == Glyph::Restore {
-        theme::ICON_SECONDARY
-    } else {
-        ink
-    }
-}
-
-/// The glyphs this page needs. The theme owns Keyboard / Restore / Edit /
-/// Check / Warning; the page glyphs from `iced-ui/icons.rs` are traced here
-/// until a shared icon owner exists (the same pending wave as the header's
-/// and mapping's private sets).
-#[derive(Clone, Copy, PartialEq)]
-enum Glyph {
-    Restore,
-    Revert,
-    Check,
-    Warning,
-    Chart,
-    Measurement,
-    Star,
-    Play,
-    Stop,
-    ArrowForward,
-}
-
-fn paint_glyph(painter: &Painter, rect: Rect, glyph: Glyph, color: Color32) {
-    match glyph {
-        Glyph::Restore => theme::paint_icon(painter, rect, theme::Icon::Restore, color),
-        Glyph::Check => theme::paint_icon(painter, rect, theme::Icon::Check, color),
-        Glyph::Warning => theme::paint_icon(painter, rect, theme::Icon::Warning, color),
-        Glyph::Revert => {
-            let size = rect.width().min(rect.height());
-            let stroke = Stroke::new((size * 0.1).max(1.2), color);
-            let point = |x: f32, y: f32| Pos2::new(rect.left() + x * size, rect.top() + y * size);
-            painter.add(Shape::CubicBezier(
-                egui::epaint::CubicBezierShape::from_points_stroke(
-                    [
-                        point(0.85, 0.65),
-                        point(0.85, 0.25),
-                        point(0.4, 0.25),
-                        point(0.25, 0.45),
-                    ],
-                    false,
-                    Color32::TRANSPARENT,
-                    stroke,
-                ),
-            ));
-            painter.add(Shape::line(
-                vec![point(0.25, 0.25), point(0.15, 0.45), point(0.4, 0.55)],
-                stroke,
-            ));
-        }
-        Glyph::Chart => {
-            let size = rect.width().min(rect.height());
-            let quad = |x: f32, y: f32, width: f32, height: f32| {
-                painter.rect_filled(
-                    Rect::from_min_size(
-                        Pos2::new(rect.left() + x * size, rect.top() + y * size),
-                        Vec2::new(width * size, height * size),
-                    ),
-                    CornerRadius::ZERO,
-                    color,
-                );
-            };
-            quad(0.15, 0.8, 0.7, 0.1);
-            for (x, height) in [(0.2095, 0.266), (0.423, 0.574), (0.6365, 0.406)] {
-                quad(x, 0.85 - height, 0.154, height);
-            }
-        }
-        Glyph::Measurement => {
-            let size = rect.width().min(rect.height());
-            let stroke = Stroke::new((size * 0.1).max(1.2), color);
-            let point = |x: f32, y: f32| Pos2::new(rect.left() + x * size, rect.top() + y * size);
-            painter.add(Shape::line(
-                vec![
-                    point(0.15, 0.5),
-                    point(0.3, 0.5),
-                    point(0.42, 0.18),
-                    point(0.6, 0.82),
-                    point(0.72, 0.5),
-                    point(0.85, 0.5),
-                ],
-                stroke,
-            ));
-        }
-        Glyph::Star => {
-            let size = rect.width().min(rect.height());
-            let center = rect.center();
-            let star = (0..10)
-                .map(|index| {
-                    let angle =
-                        -std::f32::consts::PI / 2.0 + index as f32 * std::f32::consts::PI / 5.0;
-                    let radius = if index % 2 == 0 { 0.45 } else { 0.2 } * size;
-                    Pos2::new(
-                        center.x + angle.cos() * radius,
-                        center.y + angle.sin() * radius,
-                    )
-                })
-                .collect();
-            painter.add(Shape::convex_polygon(star, color, Stroke::NONE));
-        }
-        Glyph::Play => {
-            let size = rect.width().min(rect.height());
-            let point = |x: f32, y: f32| Pos2::new(rect.left() + x * size, rect.top() + y * size);
-            painter.add(Shape::convex_polygon(
-                vec![point(0.23, 0.15), point(0.85, 0.5), point(0.23, 0.85)],
-                color,
-                Stroke::NONE,
-            ));
-        }
-        Glyph::Stop => {
-            let size = rect.width().min(rect.height());
-            painter.rect_filled(
-                Rect::from_min_size(
-                    Pos2::new(rect.left() + 0.2 * size, rect.top() + 0.2 * size),
-                    Vec2::splat(0.6 * size),
-                ),
-                CornerRadius::ZERO,
-                color,
-            );
-        }
-        Glyph::ArrowForward => {
-            let size = rect.width().min(rect.height());
-            let stroke = Stroke::new((size * 0.1).max(1.2), color);
-            let point = |x: f32, y: f32| Pos2::new(rect.left() + x * size, rect.top() + y * size);
-            painter.add(Shape::line(
-                vec![point(0.15, 0.5), point(0.85, 0.5)],
-                stroke,
-            ));
-            painter.add(Shape::line(
-                vec![point(0.6, 0.25), point(0.85, 0.5), point(0.6, 0.75)],
-                stroke,
-            ));
         }
     }
 }
@@ -1607,7 +1481,7 @@ mod tests {
     }
 
     /// R2 round-2 finding 1: the shipped page must mount `preview::preview_card`
-    /// (procedural paths, the 850 ms clock), not T4's placeholder. The
+    /// (the theme's glyph paths, the 850 ms clock), not T4's placeholder. The
     /// transport glyphs are paths here, and a tick advances the phase once the
     /// clock's deadline passes.
     #[test]
@@ -1615,19 +1489,19 @@ mod tests {
         let mut harness = harness(baseline_state());
         harness.run();
 
-        // The transport controls are procedural paths, not font glyphs.
+        // The transport controls are glyph paths, not font glyphs.
         let paths = painted_paths(&harness);
         assert!(
             paths
                 .iter()
-                .any(|path| path.closed && path.fill == theme::MUTED_TEXT),
+                .any(|path| path.closed && path.fill == theme::SLATE_400),
             "the paused pill draws the Play triangle as a filled path"
         );
         assert!(
             paths
                 .iter()
                 .filter(|path| {
-                    path.stroke.color == egui::epaint::ColorMode::Solid(theme::ICON_MUTED)
+                    path.stroke.color == egui::epaint::ColorMode::Solid(theme::SLATE_400)
                 })
                 .count()
                 >= 2,
@@ -1920,8 +1794,74 @@ mod tests {
                 1,
                 "{value} is painted once, without a bold stamp: {drawn:?}"
             );
-            assert_eq!(drawn[0].fallback_color, theme::BODY_TEXT, "{value}");
+            assert_eq!(drawn[0].fallback_color, theme::SLATE_900, "{value}");
         }
+    }
+
+    /// Every circle this frame painted, flattened out of `Shape::Vec`.
+    fn painted_circles<State>(harness: &Harness<'_, State>) -> Vec<egui::epaint::CircleShape> {
+        fn collect(shape: &egui::Shape, out: &mut Vec<egui::epaint::CircleShape>) {
+            match shape {
+                egui::Shape::Circle(circle) => out.push(*circle),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for clipped in &harness.output().shapes {
+            collect(&clipped.shape, &mut out);
+        }
+        out
+    }
+
+    /// The table's legend mark centres on its label's line, the way the
+    /// reference's `flex items-center` row does. The mark is 8px and the line
+    /// is a 14px one, so a mark that centres on its own box -- or on a row
+    /// that has already collapsed -- sits 4px above the text it labels, which
+    /// is the defect this pins. The check is against the *painted* galley, so
+    /// it holds at whatever line height the installed face resolves to.
+    #[test]
+    fn the_latency_legend_marks_centre_on_their_labels() {
+        let mut state = baseline_state();
+        open_measurement(&mut state);
+        let mut harness = harness(state);
+        harness.run();
+
+        let circles = painted_circles(&harness);
+        let shapes = painted_text_shapes(&harness);
+        let mut checked = 0;
+        for (text, ink) in [
+            ("Neutral transition", theme::EMERALD_500),
+            ("Physical overlap", theme::AMBER_500),
+            ("Indistinguishable", theme::RED_500),
+        ] {
+            let shape = shapes
+                .iter()
+                .find(|shape| shape.galley.text() == text)
+                .unwrap_or_else(|| panic!("missing the {text} label"));
+            let center = shape.pos.y + shape.galley.size().y / 2.0;
+            let mark = circles
+                .iter()
+                .filter(|circle| circle.fill == ink && circle.radius == 4.0)
+                .min_by(|a, b| {
+                    let da = (a.center.y - center).abs();
+                    let db = (b.center.y - center).abs();
+                    da.partial_cmp(&db).unwrap()
+                })
+                .unwrap_or_else(|| panic!("missing the {text} legend mark"));
+            let offset = mark.center.y - center;
+            assert!(
+                offset.abs() <= 0.5,
+                "{text}: the legend mark must centre on its label's line, \
+                 but sits {offset} off it"
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 3, "all three legend rows were checked");
     }
 
     /// F15 + F21 + F23 (APP-MEASUREMENT-FORMAT-AND-ACCENTS): the integer metrics
@@ -2016,7 +1956,7 @@ mod tests {
                 );
             harness.run();
 
-            let mut frames = painted_rects_filled(&harness, theme::INSET);
+            let mut frames = painted_rects_filled(&harness, theme::SLATE_50_80);
             frames.sort_by(|a, b| a.min.x.total_cmp(&b.min.x));
             assert_eq!(frames.len(), 2, "{case}: two tile frames: {frames:?}");
             let (first, second) = (frames[0], frames[1]);
@@ -2109,12 +2049,18 @@ mod tests {
 
     /// The row re-measures instead of keeping a stale height: the taller card
     /// changes with the mode, and switching back restores the first height.
+    ///
+    /// The mapping card is the taller of the two in every mode (432), so the
+    /// row's target no longer moves with the mode. What still moves is the
+    /// **timing** card's own natural height, which is what the re-measure
+    /// exists to track; the row must not keep a stale target when it changes.
     #[test]
     fn the_card_row_re_measures_when_the_mode_changes() {
         let mut harness = harness(baseline_state());
         harness.run();
         let (immediate_mapping, immediate_timing) = harness.state().cards;
         assert_eq!(immediate_mapping.height(), immediate_timing.height());
+        let immediate_natural = natural_height(&harness, "timing");
 
         harness
             .state_mut()
@@ -2127,11 +2073,10 @@ mod tests {
         harness.run();
         let (press_mapping, press_timing) = harness.state().cards;
         assert_eq!(press_mapping.height(), press_timing.height());
+        let press_natural = natural_height(&harness, "timing");
         assert!(
-            press_mapping.height() < immediate_mapping.height(),
-            "the row must shrink to the shorter mode, got {} then {}",
-            immediate_mapping.height(),
-            press_mapping.height()
+            press_natural < immediate_natural,
+            "the timing card must measure shorter in Press Delay, got {immediate_natural} then {press_natural}"
         );
 
         harness
@@ -2150,6 +2095,19 @@ mod tests {
             immediate_mapping.height(),
             "returning to a mode restores its shared height"
         );
+        assert_eq!(
+            natural_height(&harness, "timing"),
+            immediate_natural,
+            "returning to a mode restores the timing card's natural height"
+        );
+    }
+
+    /// The natural height a card published before the row stretched it.
+    fn natural_height<State>(harness: &Harness<'_, State>, card: &'static str) -> f32 {
+        harness
+            .ctx
+            .data(|data| data.get_temp::<f32>(card_natural_id(card)))
+            .unwrap_or(0.0)
     }
 
     /// Every card-chrome frame the last frame painted, in paint order: a
@@ -2158,8 +2116,8 @@ mod tests {
         fn collect(shape: &egui::Shape, out: &mut Vec<egui::epaint::RectShape>) {
             match shape {
                 egui::Shape::Rect(rect)
-                    if rect.fill == theme::SURFACE
-                        && rect.stroke.color == theme::CARD_BORDER
+                    if rect.fill == theme::WHITE
+                        && rect.stroke.color == theme::INDIGO_200_80
                         && (rect.stroke.width - 2.0).abs() < 0.01 =>
                 {
                     out.push(rect.clone());
@@ -2180,10 +2138,23 @@ mod tests {
     }
 
     /// The page's canvas: the PAGE_PADDING frame's outer bounds.
+    ///
+    /// `page` paints the canvas as a bare `rect_filled` over the whole viewport
+    /// -- white, square-cornered, and unstroked -- while every white surface
+    /// *on* it is a frame with a radius and an edge. So the radius and the
+    /// absent stroke are what separate the canvas from the cards it carries;
+    /// the area is then only a tie-break among the square white marks (glyph
+    /// quads), which are all small.
     fn canvas_rect<State>(harness: &Harness<'_, State>) -> Rect {
         fn collect(shape: &egui::Shape, out: &mut Vec<Rect>) {
             match shape {
-                egui::Shape::Rect(rect) if rect.fill == theme::CANVAS => out.push(rect.rect),
+                egui::Shape::Rect(rect)
+                    if rect.fill == theme::WHITE
+                        && rect.corner_radius == CornerRadius::ZERO
+                        && rect.stroke == Stroke::NONE =>
+                {
+                    out.push(rect.rect);
+                }
                 egui::Shape::Vec(shapes) => {
                     for shape in shapes {
                         collect(shape, out);

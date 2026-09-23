@@ -8,12 +8,16 @@ use std::{
 };
 
 use egui::{
-    Color32, CornerRadius, FontId, Painter, Pos2, Rect, Response, Sense, Stroke, Ui, Vec2,
+    Color32, CornerRadius, FontId, Id, Painter, Pos2, Rect, Response, Sense, Stroke, Ui, Vec2,
     WidgetInfo, WidgetType,
 };
 
-use super::{language::Language, message::Message, theme};
+use super::{keycap, language::Language, message::Message, theme};
 use crate::protocol::{KeySlot, MonitorDecision, MonitorEdge, MonitorSnapshot};
+
+/// Which way a lane's arrow points: the shared direction type, so the four
+/// lanes and the D-pad's four caps are the same four directions.
+use keycap::Arrow;
 
 /// How much history the graph keeps on screen.
 pub const WINDOW_MICROS: u64 = 1_000_000;
@@ -183,15 +187,6 @@ pub const fn index(key: KeySlot) -> usize {
 // Graph painter
 // ---------------------------------------------------------------------------
 
-/// Which way a lane's keycap arrow points.
-#[derive(Clone, Copy)]
-enum Arrow {
-    Up,
-    Down,
-    Left,
-    Right,
-}
-
 /// One lane's display identity from the reference canvas theme: the signal
 /// color plus the tint, border, and ring it takes while its key is held.
 struct Lane {
@@ -202,54 +197,43 @@ struct Lane {
     arrow: Arrow,
 }
 
-// The Iced source writes float alphas (`Color::from_rgba8(.., 0.12)`); egui
-// stores premultiplied bytes, so each alpha is rounded to the nearest byte
-// (0.12 * 255 = 30.6 -> 31). The colour channels are the Iced bytes verbatim.
+// Alphas are stored as premultiplied bytes, so each one is rounded to the
+// nearest byte (0.12 * 255 = 30.6 -> 31).
+//
+// Every value is a Tailwind step and every one of them resolves to a `theme.rs`
+// token, so the lanes read the theme rather than restating it. `held_fill` and
+// `held_ring` are the base at a straight alpha, so they take
+// [`theme::with_alpha`] over the ramp step.
 const LANES: [Lane; 4] = [
     Lane {
-        signal: Color32::from_rgb(37, 99, 235),
-        held_fill: Color32::from_rgba_unmultiplied_const(37, 99, 235, 31),
-        held_border: Color32::from_rgb(29, 78, 216),
-        held_ring: Color32::from_rgba_unmultiplied_const(191, 219, 254, 230),
+        signal: theme::BLUE_600,
+        held_fill: theme::with_alpha(theme::BLUE_600, 31),
+        held_border: theme::BLUE_700,
+        held_ring: theme::with_alpha(theme::BLUE_200, 230),
         arrow: Arrow::Up,
     },
     Lane {
-        signal: Color32::from_rgb(124, 58, 237),
-        held_fill: Color32::from_rgba_unmultiplied_const(139, 92, 246, 31),
-        held_border: Color32::from_rgb(109, 40, 217),
-        held_ring: Color32::from_rgba_unmultiplied_const(221, 214, 254, 230),
+        signal: theme::VIOLET_600,
+        held_fill: theme::with_alpha(theme::VIOLET_500, 31),
+        held_border: theme::VIOLET_700,
+        held_ring: theme::with_alpha(theme::VIOLET_200, 230),
         arrow: Arrow::Down,
     },
     Lane {
-        signal: Color32::from_rgb(79, 70, 229),
-        held_fill: Color32::from_rgba_unmultiplied_const(99, 102, 241, 31),
-        held_border: Color32::from_rgb(67, 56, 202),
-        held_ring: Color32::from_rgba_unmultiplied_const(199, 210, 254, 230),
+        signal: theme::INDIGO_600,
+        held_fill: theme::with_alpha(theme::INDIGO_500, 31),
+        held_border: theme::INDIGO_700,
+        held_ring: theme::with_alpha(theme::INDIGO_200, 230),
         arrow: Arrow::Left,
     },
     Lane {
-        signal: Color32::from_rgb(147, 51, 234),
-        held_fill: Color32::from_rgba_unmultiplied_const(147, 51, 234, 31),
-        held_border: Color32::from_rgb(126, 34, 206),
-        held_ring: Color32::from_rgba_unmultiplied_const(233, 213, 255, 230),
+        signal: theme::PURPLE_600,
+        held_fill: theme::with_alpha(theme::PURPLE_600, 31),
+        held_border: theme::PURPLE_700,
+        held_ring: theme::with_alpha(theme::PURPLE_200, 230),
         arrow: Arrow::Right,
     },
 ];
-
-const LANE_IDLE: Color32 = Color32::from_rgb(248, 250, 252);
-const LANE_BORDER: Color32 = Color32::from_rgb(226, 232, 240);
-const CAP_SURFACE: Color32 = Color32::WHITE;
-const CAP_SHADOW: Color32 = Color32::from_rgba_unmultiplied_const(0, 0, 0, 13);
-const CAP_TEXT: Color32 = Color32::from_rgb(15, 23, 42);
-const OVERLAP_FILL: Color32 = Color32::from_rgba_unmultiplied_const(99, 102, 241, 46);
-/// A still-open overlap reads stronger than a settled one.
-const OVERLAP_FILL_LIVE: Color32 = Color32::from_rgba_unmultiplied_const(99, 102, 241, 66);
-const OVERLAP_EDGE: Color32 = Color32::from_rgb(79, 70, 229);
-const BADGE_FILL: Color32 = Color32::from_rgb(30, 27, 75);
-const BADGE_EDGE: Color32 = Color32::from_rgb(129, 140, 248);
-const RULER_LINE: Color32 = Color32::from_rgb(203, 213, 225);
-const RULER_TEXT: Color32 = Color32::from_rgb(71, 85, 105);
-const NEEDLE: Color32 = Color32::from_rgb(79, 70, 229);
 
 /// Left gutter holding the per-lane keycaps, matching the reference's 62 px
 /// label column.
@@ -302,7 +286,7 @@ pub fn graph(
 
     let now = timeline.map_or(0, Timeline::now);
     let painter = ui.painter_at(rect);
-    draw_graph(&painter, rect, timeline, &names, now);
+    draw_graph(ui, &painter, rect, timeline, &names, now);
 
     let animate = timeline.is_some_and(|timeline| {
         timeline.held_since.iter().any(Option::is_some)
@@ -321,6 +305,7 @@ pub fn graph(
 /// keycaps, and ruler so the card does not flash empty between the start
 /// request and the first monitor event.
 fn draw_graph(
+    ui: &Ui,
     painter: &Painter,
     rect: Rect,
     timeline: Option<&Timeline>,
@@ -331,7 +316,7 @@ fn draw_graph(
     for (row, lane) in LANES.iter().enumerate() {
         let held = timeline.is_some_and(|timeline| timeline.held_since[row].is_some());
         draw_track(painter, rect, &axis, row, lane, held);
-        draw_keycap(painter, rect, &axis, row, lane, names[row], held);
+        draw_keycap(ui, rect, &axis, row, lane, names[row], held);
     }
     if let Some(timeline) = timeline {
         for (row, lane) in LANES.iter().enumerate() {
@@ -394,12 +379,20 @@ impl Axis {
 
 /// One lane's rounded background, its clipped time grid, and its border.
 /// A held lane takes the reference's accent tint and a heavier border.
+///
+/// A resting lane is [`theme::WHITE`] on the frame's slate inset, so the
+/// canvas reads as content sitting in a recess rather than as a grey panel on
+/// a white one -- the layering the timing and measurement cards already use.
 fn draw_track(painter: &Painter, rect: Rect, axis: &Axis, row: usize, lane: &Lane, held: bool) {
     let track = axis.track(rect, row);
     let radius = CornerRadius::same(LANE_RADIUS as u8);
-    painter.rect_filled(track, radius, if held { lane.held_fill } else { LANE_IDLE });
+    painter.rect_filled(
+        track,
+        radius,
+        if held { lane.held_fill } else { theme::WHITE },
+    );
     let clipped = painter.with_clip_rect(track);
-    let grid = Stroke::new(1.0, LANE_BORDER);
+    let grid = Stroke::new(1.0, theme::SLATE_200);
     let mut tick = RULER_STEP_MICROS;
     while tick < WINDOW_MICROS {
         let x = axis.left + axis.width * (1.0 - tick as f32 / WINDOW_MICROS as f32);
@@ -414,7 +407,11 @@ fn draw_track(painter: &Painter, rect: Rect, axis: &Axis, row: usize, lane: &Lan
         radius,
         Stroke::new(
             if held { 1.5 } else { 1.0 },
-            if held { lane.held_border } else { LANE_BORDER },
+            if held {
+                lane.held_border
+            } else {
+                theme::SLATE_200
+            },
         ),
         egui::StrokeKind::Middle,
     );
@@ -437,156 +434,128 @@ fn draw_blocks(
             continue;
         };
         let width = (x1 - x0).max(4.0);
-        // The Iced block radius is 5.5; egui stores integer corner radii.
+        // The reference's block radius is 5.5; egui stores integer corner
+        // radii, so it rounds to 6.
         let block = Rect::from_min_size(
             Pos2::new(x0, track.top() + 4.0),
             Vec2::new(width, track.height() - 8.0),
         );
-        let radius = CornerRadius::same(6);
+        let radius = theme::CHIP_RADIUS;
         clipped.rect_filled(block, radius, lane.signal);
         if open {
             clipped.rect_stroke(
                 block,
                 radius,
-                Stroke::new(1.5, Color32::WHITE),
+                Stroke::new(1.5, theme::WHITE),
                 egui::StrokeKind::Middle,
             );
         }
         let label = millis(end.saturating_sub(start));
         let size = 9.0;
-        let galley = clipped.layout_no_wrap(
-            label.clone(),
-            FontId::new(size, theme::UI_FONT),
-            Color32::PLACEHOLDER,
-        );
+        let galley = theme::line_galley(&clipped, &label, size);
         if width >= galley.size().x + 6.0 {
             let center = Pos2::new(x0 + width / 2.0, track.center().y);
             theme::stamp_galley(
                 &clipped,
                 center - galley.size() / 2.0,
                 &galley,
-                Color32::WHITE,
+                theme::WHITE,
                 size,
             );
         }
     }
 }
 
-/// The keycap in the left gutter: the reference's white cap that fills with
-/// the lane accent, sinks 1.5 px, and gains a ring while its key is held.
-fn draw_keycap(
-    painter: &Painter,
-    rect: Rect,
-    axis: &Axis,
-    row: usize,
-    lane: &Lane,
-    name: &str,
-    held: bool,
-) {
+/// The keycap in the left gutter: the shared keycap chrome
+/// ([`keycap::paint_surface`]) at the canvas's 40px cap size, carrying the
+/// key's label over its direction arrow.
+///
+/// The reference's canvas draws this cap inline and expresses its held state
+/// as a 1.5px descent rather than a `scale-95`. The window's keycaps are one
+/// component, though -- the D-pad, the preview, and this gutter all paint the
+/// same compression, glow, ring, and inset shadow -- so a press reads
+/// identically wherever it lands. Only the cap's size, radius, edge weight,
+/// ring width, and content are local to this surface.
+fn draw_keycap(ui: &Ui, rect: Rect, axis: &Axis, row: usize, lane: &Lane, name: &str, held: bool) {
     let x = rect.left() + ((LABEL_GUTTER - CAP_SIZE) / 2.0).round();
     let y = axis.track(rect, row).top() + ((LANE_HEIGHT - CAP_SIZE) / 2.0).round();
-    let surface_y = if held { y + 1.5 } else { y };
-    let cap = |top: f32, inset: f32| {
-        Rect::from_min_size(
-            Pos2::new(x - inset, top - inset),
-            Vec2::splat(CAP_SIZE + 2.0 * inset),
-        )
-    };
-    let radius = CornerRadius::same(CAP_RADIUS as u8);
-    if held {
-        // The ring is the rounded rect's stroke offset 2px outward.
-        painter.rect_stroke(
-            cap(surface_y, 2.0),
-            CornerRadius::same((CAP_RADIUS + 2.0) as u8),
-            Stroke::new(2.5, lane.held_ring),
-            egui::StrokeKind::Middle,
-        );
-        painter.rect_filled(cap(surface_y, 0.0), radius, lane.signal);
-        painter.rect_stroke(
-            cap(surface_y, 0.0),
-            radius,
-            Stroke::new(1.5, lane.held_border),
-            egui::StrokeKind::Middle,
-        );
-    } else {
-        painter.rect_filled(cap(y + 1.5, 0.0), radius, CAP_SHADOW);
-        painter.rect_filled(cap(y, 0.0), radius, CAP_SURFACE);
-        painter.rect_stroke(
-            cap(y, 0.0),
-            radius,
-            Stroke::new(1.0, LANE_BORDER),
-            egui::StrokeKind::Middle,
-        );
-    }
-    let ink = if held { Color32::WHITE } else { CAP_TEXT };
-    let center_x = x + CAP_SIZE / 2.0;
-    let lines = key_label_lines(name);
-    // Shrink the label until the widest line clears the cap's 4 px padding,
-    // so a long key name stays inside the cap instead of bleeding over it.
-    let mut size = if lines.len() > 1 {
-        10.0
-    } else if name.chars().count() <= 2 {
-        14.0
-    } else {
-        11.0
-    };
-    while size > 6.0
-        && lines
-            .iter()
-            .any(|line| text_width(painter, line, size) > CAP_SIZE - 8.0)
-    {
-        size -= 0.5;
-    }
-    let baseline = surface_y + 16.5;
-    if let [single] = lines.as_slice() {
-        centered_text(painter, Pos2::new(center_x, baseline), single, size, ink);
-    } else {
-        let step = (size + 0.5) / 2.0;
-        for (index, line) in lines.iter().enumerate() {
-            let offset = if index == 0 { -step } else { step };
-            centered_text(
+    let cap = Rect::from_min_size(Pos2::new(x, y), Vec2::splat(CAP_SIZE));
+    let scale = keycap::press_scale(ui, Id::new("ui-timeline-cap-scale").with(row), held);
+    let ink = if held { theme::WHITE } else { theme::SLATE_900 };
+    keycap::paint_surface(
+        ui,
+        &keycap::Surface {
+            rect: cap,
+            radius: CornerRadius::same(CAP_RADIUS as u8),
+            fill: if held { lane.signal } else { theme::WHITE },
+            edge: Stroke::new(
+                if held { 1.5 } else { 1.0 },
+                if held {
+                    lane.held_border
+                } else {
+                    theme::SLATE_200
+                },
+            ),
+            shadow: if held {
+                keycap::glow(lane.held_ring, theme::KEYCAP_PRESSED_GLOW_BLUR)
+            } else {
+                theme::SHADOW_XS
+            },
+            inner_shadow: held,
+            // The canvas draws its ring 2.5px wide, heavier than the other
+            // two surfaces' `ring-2`; the width stays local, the alignment
+            // does not. It belongs to the same element as the box, so the
+            // `scale-95` compresses it the way it compresses the other two.
+            ring: held.then_some((2.5 * scale, lane.held_ring)),
+            scale,
+        },
+        |painter, box_rect| {
+            let center_x = box_rect.center().x;
+            let lines = keycap::key_lines(name);
+            // Shrink the label until the widest line clears the cap's 4 px
+            // padding, so a long key name stays inside the cap instead of
+            // bleeding over it.
+            let mut size = if lines.len() > 1 {
+                10.0
+            } else if name.chars().count() <= 2 {
+                14.0
+            } else {
+                11.0
+            };
+            while size > 6.0
+                && lines
+                    .iter()
+                    .any(|line| theme::line_width(painter, line, size) > CAP_SIZE - 8.0)
+            {
+                size -= 0.5;
+            }
+            let baseline = box_rect.top() + 16.5;
+            if let [single] = lines.as_slice() {
+                centered_text(painter, Pos2::new(center_x, baseline), single, size, ink);
+            } else {
+                let step = (size + 0.5) / 2.0;
+                for (index, line) in lines.iter().enumerate() {
+                    let offset = if index == 0 { -step } else { step };
+                    centered_text(
+                        painter,
+                        Pos2::new(center_x, baseline + offset),
+                        line,
+                        size,
+                        ink,
+                    );
+                }
+            }
+            keycap::paint_arrow(
                 painter,
-                Pos2::new(center_x, baseline + offset),
-                line,
-                size,
+                Rect::from_center_size(
+                    Pos2::new(center_x, box_rect.top() + 29.5),
+                    Vec2::splat(9.0),
+                ),
+                lane.arrow,
                 ink,
             );
-        }
-    }
-    draw_arrow(
-        painter,
-        Pos2::new(center_x, surface_y + 29.5),
-        lane.arrow,
-        ink,
+        },
     );
-}
-
-/// The keycap's direction glyph: a shaft with a two-stroke head.
-fn draw_arrow(painter: &Painter, center: Pos2, arrow: Arrow, color: Color32) {
-    let (dx, dy) = match arrow {
-        Arrow::Up => (0.0, -1.0),
-        Arrow::Down => (0.0, 1.0),
-        Arrow::Left => (-1.0, 0.0),
-        Arrow::Right => (1.0, 0.0),
-    };
-    let tip = Pos2::new(center.x + dx * 3.2, center.y + dy * 3.2);
-    let tail = Pos2::new(center.x - dx * 3.2, center.y - dy * 3.2);
-    let stroke = Stroke::new(1.4, color);
-    painter.line_segment([tail, tip], stroke);
-    // The head's wings sit perpendicular to the shaft, so the normal is the
-    // direction vector rotated a quarter turn.
-    for side in [-1.0_f32, 1.0] {
-        painter.line_segment(
-            [
-                Pos2::new(
-                    tip.x - dx * 2.5 + dy * 2.5 * side,
-                    tip.y - dy * 2.5 + dx * 2.5 * side,
-                ),
-                tip,
-            ],
-            stroke,
-        );
-    }
 }
 
 /// Overlap columns per axis pair, with a millisecond badge above the
@@ -611,12 +580,12 @@ fn draw_overlaps(painter: &Painter, rect: Rect, axis: &Axis, timeline: &Timeline
                     Rect::from_min_size(Pos2::new(x0, top), Vec2::new(span, PAIR_HEIGHT)),
                     CornerRadius::ZERO,
                     if live {
-                        OVERLAP_FILL_LIVE
+                        theme::INDIGO_500_25
                     } else {
-                        OVERLAP_FILL
+                        theme::INDIGO_500_20
                     },
                 );
-                let edge = Stroke::new(1.0, OVERLAP_EDGE);
+                let edge = Stroke::new(1.0, theme::INDIGO_600);
                 painter.line_segment(
                     [
                         Pos2::new(x0 + 0.5, top),
@@ -631,17 +600,13 @@ fn draw_overlaps(painter: &Painter, rect: Rect, axis: &Axis, timeline: &Timeline
                     ],
                     edge,
                 );
-                let long_edge = Stroke::new(1.5, OVERLAP_EDGE);
+                let long_edge = Stroke::new(1.5, theme::INDIGO_600);
                 for y in [top + 0.5, top + PAIR_HEIGHT - 0.5] {
                     painter.line_segment([Pos2::new(x0, y), Pos2::new(x1, y)], long_edge);
                 }
                 let label = millis(end.saturating_sub(start));
                 let size = 9.0;
-                let galley = painter.layout_no_wrap(
-                    label.clone(),
-                    FontId::new(size, theme::UI_FONT),
-                    Color32::PLACEHOLDER,
-                );
+                let galley = theme::line_galley(painter, &label, size);
                 let badge_w = galley.size().x + 10.0;
                 // Keep the badge on screen when the overlap sits at an edge.
                 let center =
@@ -654,7 +619,7 @@ fn draw_overlaps(painter: &Painter, rect: Rect, axis: &Axis, timeline: &Timeline
                 };
                 if span >= 48.0 {
                     let dimension_y = (badge_y + BADGE_HEIGHT / 2.0).round();
-                    let rule = Stroke::new(1.0, OVERLAP_EDGE);
+                    let rule = Stroke::new(1.0, theme::INDIGO_600);
                     for (from, to) in [
                         (x0 + 2.0, badge_x - 2.0),
                         (badge_x + badge_w + 2.0, x1 - 2.0),
@@ -671,19 +636,19 @@ fn draw_overlaps(painter: &Painter, rect: Rect, axis: &Axis, timeline: &Timeline
                     Pos2::new(badge_x, badge_y),
                     Vec2::new(badge_w, BADGE_HEIGHT),
                 );
-                let radius = CornerRadius::same(4);
-                painter.rect_filled(badge, radius, BADGE_FILL);
+                let radius = theme::BADGE_RADIUS;
+                painter.rect_filled(badge, radius, theme::INDIGO_950);
                 painter.rect_stroke(
                     badge,
                     radius,
-                    Stroke::new(1.0, BADGE_EDGE),
+                    Stroke::new(1.0, theme::INDIGO_400),
                     egui::StrokeKind::Middle,
                 );
                 theme::stamp_galley(
                     painter,
                     Pos2::new(center.round(), badge_y + BADGE_HEIGHT / 2.0) - galley.size() / 2.0,
                     &galley,
-                    Color32::WHITE,
+                    theme::WHITE,
                     size,
                 );
                 if live {
@@ -692,7 +657,7 @@ fn draw_overlaps(painter: &Painter, rect: Rect, axis: &Axis, timeline: &Timeline
                     } else {
                         top + PAIR_HEIGHT + 7.0
                     };
-                    painter.circle_filled(Pos2::new(x1, dot_y), 2.5, NEEDLE);
+                    painter.circle_filled(Pos2::new(x1, dot_y), 2.5, theme::INDIGO_600);
                 }
             }
         }
@@ -706,7 +671,7 @@ fn draw_needle(painter: &Painter, rect: Rect, axis: &Axis) {
             Pos2::new(axis.now_x, rect.top() + TOP_MARGIN),
             Pos2::new(axis.now_x, rect.top() + lane_y(3) + LANE_HEIGHT),
         ],
-        Stroke::new(1.5, NEEDLE),
+        Stroke::new(1.5, theme::INDIGO_600),
     );
 }
 
@@ -730,14 +695,14 @@ fn draw_ruler(painter: &Painter, rect: Rect, axis: &Axis) {
         } else {
             format!("-{}ms", at / 1_000)
         };
-        let text_w = text_width(painter, &label, 10.0);
+        let text_w = theme::line_width(painter, &label, 10.0);
         let (left, color, bold) = if at == 0 {
-            (axis.now_x - 14.0 - text_w, NEEDLE, true)
+            (axis.now_x - 14.0 - text_w, theme::INDIGO_600, true)
         } else if at == WINDOW_MICROS {
-            (axis.left + 2.0, RULER_TEXT, false)
+            (axis.left + 2.0, theme::SLATE_600, false)
         } else {
             let center = axis.left + axis.width * (1.0 - at as f32 / WINDOW_MICROS as f32);
-            (center - text_w / 2.0, RULER_TEXT, false)
+            (center - text_w / 2.0, theme::SLATE_600, false)
         };
         ticks.push(Tick {
             label,
@@ -751,7 +716,7 @@ fn draw_ruler(painter: &Painter, rect: Rect, axis: &Axis) {
         }
         at = at.saturating_sub(RULER_STEP_MICROS);
     }
-    let rule = Stroke::new(1.0, RULER_LINE);
+    let rule = Stroke::new(1.0, theme::SLATE_300);
     let segment = |from: f32, to: f32| {
         if to > from {
             painter.line_segment([Pos2::new(from, y), Pos2::new(to, y)], rule);
@@ -777,23 +742,27 @@ fn draw_ruler(painter: &Painter, rect: Rect, axis: &Axis) {
     }
 }
 
-/// A 16px header mark matching `icons::Name::Target`: an outer ring at 0.35
-/// of the box with a filled centre at 35% of that radius. The shared
-/// `theme::Icon` set does not carry it, and this card is its only consumer.
-fn paint_target_icon(painter: &Painter, rect: Rect, color: Color32) {
-    let size = rect.width().min(rect.height());
-    painter.circle_stroke(
-        rect.center(),
-        size * 0.35,
-        Stroke::new((size * 0.1).max(1.2), color),
+/// The card heading: the stamp-weighted title the reference renders bold.
+/// egui's bundled faces ship one weight, so `RichText::strong` alone renders
+/// thin; every card title stamps instead. Painted text still publishes its
+/// node so label queries keep finding it.
+fn card_title(ui: &mut Ui, content: &str) {
+    let galley = theme::line_galley(ui.painter(), content, theme::HEADING_SIZE);
+    let (rect, response) = ui.allocate_exact_size(galley.size(), Sense::hover());
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, ui.is_enabled(), content));
+    theme::stamp_galley(
+        ui.painter(),
+        rect.min,
+        &galley,
+        theme::SLATE_900,
+        theme::HEADING_SIZE,
     );
-    painter.circle_filled(rect.center(), size * 0.35 * 0.35, color);
 }
 
 /// Canvas text centered on a point, drawn with the fake-bold stamp the port
-/// uses where the Iced source selected `UI_FONT_BOLD`.
+/// uses wherever the design calls for bold.
 fn centered_text(painter: &Painter, center: Pos2, content: &str, size: f32, color: Color32) {
-    centered_text_with(painter, center, content, size, color, true);
+    theme::centered_line(painter, center, content, size, color, true);
 }
 
 fn centered_text_with(
@@ -804,59 +773,11 @@ fn centered_text_with(
     color: Color32,
     bold: bool,
 ) {
-    let galley = painter.layout_no_wrap(
-        content.to_owned(),
-        FontId::new(size, theme::UI_FONT),
-        Color32::PLACEHOLDER,
-    );
-    let pos = center - galley.size() / 2.0;
-    if bold {
-        theme::stamp_galley(painter, pos, &galley, color, size);
-    } else {
-        painter.galley(pos, galley, color);
-    }
-}
-
-/// The measured advance of `content` at `size`. The Iced canvas could not
-/// measure text and used an approximation; egui's font layout can, so the
-/// fit checks use the real advance.
-fn text_width(painter: &Painter, content: &str, size: f32) -> f32 {
-    painter
-        .layout_no_wrap(
-            content.to_owned(),
-            FontId::new(size, theme::UI_FONT),
-            Color32::PLACEHOLDER,
-        )
-        .size()
-        .x
+    theme::centered_line(painter, center, content, size, color, bold);
 }
 
 fn millis(micros: u64) -> String {
     format!("{:.1}ms", micros as f32 / 1_000.0)
-}
-
-/// The reference's keycap label split: names that do not fit on one line
-/// break at their prefix, so `Up Arrow` reads as `UP` over `ARROW`.
-fn key_label_lines(name: &str) -> Vec<String> {
-    let upper = name.trim().to_uppercase();
-    if upper.is_empty() {
-        return vec!["-".to_owned()];
-    }
-    for prefix in ["ARROW", "NUMPAD", "PAGE", "LEFT", "RIGHT"] {
-        if let Some(rest) = upper.strip_prefix(prefix)
-            && !rest.is_empty()
-        {
-            return vec![prefix.to_owned(), rest.trim().to_owned()];
-        }
-    }
-    if let Some((head, tail)) = upper.split_once(char::is_whitespace) {
-        return vec![head.to_owned(), tail.trim().to_owned()];
-    }
-    match upper.as_str() {
-        "BACKSPACE" => vec!["BACK".to_owned(), "SPACE".to_owned()],
-        "CAPSLOCK" => vec!["CAPS".to_owned(), "LOCK".to_owned()],
-        _ => vec![upper],
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -904,16 +825,16 @@ pub fn timeline_section(
                         ui.spacing_mut().item_spacing = Vec2::new(8.0, 0.0);
                         let (icon_rect, _) =
                             ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
-                        paint_target_icon(ui.painter(), icon_rect, theme::PRIMARY_TEXT);
-                        ui.colored_label(
-                            theme::BODY_TEXT,
-                            egui::RichText::new(language.text("Key Input Timeline"))
-                                .font(FontId::new(theme::HEADING_SIZE, theme::UI_FONT))
-                                .strong(),
+                        theme::paint_icon(
+                            ui.painter(),
+                            icon_rect,
+                            theme::Icon::Target,
+                            theme::INDIGO_600,
                         );
+                        card_title(ui, language.text("Key Input Timeline"));
                     });
                     ui.colored_label(
-                        theme::MUTED_TEXT,
+                        theme::SLATE_500,
                         egui::RichText::new(language.text(subtitle))
                             .font(FontId::new(12.0, theme::UI_FONT)),
                     );
@@ -934,12 +855,11 @@ pub fn timeline_section(
         .response
 }
 
-/// The card's monitor toggle, ported from the Iced `toggler` at `.size(24)`
-/// (iced rev f8127c8 `widget/src/toggler.rs`): a 48x24 pill, padding
+/// The card's monitor toggle: a 48x24 pill, padding
 /// `round(0.1 * 24) = 2`, and a 20px round knob that sits 2px from the left
 /// when off and 2px from the right when on. The track takes [`theme::SLATE_300`]
 /// until recording, then [`theme::INDIGO_600`]; the knob stays
-/// [`theme::SURFACE`]. Paint-only: it publishes the checkbox node and hands
+/// [`theme::WHITE`]. Paint-only: it publishes the checkbox node and hands
 /// back whether it was clicked; the caller maps that to a `Message`.
 fn monitor_switch(ui: &mut Ui, recording: bool, ready: bool, label: &str) -> bool {
     let (rect, response) = ui.allocate_exact_size(
@@ -967,7 +887,7 @@ fn monitor_switch(ui: &mut Ui, recording: bool, ready: bool, label: &str) -> boo
         theme::SLATE_300
     };
     let painter = ui.painter();
-    painter.rect_filled(rect, CornerRadius::same(12), track);
+    painter.rect_filled(rect, theme::CONTROL_RADIUS, track);
     let knob_x = if recording {
         rect.right() - 22.0
     } else {
@@ -976,7 +896,7 @@ fn monitor_switch(ui: &mut Ui, recording: bool, ready: bool, label: &str) -> boo
     painter.circle_filled(
         Pos2::new(knob_x + 10.0, rect.center().y),
         10.0,
-        theme::SURFACE,
+        theme::WHITE,
     );
     response.clicked()
 }
@@ -1061,6 +981,11 @@ mod tests {
         out
     }
 
+    /// The canvas layers the way every other card does: a white card body, a
+    /// slate inset panel, and white content on it. A resting lane is therefore
+    /// **white** -- not the `SLATE_50` it used to be, which put the grey on the
+    /// lane and left the panel white and made the timeline the one card in the
+    /// window whose background read inverted.
     #[test]
     fn the_stopped_graph_keeps_its_lanes_keycaps_and_ruler() {
         let mut harness = Harness::builder()
@@ -1072,14 +997,26 @@ mod tests {
 
         let lane = painted_rects(&harness)
             .into_iter()
-            .find(|rect| rect.fill == LANE_IDLE)
+            .find(|rect| rect.rect.height() == LANE_HEIGHT && rect.rect.width() > 100.0)
             .expect("a stopped graph still paints its idle lanes");
-        assert_eq!(lane.rect.height(), LANE_HEIGHT);
+        assert_eq!(
+            lane.fill,
+            theme::WHITE,
+            "a resting lane is white on the frame's slate inset, like every \
+             other card's content"
+        );
         assert_eq!(lane.corner_radius, CornerRadius::same(LANE_RADIUS as u8));
+
+        assert!(
+            painted_rects(&harness)
+                .iter()
+                .all(|rect| rect.fill != theme::SLATE_50),
+            "the lane must not carry the grey the panel owns"
+        );
 
         let caps: Vec<_> = painted_rects(&harness)
             .into_iter()
-            .filter(|rect| rect.fill == CAP_SURFACE && rect.rect.width() == CAP_SIZE)
+            .filter(|rect| rect.fill == theme::WHITE && rect.rect.width() == CAP_SIZE)
             .collect();
         assert_eq!(caps.len(), 4, "one white keycap per lane: {caps:?}");
 
@@ -1103,6 +1040,40 @@ mod tests {
         // One container-level node, the size of the graph, and no more.
         let graph_node = harness.get_by_label("Key Input Timeline");
         assert_eq!(graph_node.rect().height(), GRAPH_HEIGHT);
+    }
+
+    /// The frame the canvas sits in is the card's **recessed panel**, so it
+    /// takes `group_style`'s slate inset -- the grey step -- and the lanes on
+    /// it are white. `the_stopped_graph_keeps_its_lanes_keycaps_and_ruler`
+    /// calls `graph()` directly and so never renders this frame; without this
+    /// test the panel's fill could flip back to white unnoticed.
+    #[test]
+    fn the_canvas_frame_is_the_recessed_slate_panel() {
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(600.0, 400.0))
+            .build_ui(|ui| {
+                theme::graph_frame().show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
+                    ui.set_min_height(GRAPH_HEIGHT);
+                });
+            });
+        harness.run();
+
+        let panel = painted_rects(&harness)
+            .into_iter()
+            .find(|rect| rect.corner_radius == theme::CARD_RADIUS && rect.rect.width() > 100.0)
+            .expect("the canvas frame paints its panel");
+        assert_eq!(
+            panel.fill,
+            theme::SLATE_50_80,
+            "the canvas panel is the slate inset, not white -- the timeline must \
+             layer like every other card (white body, slate inset, white content)"
+        );
+        assert_eq!(
+            panel.stroke.color,
+            theme::SLATE_200,
+            "the panel keeps its slate-200 hairline"
+        );
     }
 
     /// The anchor `accept` takes fixes `now` at the first event's offset plus
@@ -1143,7 +1114,7 @@ mod tests {
             .find(|rect| rect.fill == LANES[2].signal)
             .expect("the released span paints a block in the A lane");
         assert_eq!(block.rect.height(), LANE_HEIGHT - 8.0);
-        assert_eq!(block.corner_radius, CornerRadius::same(6));
+        assert_eq!(block.corner_radius, theme::CHIP_RADIUS);
         assert_eq!(block.stroke, Stroke::NONE, "a settled block has no stroke");
     }
 
@@ -1177,10 +1148,72 @@ mod tests {
         assert_eq!(open.stroke, Stroke::NONE);
         assert!(
             painted_rects(&harness).iter().any(|rect| {
-                rect.stroke == Stroke::new(1.5, Color32::WHITE)
+                rect.stroke == Stroke::new(1.5, theme::WHITE)
                     && rect.rect.height() == LANE_HEIGHT - 8.0
             }),
-            "the open block carries the Iced white outline as its own stroke shape"
+            "the open block carries the white outline as its own stroke shape"
+        );
+    }
+
+    /// The gutter cap is one of the window's three keycap surfaces, so its held
+    /// state must be the shared press effect -- a `scale-95` compression about
+    /// the box centre, an accent glow, a ring, and the `shadow-inner` band --
+    /// not the canvas's own 1.5px descent.
+    #[test]
+    fn a_held_keycap_compresses_through_the_shared_press_effect() {
+        let held = |pressed: bool| {
+            let mut timeline = Timeline::default();
+            if pressed {
+                timeline.accept(output(KeySlot::VerticalFirst, true, 0), false, backdated());
+            }
+            let mut harness = Harness::builder()
+                .with_size(egui::vec2(600.0, 400.0))
+                .build_ui(move |ui| {
+                    graph(
+                        ui,
+                        Some(&timeline),
+                        ["W", "S", "A", "D"],
+                        Language::English,
+                        true,
+                    );
+                });
+            harness.run_steps(20);
+            harness
+        };
+
+        let resting = held(false);
+        let resting_cap = painted_rects(&resting)
+            .into_iter()
+            .find(|rect| rect.fill == theme::WHITE && rect.rect.width() == CAP_SIZE)
+            .expect("the resting gutter cap paints at its full size");
+
+        let pressed = held(true);
+        let pressed_cap = painted_rects(&pressed)
+            .into_iter()
+            .find(|rect| rect.fill == LANES[0].signal && rect.rect.width() < CAP_SIZE)
+            .expect("the held gutter cap fills with its lane accent");
+
+        assert!(
+            (pressed_cap.rect.width() - CAP_SIZE * keycap::PRESS_SCALE).abs() < 0.5,
+            "the held cap must compress to the shared scale: {}",
+            pressed_cap.rect.width()
+        );
+        assert!(
+            (pressed_cap.rect.center() - resting_cap.rect.center()).length() < 0.01,
+            "the compression shrinks about the box centre, not downward"
+        );
+        assert_eq!(pressed_cap.corner_radius, resting_cap.corner_radius);
+        assert!(
+            painted_rects(&pressed).iter().any(|rect| {
+                rect.stroke.color == theme::BLACK_5 && rect.stroke_kind == egui::StrokeKind::Inside
+            }),
+            "the held cap carries the shared inset shadow"
+        );
+        assert!(
+            painted_rects(&pressed)
+                .iter()
+                .any(|rect| rect.stroke.color == LANES[0].held_ring),
+            "the held cap carries its lane ring"
         );
     }
 
@@ -1212,24 +1245,25 @@ mod tests {
 
         let column = painted_rects(&harness)
             .into_iter()
-            .find(|rect| rect.fill == OVERLAP_FILL_LIVE)
+            .find(|rect| rect.fill == theme::INDIGO_500_25)
             .expect("two live spans paint the stronger overlap fill");
         assert_eq!(column.rect.height(), PAIR_HEIGHT);
 
         let badge = painted_rects(&harness)
             .into_iter()
-            .find(|rect| rect.fill == BADGE_FILL)
+            .find(|rect| rect.fill == theme::INDIGO_950)
             .expect("the overlap carries its duration badge");
         assert_eq!(badge.rect.height(), BADGE_HEIGHT);
         assert!(
             painted_rects(&harness).iter().any(|rect| {
-                rect.stroke == Stroke::new(1.0, BADGE_EDGE) && rect.rect.height() == BADGE_HEIGHT
+                rect.stroke == Stroke::new(1.0, theme::INDIGO_400)
+                    && rect.rect.height() == BADGE_HEIGHT
             }),
             "the badge paints its own edge stroke"
         );
     }
 
-    // The data-model tests ported from `iced-ui/timeline.rs`: the painter above
+    // The data-model tests: the painter above
     // reads the same `now`/`spans`/`winner` contract.
 
     #[test]
@@ -1491,28 +1525,27 @@ mod tests {
 
     /// R2 round-2 finding 2: the monitor switch's advertised geometry (the
     /// report's 48x24 pill, radius 12, 20px knob with 2px padding) was
-    /// unverified. The values are the Iced toggler at `.size(24)` (iced rev
-    /// f8127c8 `widget/src/toggler.rs`): track 2N x N, border radius
-    /// height / 2, knob height - 2 * round(0.1 * height), offset
-    /// `round(0.1 * 24) = 2`.
+    /// unverified. The values are the reference toggler at `.size(24)`: track
+    /// 2N x N, border radius height / 2, knob height - 2 * round(0.1 * height),
+    /// offset `round(0.1 * 24) = 2`.
     #[test]
-    fn the_monitor_switch_paints_the_iced_toggler_geometry() {
+    fn the_monitor_switch_paints_the_toggler_geometry() {
         // Off: SLATE_300 track, the knob 2px from the left.
         let harness = section_harness(MonitorState::Stopped);
         let track = painted_rects(&harness)
             .into_iter()
             .find(|rect| {
-                rect.fill == theme::SLATE_300 && rect.corner_radius == CornerRadius::same(12)
+                rect.fill == theme::SLATE_300 && rect.corner_radius == theme::CONTROL_RADIUS
             })
             .expect("the off switch paints its SLATE_300 pill");
         assert_eq!(
             track.rect.size(),
             Vec2::new(48.0, 24.0),
-            "the track is the Iced .size(24) pill"
+            "the track is the 24px pill"
         );
         let knob = painted_circles(&harness)
             .into_iter()
-            .find(|circle| circle.fill == theme::SURFACE && circle.radius == 10.0)
+            .find(|circle| circle.fill == theme::WHITE && circle.radius == 10.0)
             .expect("the off switch paints its 20px knob");
         assert_eq!(
             knob.center,
@@ -1535,13 +1568,13 @@ mod tests {
         let track = painted_rects(&harness)
             .into_iter()
             .find(|rect| {
-                rect.fill == theme::INDIGO_600 && rect.corner_radius == CornerRadius::same(12)
+                rect.fill == theme::INDIGO_600 && rect.corner_radius == theme::CONTROL_RADIUS
             })
             .expect("the recording switch paints its INDIGO_600 pill");
         assert_eq!(track.rect.size(), Vec2::new(48.0, 24.0));
         let knob = painted_circles(&harness)
             .into_iter()
-            .find(|circle| circle.fill == theme::SURFACE && circle.radius == 10.0)
+            .find(|circle| circle.fill == theme::WHITE && circle.radius == 10.0)
             .expect("the recording switch paints its 20px knob");
         assert_eq!(
             knob.center.x,
