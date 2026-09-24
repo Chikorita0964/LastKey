@@ -59,7 +59,7 @@ eframe = { version = "0.36.2", optional = true, default-features = false, featur
 ] }
 egui = { version = "0.36.2", optional = true }
 # Pinned rev: the fork tracks upstream, so a branch would move this surface.
-gpui-mcp = { git = "https://github.com/Chikorita0964/gpui-mcp", rev = "fc38ab12a7826751c6cdf152ef112a6cbc86f5ab", optional = true }
+gpui-mcp = { git = "https://github.com/Chikorita0964/gpui-mcp", rev = "e2ab464bd8a462573ee9b1bda5f6c086a697b377", optional = true }
 tray-icon = "0.25.1"
 windows = { version = "0.62", features = [
     "Win32_Foundation",
@@ -88,4 +88,4 @@ egui_kittest = "0.36.2"
 
 # gpui-mcp's visibility patches (its vendor/PATCHES.md); both must link one gpui-pre.
 [patch.crates-io]
-gpui-pre = { git = "https://github.com/Chikorita0964/gpui-mcp", rev = "fc38ab12a7826751c6cdf152ef112a6cbc86f5ab" }
+gpui-pre = { git = "https://github.com/Chikorita0964/gpui-mcp", rev = "e2ab464bd8a462573ee9b1bda5f6c086a697b377" }
